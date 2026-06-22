@@ -246,7 +246,11 @@ https://服务器IP:18888/随机入口路径
 适合接入已有 Nginx/OpenResty，或在已经完成 Nginx 安装后部署 NxPanel。在线安装会从 GitHub Releases 下载 `nxpanel-linux-amd64.tar.gz`。
 
 ```bash
+# 安装脚本
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/install.sh | sudo bash
+
+# 如需卸载,执行
+curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh | sudo bash
 ```
 
 也可以下载 release 后在解压目录执行：
