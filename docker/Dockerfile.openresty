@@ -12,7 +12,7 @@
 # =============================================================
 
 # ---- Stage 1：构建前端 ----
-FROM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
 
 WORKDIR /app/webapp-react
 
@@ -24,14 +24,16 @@ COPY webapp-react/ ./
 RUN pnpm run build
 
 # ---- Stage 2：构建 Go 后端（api + agent 两个二进制）----
-FROM golang:1.25-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
 
 ARG VERSION=0.1.0-dev
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG TARGETOS
+ARG TARGETARCH
 
 ENV GOPROXY=${GOPROXY}
 
-RUN apk add --no-cache gcc musl-dev git
+RUN apk add --no-cache git
 
 WORKDIR /app
 
@@ -46,10 +48,10 @@ COPY --from=frontend-builder /app/web/dist ./web/dist/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 go build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
         -o /out/nxpanel-api ./cmd/nxpanel-api \
- && CGO_ENABLED=1 go build \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
         -o /out/nxpanel-agent ./cmd/nxpanel-agent
 
