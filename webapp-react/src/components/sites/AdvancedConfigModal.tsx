@@ -1,4 +1,4 @@
-import { Alert, Button, Group, LoadingOverlay, Modal, NumberInput, Radio, ScrollArea, Select, Stack, Switch, Tabs, Text, Textarea } from '@mantine/core'
+import { Alert, Button, Group, LoadingOverlay, Modal, NumberInput, Radio, ScrollArea, Select, Stack, Switch, Tabs, Text, Textarea, TextInput } from '@mantine/core'
 import { useForm } from '@mantine/form'
 import { useMediaQuery } from '@mantine/hooks'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -178,8 +178,16 @@ function DefaultSitePanel({ enabled }: { enabled: boolean }) {
 
 function HTTPSHijackPanel({ enabled }: { enabled: boolean }) {
   const queryClient = useQueryClient()
-  const hijackForm = useForm<Pick<HTTPSHijackSettings, 'enabled' | 'return_status_code' | 'cert_mode'> & { custom_cert_id: string }>({
-    initialValues: { enabled: false, return_status_code: 444, cert_mode: 'self_signed', custom_cert_id: '' },
+  const hijackForm = useForm<Pick<HTTPSHijackSettings, 'enabled' | 'cert_mode'> & { return_status_code: string; custom_cert_id: string }>({
+    initialValues: { enabled: false, return_status_code: '444', cert_mode: 'self_signed', custom_cert_id: '' },
+    validate: {
+      return_status_code: (value) => {
+        const statusCode = Number(value)
+        if (!/^\d+$/.test(value)) return '请输入数字状态码'
+        if (statusCode < 400 || statusCode > 599) return '状态码范围为 400-599'
+        return null
+      },
+    },
   })
   const hijackQuery = useQuery({ queryKey: ['settings', 'https-hijack'], queryFn: getHTTPSHijack, enabled })
   const certsQuery = useQuery({ queryKey: ['certificates'], queryFn: listCertificates, enabled })
@@ -189,7 +197,7 @@ function HTTPSHijackPanel({ enabled }: { enabled: boolean }) {
     if (!hijackQuery.data) return
     hijackForm.setValues({
       enabled: hijackQuery.data.enabled,
-      return_status_code: hijackQuery.data.return_status_code || 444,
+      return_status_code: String(hijackQuery.data.return_status_code || 444),
       cert_mode: hijackQuery.data.cert_mode || 'self_signed',
       custom_cert_id: hijackQuery.data.custom_cert_id || '',
     })
@@ -198,7 +206,7 @@ function HTTPSHijackPanel({ enabled }: { enabled: boolean }) {
   async function saveHijack(values: typeof hijackForm.values) {
     await saveHijackMutation.mutateAsync({
       enabled: values.enabled,
-      return_status_code: values.return_status_code,
+      return_status_code: Number(values.return_status_code),
       cert_mode: values.cert_mode,
       custom_cert_id: values.cert_mode === 'custom' ? values.custom_cert_id : undefined,
     })
@@ -224,7 +232,13 @@ function HTTPSHijackPanel({ enabled }: { enabled: boolean }) {
         <Switch label="启用 HTTPS 防窜站" {...hijackForm.getInputProps('enabled', { type: 'checkbox' })} />
         {hijackForm.values.enabled ? (
           <Stack gap="md">
-            <NumberInput label="返回状态码" min={400} max={599} allowDecimal={false} clampBehavior="strict" description="推荐 444（直接关闭连接）或 403（禁止访问）。" {...hijackForm.getInputProps('return_status_code')} />
+            <TextInput
+              label="返回状态码"
+              inputMode="numeric"
+              description="推荐 444（直接关闭连接）或 403（禁止访问）。"
+              {...hijackForm.getInputProps('return_status_code')}
+              onChange={(event) => hijackForm.setFieldValue('return_status_code', event.currentTarget.value.replace(/\D/g, ''))}
+            />
             <Radio.Group label="证书来源" {...hijackForm.getInputProps('cert_mode')}>
               <Group mt="xs"><Radio value="self_signed" label="自动生成自签证书" /><Radio value="custom" label="从证书夹选择" /></Group>
             </Radio.Group>
