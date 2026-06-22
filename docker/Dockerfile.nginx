@@ -1,0 +1,132 @@
+# =============================================================
+# NxPanel 独享模式 Dockerfile — nginx 变体
+#
+# 单容器同时运行：nginx (master, root) + nxpanel-agent (root) + nxpanel-api (非 root)
+# 由 s6-overlay 统一管理进程生命周期、依赖排序、崩溃自愈。
+#
+# 构建：
+#   docker build -f docker/Dockerfile.nginx -t nxpanel:nginx-latest .
+#
+# 运行（见 docker-compose.yml）：
+#   docker compose --profile nginx up -d
+# =============================================================
+
+# ---- Stage 1：构建前端 ----
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app/webapp-react
+
+COPY webapp-react/package.json webapp-react/pnpm-lock.yaml ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    corepack enable && corepack prepare pnpm@10 --activate && pnpm install --frozen-lockfile
+
+COPY webapp-react/ ./
+RUN pnpm run build
+
+# ---- Stage 2：构建 Go 后端（api + agent 两个二进制）----
+FROM golang:1.25-alpine AS backend-builder
+
+ARG VERSION=0.1.0-dev
+ARG GOPROXY=https://proxy.golang.org,direct
+
+ENV GOPROXY=${GOPROXY}
+
+RUN apk add --no-cache gcc musl-dev git
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY web/ ./web/
+
+COPY --from=frontend-builder /app/web/dist ./web/dist/
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 go build \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
+        -o /out/nxpanel-api ./cmd/nxpanel-api \
+ && CGO_ENABLED=1 go build \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
+        -o /out/nxpanel-agent ./cmd/nxpanel-agent
+
+# ---- Stage 3：运行时（nginx 官方镜像）----
+FROM nginx:1.27-alpine AS runtime
+
+ARG S6_VERSION=3.2.0.2
+ARG TARGETARCH
+
+# 安装 s6-overlay（noarch + arch tarball，buildx 通过 TARGETARCH 映射）
+RUN apk add --no-cache ca-certificates tzdata xz wget \
+ && case "$TARGETARCH" in \
+      amd64) S6_ARCH=x86_64 ;; \
+      arm64) S6_ARCH=aarch64 ;; \
+      *) echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
+    esac \
+ && wget -qO- "https://github.com/just-containers/s6-overlay/releases/download/v${S6_VERSION}/s6-overlay-noarch.tar.xz" | tar -Jxp -C / \
+ && wget -qO- "https://github.com/just-containers/s6-overlay/releases/download/v${S6_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" | tar -Jxp -C / \
+ && wget -qO- "https://github.com/just-containers/s6-overlay/releases/download/v${S6_VERSION}/s6-overlay-symlinks-noarch.tar.xz" | tar -Jxp -C /
+
+# 创建非 root 用户（api 运行身份；亦作为 socket_group 桥接）
+RUN addgroup -S nxpanel && adduser -S -G nxpanel -H -s /sbin/nologin nxpanel
+
+# 创建必要目录
+RUN mkdir -p \
+      /usr/local/nxpanel/bin \
+      /usr/local/nxpanel/web \
+      /usr/local/nxpanel/config/templates \
+      /usr/local/nxpanel/scripts \
+      /opt/nxpanel/data \
+      /opt/nxpanel/nginx/conf.d \
+      /opt/nxpanel/nginx/sites-enabled \
+      /opt/nxpanel/nginx/ssl \
+      /opt/nxpanel/nginx/site-backups \
+      /www/wwwroot \
+      /www/wwwlogs \
+      /var/log/nginx \
+      /run/nxpanel
+
+# 复制二进制（api + agent）
+COPY --from=backend-builder /out/nxpanel-api   /usr/local/nxpanel/bin/
+COPY --from=backend-builder /out/nxpanel-agent /usr/local/nxpanel/bin/
+
+# 复制许可证（BSD 3-Clause 二进制分发要求）
+COPY LICENSE /usr/local/nxpanel/LICENSE
+
+# 复制前端静态资源
+COPY --from=frontend-builder /app/web/dist /usr/local/nxpanel/web/
+
+# 复制配置、模板、nginx.conf 模板
+COPY configs/config.example.yaml      /usr/local/nxpanel/config/config.yaml
+COPY configs/templates/                /usr/local/nxpanel/config/templates/
+COPY configs/nginx/nginx.conf.production /usr/local/nxpanel/config/nginx.conf.tpl
+
+# 复制 entrypoint、cont-init 初始化脚本与 s6 服务定义
+COPY docker/entrypoint.sh docker/render-nginx-conf.sh /usr/local/nxpanel/scripts/
+COPY docker/cont-init.d/ /etc/cont-init.d/
+COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
+
+# 默认目录属主：api 写 data/nginx；nginx worker 写日志；wwwroot 由 agent(root) 管理
+RUN chown -R nxpanel:nxpanel /opt/nxpanel/data /opt/nxpanel/nginx \
+ && chown -R nginx:nginx /www/wwwlogs /var/log/nginx \
+ && chmod +x /usr/local/nxpanel/scripts/entrypoint.sh \
+             /usr/local/nxpanel/scripts/render-nginx-conf.sh \
+             /etc/cont-init.d/nxpanel-init \
+             /etc/s6-overlay/s6-rc.d/*/run
+
+ENV NXPANEL_API_LISTEN=0.0.0.0:18888 \
+    NXPANEL_NGINX_BIN=/usr/sbin/nginx \
+    NXPANEL_NGINX_CONF_PATH=/opt/nxpanel/nginx/nginx.conf \
+    NXPANEL_NGINX_PANEL_DIR=/opt/nxpanel/nginx \
+    NXPANEL_NGINX_ERROR_LOG_PATH=/www/wwwlogs/error.log \
+    NXPANEL_NGINX_WEB_USER=nginx \
+    NXPANEL_NGINX_WEB_GROUP=nginx \
+    NXPANEL_AGENT_SOCKET_PATH=/run/nxpanel/agent.sock \
+    NXPANEL_AGENT_SOCKET_GROUP=nxpanel
+
+EXPOSE 18888 80 443
+
+ENTRYPOINT ["/usr/local/nxpanel/scripts/entrypoint.sh"]

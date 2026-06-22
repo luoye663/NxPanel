@@ -1,0 +1,180 @@
+# 日志级别：debug / info / warn / error
+log_level: info
+# 日志格式：json（生产推荐）或 text（开发调试方便阅读）
+log_format: json
+# 日志文件路径（可选），为空时默认写入 data_dir/logs/api.log 或 agent.log
+# 不建议 API 和 Agent 共用同一个 log_file，推荐使用下方 service_logs 分别配置
+# log_file: /var/log/nxpanel/api.log
+# 数据目录，存放 SQLite 数据库
+data_dir: /opt/nxpanel/data
+# API/Agent 运行日志独立路径；为空时使用 data_dir/logs/api.log 和 data_dir/logs/agent.log
+service_logs:
+  api_log_file: ""
+  agent_log_file: ""
+# API/Agent 自身运行日志切割，独立于计划任务中心的 Nginx 站点日志切割
+service_log_rotate:
+  enabled: true
+  interval: "1h"
+  max_size: "50M"
+  max_count: 30
+  max_age: "720h"
+# API 服务配置
+api:
+  # API 监听地址，默认启用 TLS 加密
+  # 如需外网访问，确保端口可达；默认自动生成自签名证书
+  listen: "0.0.0.0:18888"
+  # 面板隐藏登录路径；留空或非法时启动自动生成并写回配置
+  # 固定 /login、/setup 和 /api/v1/* 默认不会公开
+  login_path: ""
+  # 是否公开 /health；默认 false 可减少公网探测
+  public_health: false
+  # 会话有效期，默认 24 小时
+  session_duration: "24h"
+  # HTTP 服务器超时设置
+  read_timeout: "15s"
+  write_timeout: "30s"
+  idle_timeout: "60s"
+  # 关闭超时
+  shutdown_timeout: "10s"
+  # SSE 心跳间隔
+  sse_heartbeat: "15s"
+  # 仪表盘系统指标 SSE 下发间隔，最低 1s
+  system_metrics_interval: "3s"
+  # 登录安全配置
+  rate_limit:
+    # 窗口内最大登录失败次数
+    max_failures: 3
+    # 失败计数窗口时长
+    window: "15m"
+  # 可信代理 IP 列表（IP 或 CIDR 格式），仅来自这些 IP 的转发头才会被信任
+  # 为空则不信任任何 X-Forwarded-For / X-Real-IP 头
+  trusted_proxies:
+    - "127.0.0.1"
+    - "::1"
+  # 每用户最大并发会话数（超出后踢出最早的会话）
+  max_sessions: 3
+  # 会话 IP 绑定（IP 变化时强制重新登录）
+  bind_session_ip: true
+  # 会话 User-Agent 绑定（UA 变化时强制重新登录）
+  bind_session_ua: true
+  # CAPTCHA 验证码配置
+  captcha:
+    # 验证码服务：none / turnstile / hcaptcha
+    provider: "none"
+    # 站点 Key（前端使用）
+    site_key: ""
+    # 密钥（后端验证使用）
+    secret_key: ""
+    # 登录失败 N 次后触发 CAPTCHA
+    trigger_after_failures: 1
+  # TLS 配置
+  tls:
+    # 是否启用 TLS，默认 true
+    enabled: true
+    # TLS 证书路径，为空则自动生成自签名证书到 data_dir/tls/
+    cert: ""
+    # TLS 私钥路径，为空则自动生成自签名证书到 data_dir/tls/
+    key: ""
+    # 自签名证书有效期（默认 8760h = 365 天）
+    cert_validity: "8760h"
+    # 自签名证书的主题替代名称（SAN），可配置额外的 IP 或域名
+    # 默认仅包含 localhost / 127.0.0.1 / ::1
+    # 如需通过公网 IP 或域名访问面板，请在此添加
+    # 环境变量：NXPANEL_API_TLS_SANS（逗号分隔）
+    # sans:
+    #   - "203.0.113.50"
+    #   - "panel.example.com"
+# Agent 服务配置
+agent:
+  # Unix Socket 路径
+  socket_path: /run/nxpanel/agent.sock
+  # socket 文件的所属组，用于允许非 root 的 API 进程连接
+  # 必须与 API 服务运行用户的组名一致
+  socket_group: openrest
+  # Agent 认证密钥，API 和 agent 共享
+  # 生产环境必须修改为强随机字符串
+  # 可通过环境变量 NXPANEL_AGENT_TOKEN 覆盖
+  token: "change-me-in-production"
+  # 追加的文件操作白名单路径（可选）
+  # 这些路径会与面板自身路径和系统通用路径合并
+  # 适用于网站或日志存放在非标准目录的场景
+  # allowed_roots:
+  #   - /data/www
+  #   - /home/user/sites
+  # 关闭超时
+  shutdown_timeout: "10s"
+  # API → Agent 客户端超时
+  client_timeout: "30s"
+  dial_timeout: "3s"
+  idle_conn_timeout: "30s"
+  # 文件读取 / 日志 tail 最大读取量，防止大文件一次性进入内存
+  max_read_size: "16M"
+  # 文件和日志下载最大允许大小；超过后拒绝下载
+  max_download_size: "256M"
+  # 单次文件/日志下载最长传输时间
+  download_timeout: "2m"
+# Nginx 相关配置
+nginx:
+  # Nginx 二进制路径，为空则自动检测
+  bin: "/usr/sbin/nginx"
+  # Nginx 主配置文件路径，为空则由 agent 自动检测并回写
+  conf_path:
+  # 面板 Nginx 配置目录
+  panel_dir: /opt/nxpanel/nginx
+  # Nginx 模板目录（存放 .tpl 模板文件）
+  # 为空则自动在可执行文件父目录的 templates/ 子目录查找
+  templates_dir: "config/templates"
+  web_user: www-data
+  web_group: www-data
+  # 以下字段由 agent 自动检测后回写，无需手动配置
+  version: ""
+  include_installed: false
+  # 默认日志目录，用于生成站点默认日志路径
+  log_dir: "/www/wwwlogs"
+  # 允许的网站根目录前缀白名单
+  allowed_root_prefixes:
+    - "/www/wwwroot"
+    - "/var/www"
+  # 允许的日志文件路径前缀白名单
+  allowed_log_prefixes:
+    - "/www/wwwlogs"
+    - "/var/log/nginx/nxpanel"
+  # 自动检测 web 用户时的候选列表
+  web_user_candidates:
+    - "www-data"
+    - "nginx"
+    - "www"
+    - "nobody"
+  # Nginx 命令超时
+  test_timeout: "15s"
+  reload_timeout: "15s"
+  dump_timeout: "30s"
+  detect_timeout: "10s"
+  # 备份清理：仅当备份数量超过 max_count 且时间超过 max_age 时才删除
+  backup_max_count: 30
+  backup_max_age: "168h"
+# 数据库配置
+database:
+  # SQLite 忙等超时（毫秒）
+  busy_timeout: 5000
+# ACME / Let's Encrypt 配置
+acme:
+  # 使用 Let's Encrypt 测试环境（证书不受信任，但无频率限制）
+  use_staging: false
+  # SSL 自动续签已迁移到统一计划任务中心 acme_renewal，续签天数和周期请在计划任务页面调整。
+  # HTTP-01 本机预验证（写入验证文件后，先在本地验证再提交给 ACME 服务器）
+  pre_validation:
+    # DNS 服务器，空=系统默认，支持 "8.8.8.8:53" 或 "https://1.1.1.1/dns-query"（DoH）
+    dns_server: ""
+    # 验证失败后重试间隔
+    retry_interval: "3s"
+    # 最大重试次数
+    retry_count: 5
+# 升级检测配置
+upgrade:
+  # 是否启用升级检测（检查 GitHub Releases）
+  enabled: true
+  # 检查间隔
+  check_interval: "1h"
+  # GitHub 仓库（owner/repo）
+  github_repo: "luoye663/nxpanel"

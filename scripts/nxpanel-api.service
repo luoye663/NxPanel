@@ -1,0 +1,58 @@
+# nxpanel-api.service — NxPanel API/UI 服务
+# 非 root 运行，提供 Web API 和前端静态页面
+#
+# 安装方式：
+#   sudo cp scripts/nxpanel-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nxpanel-api
+#
+# 前提条件：
+#   1. 创建系统用户和目录：
+#      sudo useradd -r -s /sbin/nologin openrest
+#      sudo mkdir -p /opt/nxpanel/{data,nginx,logs}
+#      sudo chown -R openrest:openrest /opt/nxpanel
+#   2. 将二进制文件放到 /usr/local/bin/nxpanel-api
+#   3. 将配置文件放到 /etc/nxpanel/config.yaml
+
+[Unit]
+Description=NxPanel API/UI Service
+Documentation=https://github.com/luoye663/nxpanel
+After=network.target nxpanel-agent.service
+Wants=nxpanel-agent.service
+
+[Service]
+Type=simple
+User=openrest
+Group=openrest
+
+# 二进制文件路径
+ExecStart=/usr/local/nxpanel/bin/nxpanel-api -config /usr/local/nxpanel/configs/config.yaml
+
+RuntimeDirectory=nxpanel
+RuntimeDirectoryMode=0755
+
+# 优雅关闭
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nxpanel /run/nxpanel
+
+# 环境变量（可选，覆盖 config.yaml 中的值）
+# Environment=NXPANEL_LOG_LEVEL=debug
+# Environment=NXPANEL_API_LISTEN=0.0.0.0:8888
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nxpanel-api
+
+# 自动重启
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

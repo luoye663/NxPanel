@@ -1,0 +1,1156 @@
+:root {
+  color-scheme: light;
+  --nx-bg-page: #f6f7fb;
+  --nx-border: rgba(15, 23, 42, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+  background: var(--nx-bg-page);
+  color: #111827;
+  font-size: var(--mantine-font-size-sm);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.mantine-Tabs-tab {
+  min-height: 34px;
+  padding: 7px 12px;
+  font-size: var(--mantine-font-size-sm);
+}
+
+.mantine-Tabs-panel {
+  padding-top: var(--mantine-spacing-md);
+}
+
+.pageShell {
+  width: 100%;
+  padding: 8px 0 24px;
+}
+
+.sectionCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.brandMark {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #1c7ed6;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.mainNavLink .mantine-NavLink-label {
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 500;
+}
+
+.topAction {
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #495057;
+}
+
+.topAction:hover {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.versionBadge {
+  cursor: pointer;
+  user-select: none;
+}
+
+.dashboardStatusCard .mantine-Card-root {
+  overflow: hidden;
+}
+
+.dashboardStatusMeta {
+  min-width: 0;
+}
+
+.statusDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.statusDot.online {
+  background: var(--mantine-color-green-6);
+  box-shadow: 0 0 0 4px rgba(64, 192, 87, 0.14);
+}
+
+.statusDot.offline {
+  background: var(--mantine-color-red-6);
+  box-shadow: 0 0 0 4px rgba(250, 82, 82, 0.14);
+}
+
+.metricCard {
+  height: 100%;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.metricCard:hover {
+  border-color: rgba(34, 139, 230, 0.35);
+  transform: translateY(-1px);
+}
+
+.metricIcon {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(34, 139, 230, 0.10);
+  color: var(--mantine-color-blue-7);
+}
+
+.metricValue {
+  max-width: 100%;
+  min-height: 22px;
+  text-align: center;
+}
+
+.loadValue {
+  font-variant-numeric: tabular-nums;
+}
+
+.chartActions {
+  flex-wrap: nowrap;
+}
+
+.realtimeChart svg {
+  display: block;
+  width: 100%;
+  min-height: 220px;
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.chartAxis {
+  stroke: rgba(15, 23, 42, 0.16);
+  stroke-width: 1;
+}
+
+.chartGridLine {
+  stroke: rgba(15, 23, 42, 0.07);
+  stroke-width: 1;
+}
+
+.chartAxisLabel {
+  fill: rgba(73, 80, 87, 0.82);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.chartLine {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chartLineA {
+  stroke: var(--mantine-color-blue-6);
+}
+
+.chartLineB {
+  stroke: var(--mantine-color-teal-6);
+}
+
+.chartHoverLine {
+  stroke: rgba(15, 23, 42, 0.35);
+  stroke-dasharray: 4 4;
+  stroke-width: 1;
+}
+
+.chartPointA {
+  fill: var(--mantine-color-blue-6);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.chartPointB {
+  fill: var(--mantine-color-teal-6);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.chartTooltipBox {
+  fill: rgba(15, 23, 42, 0.88);
+  stroke: rgba(255, 255, 255, 0.16);
+}
+
+.chartTooltipText {
+  fill: #ffffff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.chartLegendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.chartLegendA {
+  background: var(--mantine-color-blue-6);
+}
+
+.chartLegendB {
+  background: var(--mantine-color-teal-6);
+}
+
+.coreItem,
+.infoItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--nx-border);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.detailHero {
+  padding: 18px;
+  border: 1px solid var(--nx-border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.detailRefreshBar {
+  padding: 10px 12px;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.detailStatCard {
+  padding: 8px 10px;
+  border: 1px solid var(--nx-border);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.018);
+}
+
+.detailStatCard.green {
+  border-color: rgba(64, 192, 87, 0.22);
+}
+
+.detailStatCard.yellow {
+  border-color: rgba(250, 176, 5, 0.26);
+}
+
+.detailStatCard.red {
+  border-color: rgba(250, 82, 82, 0.24);
+}
+
+.diskDetailGrid {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.diskDetailMain {
+  min-width: 0;
+}
+
+.diskSummaryAlert {
+  flex: 1 1 360px;
+}
+
+.diskMountPanel {
+  align-self: start;
+  padding: 14px;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.diskTableScroll {
+  max-height: min(420px, 58vh);
+}
+
+.diskMountLabel {
+  width: 100%;
+  min-width: 0;
+}
+
+.diskMountText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diskMountBadge {
+  flex: 0 0 auto;
+}
+
+.cpuDetailGrid {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.cpuDetailPanel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.cpuCoreScroll {
+  max-height: min(360px, 50vh);
+}
+
+.cpuCoreItem {
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.processTable th,
+.processTable td,
+.diskDetailTable th,
+.diskDetailTable td,
+.nowrapCell {
+  white-space: nowrap;
+}
+
+.processCommandCell {
+  width: 420px;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: copy;
+  user-select: none;
+}
+
+.diskStatusCell {
+  width: 104px;
+  min-width: 104px;
+}
+
+.diskCapacity {
+  display: grid;
+  grid-template-columns: auto 98px auto 98px auto 98px;
+  column-gap: 6px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diskCapacityValue {
+  display: inline-block;
+  min-width: 98px;
+  text-align: right;
+}
+
+.diskTotal {
+  color: var(--mantine-color-blue-7);
+}
+
+.diskAvail {
+  color: var(--mantine-color-green-7);
+}
+
+.diskUsed {
+  color: var(--mantine-color-yellow-8);
+}
+
+.loginSurface {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(28, 126, 214, 0.12), transparent 30%),
+    linear-gradient(180deg, #ffffff 0%, #f6f7fb 100%);
+}
+
+.loginGrid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.45), transparent 78%);
+}
+
+.loginCard {
+  position: relative;
+  z-index: 1;
+  width: min(460px, 100%);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px);
+}
+
+.captchaWidget {
+  margin-top: 8px;
+}
+
+.captchaContainer {
+  display: flex;
+  min-height: 70px;
+  justify-content: center;
+}
+
+.recoveryCodeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.dataTableScroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.plainDataTableScroll {
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+}
+
+.monoEllipsis {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.logViewerShell {
+  overflow: hidden;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: #111827;
+}
+
+.logViewerScroll {
+  background: #111827;
+}
+
+.logViewerPre {
+  min-width: 100%;
+  margin: 0;
+  padding: 14px 16px;
+  color: #d1d5db;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.siteLogsCard {
+  height: 100%;
+  min-height: 0;
+}
+
+.siteLogsLayout {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.siteLogsTopbar,
+.siteLogsFilter,
+.siteLogsBottomToolbar {
+  flex-shrink: 0;
+}
+
+.siteLogsViewer {
+  display: flex;
+  min-height: 260px;
+  flex: 1;
+}
+
+.siteLogsViewer .logViewerShell {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.siteLogsViewer .logViewerScroll {
+  min-height: 0;
+  flex: 1;
+}
+
+.siteLogsBottomToolbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 8px;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 -10px 30px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.stderrBlock {
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.taskLogLayout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  min-height: 420px;
+}
+
+.taskSidebar {
+  overflow: hidden;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.taskSidebarHeader {
+  border-bottom: 1px solid var(--nx-border);
+}
+
+.taskLogItem {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--nx-border);
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.taskLogItem:hover {
+  background: rgba(15, 23, 42, 0.035);
+}
+
+.taskLogItem.active {
+  border-left-color: var(--mantine-color-blue-6);
+  background: rgba(34, 139, 230, 0.08);
+}
+
+.taskLogMain {
+  min-width: 0;
+}
+
+.logsToolbar {
+  align-items: flex-start;
+}
+
+.siteInfoItem {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--nx-border);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.siteDetailInfoPanel {
+  overflow: hidden;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.siteDetailInfoRow {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.siteOverviewVersion {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.siteImportTable {
+  min-width: 760px;
+}
+
+.siteDetailLayout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  min-height: 0;
+  flex: 1;
+}
+
+.siteDetailModalContent {
+  max-height: min(860px, calc(100vh - 48px));
+}
+
+.siteDetailModalBody {
+  display: flex;
+  height: min(800px, calc(100vh - 112px));
+  min-height: 0;
+  flex-direction: column;
+  padding-bottom: 12px;
+}
+
+.siteDetailModalStack {
+  min-height: 0;
+  flex: 1;
+}
+
+.siteDetailShell {
+  min-height: 0;
+  flex: 1;
+}
+
+.siteDetailNav {
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.siteDetailNavButton {
+  width: 100%;
+}
+
+.siteDetailContent {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.siteDetailContentEditor {
+  overflow: hidden;
+}
+
+.siteDetailContentLogs {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.siteDetailContentLogs > .mantine-Card-root {
+  flex: 1;
+}
+
+.siteDetailContent > .mantine-Card-root {
+  min-height: 100%;
+}
+
+.siteEditorCard {
+  height: 100%;
+  min-height: 0;
+}
+
+.siteEditorStack {
+  height: 100%;
+  min-height: 0;
+}
+
+.nginxInfoItem {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--nx-border);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.nginxParamList {
+  align-items: stretch;
+}
+
+.nginxParamRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  height: 100%;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+}
+
+.nginxParamRow:hover {
+  background: rgba(15, 23, 42, 0.025);
+}
+
+.nginxParamMeta {
+  min-width: 0;
+}
+
+.nginxParamMeta > .mantine-Text-root {
+  margin-top: 3px;
+}
+
+.nginxParamControl {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nginxParamControl .mantine-InputWrapper-root,
+.nginxParamControl .mantine-Input-root,
+.nginxParamControl .mantine-Slider-root {
+  width: 100% !important;
+}
+
+.nginxParamControl .mantine-CheckboxGroup-root {
+  width: 100%;
+}
+
+@media (max-width: 48em) {
+  .nginxParamRow {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .nginxParamControl {
+    justify-content: flex-start;
+  }
+}
+
+.nginxOutputBlock {
+  max-height: 260px;
+  margin: 12px 0 0;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 12px;
+  background: #111827;
+  color: #d1d5db;
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.nginxActionButton {
+  width: auto;
+  min-width: 112px;
+  align-self: flex-start;
+}
+
+.nginxEditorShell {
+  --nx-editor-gutter-bg: #f3f4f6;
+  min-height: 400px;
+  overflow: hidden;
+  border: 1px solid var(--nx-border);
+  border-radius: 14px;
+}
+
+.nginxConfEditorTab,
+.nginxConfEditorCard {
+  min-height: 0;
+}
+
+.nginxConfEditorShell {
+  height: calc(100vh - 244px);
+  min-height: 460px;
+}
+
+.siteEditorCard .nginxEditorShell {
+  flex: 1;
+  min-height: 0;
+}
+
+.nginxCodeEditor {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.nginxCodeEditorToolbar {
+  min-height: 26px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--nx-border);
+  background: var(--nx-editor-gutter-bg);
+}
+
+.nginxCodeMirrorShell {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.nginxCodeMirrorShell::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--nx-editor-gutter-width, 0px);
+  background: var(--nx-editor-gutter-bg);
+  content: '';
+  pointer-events: none;
+}
+
+.nginxCodeEditor .cm-theme,
+.nginxCodeEditor .cm-editor {
+  position: relative;
+  min-height: 0;
+  background: transparent;
+}
+
+.nginxCodeEditor .cm-scroller {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.nginxCodeEditor .cm-scroller::-webkit-scrollbar {
+  width: 12px;
+  height: 10px;
+}
+
+.nginxCodeEditor .cm-scroller::-webkit-scrollbar-thumb {
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.nginxCodeEditor .cm-scroller::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+
+.nginxCodeEditor .cm-content {
+  min-height: 100%;
+}
+
+.nginxCodeEditor .cm-gutters {
+  background: var(--nx-editor-gutter-bg);
+}
+
+.nginxCodeEditor .cm-gutter {
+  background: var(--nx-editor-gutter-bg);
+}
+
+.nginxCodeEditor .cm-gutterElement,
+.nginxCodeEditor .cm-activeLineGutter {
+  background: var(--nx-editor-gutter-bg);
+}
+
+.nginxCodeEditor .cm-lineNumbers,
+.nginxCodeEditor .cm-foldGutter {
+  background: var(--nx-editor-gutter-bg);
+}
+
+.nginxCodeEditor .cm-selectionBackground,
+.nginxCodeEditor .cm-focused .cm-selectionBackground {
+  background: rgba(34, 139, 230, 0.24) !important;
+}
+
+.sitesToolbarActions {
+  flex-wrap: wrap;
+}
+
+.advancedConfigModalBody {
+  height: min(760px, calc(100vh - 124px));
+  min-height: 0;
+}
+
+.advancedConfigTabs {
+  height: 100%;
+  min-height: 0;
+}
+
+.advancedConfigTabList {
+  min-width: 206px;
+}
+
+.advancedConfigPanelScroll {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+.advancedConfigPanel {
+  position: relative;
+  min-width: 0;
+  padding: 0 16px 4px;
+}
+
+.advancedConfigNarrowPanel {
+  max-width: 640px;
+}
+
+.advancedConfigTemplateEditor {
+  height: min(520px, calc(100vh - 330px));
+  min-height: 360px;
+}
+
+.fileEditorCodeShell {
+  height: 60vh;
+  min-height: 360px;
+}
+
+.securityActionButton {
+  width: auto;
+  align-self: flex-start;
+}
+
+.fileManagerShell {
+  min-width: 0;
+}
+
+.fileToolbar,
+.filePathBar {
+  align-items: flex-start;
+}
+
+.filePathView {
+  min-width: 0;
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--nx-border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.filePathSegments {
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+}
+
+.filePathScroll {
+  min-width: 0;
+  flex: 1;
+}
+
+.filePathScroll .mantine-ScrollArea-viewport {
+  overflow-x: auto !important;
+}
+
+.filePathInput {
+  flex: 1;
+  min-width: 0;
+}
+
+.filePathToken {
+  height: 24px;
+  padding-inline: 8px;
+  font-size: var(--mantine-font-size-sm);
+  border-radius: 8px;
+}
+
+.filePathToken[data-variant='filled'] {
+  box-shadow: none;
+}
+
+.filePathView .mantine-ActionIcon-root {
+  flex: 0 0 auto;
+}
+
+.filePathSeparator {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 3px;
+  color: var(--mantine-color-gray-5);
+}
+
+.fileTableScroll {
+  width: 100%;
+  height: min(620px, 66vh);
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+}
+
+.fileTable {
+  min-width: 980px;
+  font-size: var(--mantine-font-size-sm);
+}
+
+.fileRowSelected {
+  background: rgba(34, 139, 230, 0.06);
+}
+
+.fileNameButton {
+  max-width: 360px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mantine-color-blue-7);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+.fileNameButton:hover {
+  text-decoration: underline;
+}
+
+.fileRootCard {
+  height: 100%;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.fileRootCard:hover {
+  border-color: rgba(34, 139, 230, 0.35);
+  transform: translateY(-1px);
+}
+
+.sslInfoTable th {
+  width: 116px;
+  white-space: nowrap;
+}
+
+.sslInfoTable td {
+  min-width: 0;
+}
+
+@media (max-width: 48rem) {
+  .sectionCardHeader {
+    flex-direction: column;
+  }
+
+  .recoveryCodeGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .logsToolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sitesToolbarActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .advancedConfigModalBody {
+    height: calc(100vh - 58px);
+  }
+
+  .advancedConfigTabs {
+    flex-direction: column;
+  }
+
+  .advancedConfigTabList {
+    min-width: 0;
+  }
+
+  .advancedConfigPanel {
+    padding: 12px 0 4px;
+  }
+
+  .fileToolbar,
+  .filePathBar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .siteDetailLayout {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .siteDetailModalContent {
+    max-height: 100vh;
+  }
+
+  .siteDetailModalBody {
+    height: calc(100vh - 58px);
+  }
+
+  .siteDetailNav {
+    height: auto;
+  }
+
+  .siteDetailInfoRow {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .siteLogsFilter,
+  .siteLogsBottomToolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .siteLogsViewer {
+    min-height: 320px;
+  }
+
+  .taskLogLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .taskSidebar {
+    max-height: 260px;
+  }
+
+  .dashboardStatusMeta,
+  .chartActions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .metricValue {
+    max-width: 130px;
+  }
+
+  .diskDetailGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .cpuDetailGrid {
+    grid-template-columns: 1fr;
+  }
+}

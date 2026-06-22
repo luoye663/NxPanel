@@ -1,0 +1,22 @@
+# NxPanel Docker Compose — host 网络模式覆盖文件
+#
+# 用途：让容器内 nginx/openresty 直接使用宿主机网络栈。
+# 适合需要在反向代理中访问宿主机 127.0.0.1:PORT 的场景。
+#
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.host.yml --profile nginx up -d
+#   docker compose -f docker-compose.yml -f docker-compose.host.yml --profile openresty up -d
+#
+# 注意：host 网络模式下 ports 映射无效，容器会直接占用宿主机 80/443/18888 端口。
+# 该模式主要适用于 Linux Docker。
+
+x-nxpanel-host-network: &nxpanel-host-network
+  network_mode: host
+  ports: !reset []
+
+services:
+  nxpanel-nginx:
+    <<: *nxpanel-host-network
+
+  nxpanel-openresty:
+    <<: *nxpanel-host-network

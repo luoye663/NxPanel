@@ -1,0 +1,52 @@
+# nxpanel-agent.service — NxPanel Agent 服务
+# 以 root 运行，通过 Unix Socket 接收 API 的特权操作请求
+#
+# 安装方式：
+#   sudo cp scripts/nxpanel-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nxpanel-agent
+#
+# 前提条件：
+#   1. 将二进制文件放到 /usr/local/bin/nxpanel-agent
+#   2. 将配置文件放到 /etc/nxpanel/config.yaml
+#   3. 确保 agent.token 已设置为强随机字符串
+
+[Unit]
+Description=NxPanel Agent Service
+Documentation=https://github.com/luoye663/nxpanel
+After=network.target
+
+[Service]
+Type=simple
+# Agent 需要 root 权限操作 Nginx 配置和证书文件
+User=root
+Group=root
+
+# 二进制文件路径
+ExecStart=/usr/local/nxpanel/bin/nxpanel-agent -config /usr/local/nxpanel/configs/config.yaml
+
+# 确保 Socket 目录存在
+ExecStartPre=/usr/bin/mkdir -p /run/nxpanel
+
+# 优雅关闭
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Socket 目录运行时配置
+RuntimeDirectory=nxpanel
+RuntimeDirectoryMode=0755
+
+# 环境变量（可选）
+# Environment=NXPANEL_AGENT_TOKEN=your-secure-random-token
+
+# 日志输出到 journalctl
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nxpanel-agent
+
+# 自动重启
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

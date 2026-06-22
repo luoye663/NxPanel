@@ -1,0 +1,19 @@
+This project is released under the BSD 3-Clause License. See the LICENSE file for details.
+
+Additional notice:
+
+- Portions of this repository were created or refined with AI assistance.
+- The maintainers may review AI-generated code, but do not guarantee that the code is free of defects, vulnerabilities, or compliance issues.
+- This project is provided as-is and is not accompanied by any promise of security hardening, security audit coverage, fitness for production, or suitability for a particular environment.
+- Users are responsible for reviewing, testing, and securing any deployment before using it in production.
+
+---
+
+本项目依据 BSD 3-Clause 许可证发布。详情请见 `LICENSE` 文件。
+
+补充说明：
+
+- 本仓库中的部分代码由 AI 辅助生成或修订。
+- 维护者可能会对 AI 生成的代码进行人工审查，但不保证代码不存在缺陷、漏洞或合规风险。
+- 本项目按“现状”提供，不附带任何安全加固承诺、安全审计覆盖承诺、生产可用性承诺或特定环境适用性承诺。
+- 在生产环境使用前，使用者应自行完成代码审阅、测试验证、部署加固与风险控制。

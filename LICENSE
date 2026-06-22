@@ -1,0 +1,51 @@
+BSD 3-Clause License
+
+Copyright (c) 2026 nxpanel contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+中文参考译文（非正式法律文本，仅供阅读理解；如与上方英文原文有任何冲突，以英文原文为准）
+
+BSD 3-Clause 许可证
+
+版权所有 (c) 2026 nxpanel contributors
+
+允许以源代码和二进制形式重新分发和使用本软件，无论是否经过修改，但必须满足以下条件：
+
+1. 重新分发源代码时，必须保留上述版权声明、本条件列表和下述免责声明。
+
+2. 以二进制形式重新分发时，必须在随附文档和/或其他材料中保留上述版权声明、本条件列表和下述免责声明。
+
+3. 未经事先书面许可，不得使用版权持有人或贡献者的名称为基于本软件衍生的产品进行背书或推广。
+
+本软件由版权持有人和贡献者按“现状”提供，不附带任何形式的明示或默示担保，
+包括但不限于适销性和特定用途适用性的默示担保。
+在任何情况下，版权持有人或贡献者均不对任何直接、间接、偶发、特殊、惩罚性或后果性损害承担责任，
+包括但不限于替代商品或服务采购、使用损失、数据损失、利润损失或业务中断，
+无论其基于合同责任、严格责任还是侵权责任（包括过失或其他原因），
+即使已被告知发生此类损害的可能性。

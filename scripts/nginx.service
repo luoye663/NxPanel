@@ -1,0 +1,42 @@
+[Unit]
+Description=Nginx - 高性能 Web 服务器和反向代理
+Documentation=man:nginx(8) https://nginx.org/
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+# PID 文件路径，必须与 nginx.conf 中的 pid 指令一致
+PIDFile=/var/run/nginx.pid
+
+# 启动前静默测试配置
+ExecStartPre=/usr/sbin/nginx -t -q
+ExecStart=/usr/sbin/nginx
+ExecReload=/usr/sbin/nginx -s reload
+# 优雅停止：发送 QUIT 信号让 worker 处理完当前请求后退出
+ExecStop=/bin/kill -s QUIT $MAINPID
+
+TimeoutStartSec=30
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5s
+
+KillMode=mixed
+KillSignal=SIGQUIT
+SendSIGKILL=yes
+
+# 文件描述符和进程数限制
+LimitNOFILE=1048576
+LimitNPROC=65535
+
+# 安全加固
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+NoNewPrivileges=true
+
+# 可写路径（ProtectSystem=full 下 /usr 为只读，需显式放行）
+ReadWritePaths=/var/run /run /var/log
+
+[Install]
+WantedBy=multi-user.target

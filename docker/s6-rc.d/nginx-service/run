@@ -1,0 +1,15 @@
+#!/usr/bin/with-contenv /bin/sh
+set -e
+
+# nginx-service —— nginx/openresty 主进程（foreground）
+#
+# 以 root 启动 master，worker 由 nginx.conf 的 `user` 指令降权。
+# `daemon off;` 让 nginx 在前台运行，s6 直接监督该进程。
+# agent 通过 `nginx -s reload` 信号本进程即可生效，无需重启容器。
+# with-contenv 确保继承 Docker ENV（NXPANEL_NGINX_BIN 等路径）。
+
+CONF_PATH="${NXPANEL_NGINX_CONF_PATH:-/etc/nginx/nginx.conf}"
+
+exec "${NXPANEL_NGINX_BIN:-/usr/sbin/nginx}" \
+    -c "${CONF_PATH}" \
+    -g "daemon off;"

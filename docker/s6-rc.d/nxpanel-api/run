@@ -1,0 +1,12 @@
+#!/usr/bin/with-contenv /bin/sh
+set -e
+
+# nxpanel-api —— 面板 API/UI 进程（非 root）
+#
+# 通过 s6-setuidgid 降权为 nxpanel 用户运行。
+# 与 agent 的 Unix Socket 通过 socket_group=nxpanel 桥接访问。
+# with-contenv 确保继承 Docker ENV（NXPANEL_* 配置覆盖）。
+
+exec s6-setuidgid nxpanel \
+    /usr/local/nxpanel/bin/nxpanel-api \
+    -config /opt/nxpanel/data/config.yaml

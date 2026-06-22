@@ -1,0 +1,55 @@
+.idea
+bin
+*.db
+*.db-wal
+*.db-shm
+configs/config.yaml
+node_modules
+/nxpanel-api
+/nxpanel-agent
+release
+tmp
+test-results
+docs/dev-spec
+docs/doc-change
+
+
+# ------------------------------
+# Editor / AI tools
+# ------------------------------
+.opencode
+.cursor/
+.claude/
+.windsurf/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+AGENTS.md
+CLAUDE.md
+# ------------------------------
+# Env / secrets
+# ------------------------------
+.env
+!.env.example
+configs/config.yaml
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# ------------------------------
+# Build outputs
+# ------------------------------
+dist/
+build/
+.next/
+.nuxt/
+.output/
+.vite/
+coverage/
+webapp-react/BASELINE.md
+web/dist/

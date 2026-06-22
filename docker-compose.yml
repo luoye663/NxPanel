@@ -1,0 +1,62 @@
+# NxPanel Docker Compose — 独享模式
+#
+# 单容器完整运行 nginx/openresty + agent + api，由 s6-overlay 统一管理。
+# 容器即一台受控的 nginx 主机。
+#
+# 使用方式：
+#   1. cp .env.example .env 并修改 NXPANEL_AGENT_TOKEN
+#   2. 选择变体启动：
+#        docker compose --profile nginx up -d
+#        docker compose --profile openresty up -d
+#      如需容器内 nginx 访问宿主机 127.0.0.1:PORT，使用 host 网络覆盖文件：
+#        docker compose -f docker-compose.yml -f docker-compose.host.yml --profile nginx up -d
+#   3. 首次登录入口会随机生成；如忘记路径，可执行：
+#        docker logs nxpanel 2>&1 | grep login_path
+#
+# 单进程操作（无需重启容器）：
+#   docker exec nxpanel s6-svc -r /run/service/nginx-service     # 重启 nginx
+#   docker exec nxpanel s6-svc -r /run/service/nxpanel-agent     # 重启 agent
+#   docker exec nxpanel s6-svc -r /run/service/nxpanel-api       # 重启 api
+#
+# 架构（默认 bridge 网络，ports 发布 18888/80/443）：
+#   ┌──────────────────────── container (nxpanel) ────────────────────────┐
+#   │  s6-overlay (PID1)                                                   │
+#   │    ├─ nginx-service    (root master → nginx/nobody workers)         │
+#   │    ├─ nxpanel-agent    (root, Unix Socket /run/nxpanel/agent.sock)  │
+#   │    └─ nxpanel-api      (非 root=nxpanel, :18888, TLS)               │
+#   └──────────────────────────────────────────────────────────────────────┘
+
+x-nxpanel-common: &nxpanel-common
+  container_name: nxpanel
+  restart: unless-stopped
+  ports:
+    # 面板 API/UI（TLS 自签证书，生产建议挂载正式证书或前置反代）
+    - "${PANEL_PORT:-18888}:18888"
+    # nginx 站点端口
+    - "${HTTP_PORT:-80}:80"
+    - "${HTTPS_PORT:-443}:443"
+  volumes:
+    # ── 状态（必须持久化，丢失即丢面板数据与站点配置）──
+    - ./data:/opt/nxpanel/data        # SQLite + 面板 TLS 证书 + 运行日志 + config.yaml（面板回写）
+    - ./nginx:/opt/nxpanel/nginx      # 站点配置 (conf.d/sites-enabled/ssl/backups) + nginx.conf（面板编辑）
+    - ./wwwroot:/www/wwwroot          # 网站文件根
+    - ./wwwlogs:/www/wwwlogs          # nginx 站点 access/error 日志
+    # ── 配置覆盖（可选；取消注释以挂载自定义 config.yaml）──
+    # 注意：默认 config.yaml 在 ./data/config.yaml（首次启动自动生成），此处覆盖会替代它
+    # - ./config.yaml:/opt/nxpanel/data/config.yaml:ro
+    # ── 主 nginx.conf 覆盖（可选；默认由 init 首次渲染到 ./nginx/nginx.conf，之后永久保留）──
+    # - ./nginx.conf:/opt/nxpanel/nginx/nginx.conf:ro
+  environment:
+    - NXPANEL_AGENT_TOKEN=${NXPANEL_AGENT_TOKEN:?必须在 .env 中设置 NXPANEL_AGENT_TOKEN}
+    - NXPANEL_LOG_LEVEL=${NXPANEL_LOG_LEVEL:-info}
+
+services:
+  nxpanel-nginx:
+    <<: *nxpanel-common
+    image: ${IMAGE_NS:-ghcr.io/luoye663/nxpanel}:nginx-${IMAGE_TAG:-latest}
+    profiles: ["nginx"]
+
+  nxpanel-openresty:
+    <<: *nxpanel-common
+    image: ${IMAGE_NS:-ghcr.io/luoye663/nxpanel}:openresty-${IMAGE_TAG:-latest}
+    profiles: ["openresty"]

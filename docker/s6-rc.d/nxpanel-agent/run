@@ -1,0 +1,11 @@
+#!/usr/bin/with-contenv /bin/sh
+set -e
+
+# nxpanel-agent —— root 权限代理进程
+#
+# 通过 Unix Socket 接收 API 调用，执行 nginx 特权操作。
+# 以 root 运行，socket 通过 socket_group=nxpanel 桥接给非 root 的 api。
+# with-contenv 确保继承 Docker ENV（NXPANEL_* 配置覆盖）。
+
+exec /usr/local/nxpanel/bin/nxpanel-agent \
+    -config /opt/nxpanel/data/config.yaml

@@ -1,0 +1,47 @@
+# .dockerignore — 缩小 docker build 上下文
+#
+# 排除一切构建无关文件，加速 build 并避免泄露本地状态。
+
+# VCS
+.git
+.gitignore
+.github
+
+# 构建产物（容器内重新构建）
+bin/
+release/
+web/dist/
+webapp-react/dist/
+webapp-react/node_modules/
+webapp-react/*.tsbuildinfo
+webapp/node_modules/
+webapp/dist/
+
+# 本地配置与数据（不带入镜像）
+configs/config.yaml
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 测试与脚本产物
+test-results/
+release/
+
+# 文档与杂项
+*.md
+docs/
+LICENSE
+!LICENSE
+Dockerfile*
+docker-compose*.yml
+.env
+.env.*
+!.env.example
+
+# 本地 IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp

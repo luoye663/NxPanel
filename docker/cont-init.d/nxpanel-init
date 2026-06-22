@@ -1,0 +1,87 @@
+#!/usr/bin/with-contenv /bin/sh
+set -e
+
+# nxpanel-init —— 容器启动前置初始化（cont-init 阶段，s6-rc 服务启动前运行）
+#
+# 持久化策略：
+#   config.yaml   → /opt/nxpanel/data/config.yaml   (data volume)
+#   nginx.conf    → /opt/nxpanel/nginx/nginx.conf   (nginx volume)
+#   templates/    → 镜像内置，不持久化（跟随版本更新）
+#   nginx.conf.tpl → 镜像内置，不持久化（跟随版本更新）
+#
+# 两者均「仅首次创建」，用户通过面板或手动修改的内容在容器重启后保留。
+
+DATA_DIR=/opt/nxpanel/data
+PANEL_DIR=/opt/nxpanel/nginx
+WWW_ROOT=/www/wwwroot
+WWW_LOGS=/www/wwwlogs
+WEB_USER="${NXPANEL_NGINX_WEB_USER:-nginx}"
+WEB_GROUP="${NXPANEL_NGINX_WEB_GROUP:-nginx}"
+ERROR_LOG_PATH="${NXPANEL_NGINX_ERROR_LOG_PATH:-${WWW_LOGS}/error.log}"
+ERROR_LOG_DIR="$(dirname "${ERROR_LOG_PATH}")"
+
+echo "[nxpanel-init] starting initialization"
+
+# ── 1. 确保目录存在 ──
+mkdir -p \
+  "${DATA_DIR}" \
+  "${PANEL_DIR}/conf.d" \
+  "${PANEL_DIR}/sites-enabled" \
+  "${PANEL_DIR}/ssl" \
+  "${PANEL_DIR}/site-backups" \
+  "${WWW_ROOT}" \
+  "${WWW_LOGS}" \
+  "${ERROR_LOG_DIR}" \
+  /var/log/nginx \
+  /run/nxpanel
+
+# ── 2. 属主修正 ──
+chown -R nxpanel:nxpanel "${DATA_DIR}" "${PANEL_DIR}"
+chown -R "${WEB_USER}:${WEB_GROUP}" "${WWW_LOGS}"
+chown -R "${WEB_USER}:${WEB_GROUP}" "${ERROR_LOG_DIR}" /var/log/nginx
+chmod 770 "${DATA_DIR}" "${PANEL_DIR}"
+chmod 750 "${WWW_ROOT}" "${WWW_LOGS}"
+
+# socket 目录：root 创建，nxpanel 组可访问
+chown root:nxpanel /run/nxpanel
+chmod 770 /run/nxpanel
+
+# ── 3. 初始化 config.yaml（仅首次） ──
+# 镜像内置 config.example.yaml 作为模板；用户后续修改（面板回写/手动编辑）持久化在 data volume 上
+CONFIG_FILE="${DATA_DIR}/config.yaml"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    echo "[nxpanel-init] creating ${CONFIG_FILE} from image default"
+    cp /usr/local/nxpanel/config/config.yaml "${CONFIG_FILE}"
+fi
+
+# ── 4. 初始化 nginx.conf（仅首次） ──
+# 从模板渲染到 nginx volume；用户后续通过面板「Nginx 管理」编辑的内容持久化
+NGINX_CONF="${PANEL_DIR}/nginx.conf"
+if [ ! -f "${NGINX_CONF}" ]; then
+    echo "[nxpanel-init] rendering ${NGINX_CONF} from template"
+    /usr/local/nxpanel/scripts/render-nginx-conf.sh "${NGINX_CONF}"
+else
+    echo "[nxpanel-init] ${NGINX_CONF} already exists, preserving user modifications"
+    if grep -q '^[[:space:]]*error_log[[:space:]]\+/var/log/nginx/error\.log[[:space:]]\+warn;' "${NGINX_CONF}"; then
+        backup="${NGINX_CONF}.bak.$(date +%Y%m%d%H%M%S)"
+        tmp="${NGINX_CONF}.nxpanel-tmp"
+        cp "${NGINX_CONF}" "${backup}"
+        awk -v repl="error_log ${ERROR_LOG_PATH} warn;" '
+            /^[[:space:]]*error_log[[:space:]]+\/var\/log\/nginx\/error\.log[[:space:]]+warn;/ { print repl; next }
+            { print }
+        ' "${NGINX_CONF}" > "${tmp}"
+        mv -f "${tmp}" "${NGINX_CONF}"
+        echo "[nxpanel-init] migrated nginx error_log to ${ERROR_LOG_PATH} (backup: ${backup})"
+    fi
+fi
+
+# ── 5. 同步 mime.types（每次启动，确保跟随镜像更新） ──
+# nginx 的 include mime.types 是相对路径，基于 conf 文件所在目录解析
+# nginx volume 上必须有此文件
+if [ -f /etc/nginx/mime.types ]; then
+    cp /etc/nginx/mime.types "${PANEL_DIR}/mime.types"
+elif [ -f /usr/local/openresty/nginx/conf/mime.types ]; then
+    cp /usr/local/openresty/nginx/conf/mime.types "${PANEL_DIR}/mime.types"
+fi
+
+echo "[nxpanel-init] initialization complete"
