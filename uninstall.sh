@@ -32,6 +32,30 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+has_tty() {
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_read() {
+    local prompt="$1"
+    local var_name="$2"
+    local read_opts="$3"
+
+    if has_tty; then
+        read $read_opts -p "$prompt" "$var_name" </dev/tty
+        return
+    fi
+
+    read $read_opts -p "$prompt" "$var_name"
+}
+
+ensure_interactive_input() {
+    if [ "$INTERACTIVE" = true ] && ! has_tty && [ ! -t 0 ]; then
+        log_warn "当前 stdin 不是终端且 /dev/tty 不可用，自动切换为非交互模式"
+        INTERACTIVE=false
+    fi
+}
+
 die() {
     log_error "$1"
     exit 1
@@ -52,7 +76,7 @@ confirm_yes() {
         suffix="[y/N]"
     fi
 
-    read -p "$prompt $suffix " -r
+    prompt_read "$prompt $suffix " REPLY "-r"
     echo
 
     if [ -z "$REPLY" ]; then
@@ -364,6 +388,7 @@ main() {
     fi
 
     parse_args "$@"
+    ensure_interactive_input
 
     echo -e "${YELLOW}即将卸载以下内容：${NC}"
     echo "  安装目录: $INSTALL_ROOT"

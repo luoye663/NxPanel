@@ -48,6 +48,51 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+has_tty() {
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_read() {
+    local prompt="$1"
+    local var_name="$2"
+    local read_opts="$3"
+
+    if has_tty; then
+        read $read_opts -p "$prompt" "$var_name" </dev/tty
+        return
+    fi
+
+    read $read_opts -p "$prompt" "$var_name"
+}
+
+ensure_interactive_input() {
+    if [ "$INTERACTIVE" = true ] && ! has_tty && [ ! -t 0 ]; then
+        log_warn "当前 stdin 不是终端且 /dev/tty 不可用，自动切换为非交互模式"
+        INTERACTIVE=false
+    fi
+}
+
+confirm_yes() {
+    local prompt="$1"
+    local default="${2:-n}"
+    local reply=""
+    local suffix="[y/N]"
+
+    if [ "$INTERACTIVE" != true ]; then
+        return 1
+    fi
+
+    [ "$default" = "y" ] && suffix="[Y/n]"
+    prompt_read "$prompt $suffix " reply "-r"
+    echo
+
+    if [ -z "$reply" ]; then
+        [ "$default" = "y" ] && return 0 || return 1
+    fi
+
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
 die() {
     log_error "$1"
     exit 1
@@ -238,7 +283,7 @@ check_dependencies() {
         echo ""
         echo "当前系统未检测到 Nginx 或 OpenResty。"
         echo "你可以现在安装 Web 服务器，也可以先继续安装 nxpanel，后续再自行安装并在面板中配置/检测。"
-        read -p "是否现在安装 Web 服务器？(y/n): " -n 1 -r
+        prompt_read "是否现在安装 Web 服务器？(y/n): " REPLY "-n 1 -r"
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             log_warn "跳过 Web 服务器安装，继续安装 nxpanel"
@@ -249,7 +294,7 @@ check_dependencies() {
         echo "  1) Nginx（推荐）"
         echo "  2) OpenResty"
         echo "  3) 取消"
-        read -p "请输入选项 (1-3): " -n 1 -r
+        prompt_read "请输入选项 (1-3): " REPLY "-n 1 -r"
         echo
         case $REPLY in
             1) install_args="--nginx" ;;
@@ -394,7 +439,7 @@ maybe_replace_nobody_web_user() {
 
     log_warn "检测到 Web 用户为 nobody:nobody。生产环境不建议让站点文件归属 nobody，建议切换为 www-data。"
     if [ "$INTERACTIVE" = true ]; then
-        read -p "是否切换 Web 用户为 www-data？(Y/n): " -n 1 -r reply
+        prompt_read "是否切换 Web 用户为 www-data？(Y/n): " reply "-n 1 -r"
         echo
         if [[ "$reply" =~ ^[Nn]$ ]]; then
             RESOLVED_WEB_USER="$web_user"
@@ -631,7 +676,7 @@ ensure_api_listen_available() {
         log_warn "占用进程: PID=${PORT_OWNER_PID:-未知}, 进程名=${PORT_OWNER_PROC:-未知}"
 
         if [ "$INTERACTIVE" = true ]; then
-            read -p "请输入新的 API 监听地址或端口（例如 127.0.0.1:18889 或 18889）: " -r new_listen
+            prompt_read "请输入新的 API 监听地址或端口（例如 127.0.0.1:18889 或 18889）: " new_listen "-r"
             if [ -z "$new_listen" ]; then
                 continue
             fi
@@ -731,7 +776,7 @@ generate_config() {
 
     if [ -f "$config_file" ]; then
         if [ "$INTERACTIVE" = true ]; then
-            read -p "配置文件已存在，是否覆盖？(y/n): " -n 1 -r
+            prompt_read "配置文件已存在，是否覆盖？(y/n): " REPLY "-n 1 -r"
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log_warn "跳过配置文件生成"
@@ -1100,7 +1145,7 @@ parse_args() {
                 echo "安装选项:"
                 echo "  --non-interactive     非交互式模式"
                 echo "  --token TOKEN         指定 Agent Token"
-                echo "  --api-listen ADDR     API 监听地址 (默认: 127.0.0.1:8888)"
+                echo "  --api-listen ADDR     API 监听地址 (默认: 0.0.0.0:18888)"
                 echo "  --install-dir DIR     安装根目录 (默认: /usr/local/nxpanel)"
                 echo "  --data-dir DIR        数据目录 (默认: /opt/nxpanel)"
                 echo "  --install-nginx       未检测到 Web 服务器时安装 Nginx（非交互模式需显式指定）"
@@ -1142,6 +1187,7 @@ main() {
     fi
 
     parse_args "$@"
+    ensure_interactive_input
 
     detect_os
     log_info "检测到操作系统: $OS $VERSION"
@@ -1159,9 +1205,7 @@ main() {
         echo "  API 监听: $API_LISTEN"
         echo "  源目录:   $SOURCE_DIR"
         echo ""
-        read -p "是否继续？(y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if ! confirm_yes "是否继续？" "n"; then
             echo "安装已取消"
             exit 0
         fi

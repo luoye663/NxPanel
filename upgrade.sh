@@ -44,6 +44,32 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $1"; }
 
+has_tty() {
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_read() {
+    local prompt="$1"
+    local var_name="$2"
+    local read_opts="$3"
+
+    if has_tty; then
+        read $read_opts -p "$prompt" "$var_name" </dev/tty
+        return
+    fi
+
+    read $read_opts -p "$prompt" "$var_name"
+}
+
+confirm_yes() {
+    local prompt="$1"
+    local reply=""
+
+    prompt_read "$prompt (y/n): " reply "-n 1 -r"
+    echo
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
 die() {
     log_error "$1"
     cleanup_temp
@@ -782,9 +808,7 @@ do_upgrade() {
     echo "  目标版本: $TARGET_VERSION"
     echo "  安装目录: $INSTALL_ROOT"
     echo ""
-    read -p "是否继续升级？(y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    if ! confirm_yes "是否继续升级？"; then
         cleanup_temp
         echo "升级已取消"
         exit 0
@@ -890,9 +914,7 @@ do_rollback() {
     local backup_name=$(basename "$backup_path")
     log_info "将回滚到备份: $backup_name"
     
-    read -p "是否继续？(y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    if ! confirm_yes "是否继续？"; then
         echo "回滚已取消"
         exit 0
     fi

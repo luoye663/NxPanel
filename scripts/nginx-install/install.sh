@@ -48,6 +48,30 @@ WEB_USER=""
 WEB_GROUP=""
 OPENRESTY=false         # 兼容旧输出字段
 
+has_tty() {
+    [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+prompt_read() {
+    local prompt="$1"
+    local var_name="$2"
+    local read_opts="$3"
+
+    if has_tty; then
+        read $read_opts -p "$prompt" "$var_name" </dev/tty
+        return
+    fi
+
+    read $read_opts -p "$prompt" "$var_name"
+}
+
+ensure_interactive_input() {
+    if [ "$INTERACTIVE" = true ] && ! has_tty && [ ! -t 0 ]; then
+        log_warn "当前 stdin 不是终端且 /dev/tty 不可用，自动切换为非交互模式"
+        INTERACTIVE=false
+    fi
+}
+
 # ============================================================
 # 参数解析
 # ============================================================
@@ -131,7 +155,7 @@ check_existing_runtime() {
     log_warn "已检测到 ${RUNTIME_ID}: $existing_version"
 
     if [ "$INTERACTIVE" = true ]; then
-        read -p "是否继续安装（将覆盖现有 ${RUNTIME_ID}）？(y/n): " -n 1 -r
+        prompt_read "是否继续安装（将覆盖现有 ${RUNTIME_ID}）？(y/n): " REPLY "-n 1 -r"
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             log_info "安装已取消"
@@ -158,7 +182,7 @@ choose_runtime() {
         echo "  2) OpenResty（来自 openresty.org 官方仓库）"
         echo "  3) 取消安装"
         echo ""
-        read -p "请输入选项 (1-3): " -n 1 -r
+        prompt_read "请输入选项 (1-3): " REPLY "-n 1 -r"
         echo
         case "$REPLY" in
             1) RUNTIME="nginx" ;;
@@ -392,6 +416,7 @@ main() {
     echo ""
 
     parse_args "$@"
+    ensure_interactive_input
     check_root
     detect_os
     detect_systemd
