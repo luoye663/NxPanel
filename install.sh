@@ -1067,9 +1067,9 @@ show_completion() {
     validate_login_path "$login_path" || login_path=""
     local api_port=""
     api_port=$(extract_listen_port "$API_LISTEN" || true)
-    echo "访问地址: https://${api_port:-18888}:/$login_path"
+    echo "访问地址: https://IP:${api_port:-18888}/$login_path"
     echo "TLS 证书: $DATA_DIR/data/tls/api.crt（自签名，浏览器会显示安全警告）"
-    echo "HTTP→HTTPS 重定向: :${api_port:-18888} → https://$API_LISTEN$login_path"
+    echo "HTTP→HTTPS 重定向: :${api_port:-18888} → https://IP:${api_port:-18888}/$login_path"
     echo ""
     echo "常用命令："
     echo "  查看日志: journalctl -u nxpanel-api -f"
