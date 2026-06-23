@@ -210,6 +210,14 @@ docker compose --profile nginx up -d
 docker compose --profile openresty up -d
 ```
 
+#### 卸载命令
+
+```bash
+docker compose --profile nginx down
+# 或
+docker compose --profile openresty down
+```
+
 #### 想让Nginx访问宿主机服务怎么办？
 
 默认 Docker 部署使用 bridge 网络。此时容器内 Nginx/OpenResty 的 `127.0.0.1` 指向容器自身；反向代理其他容器应使用同一 Docker network 下的服务名，例如 `http://app:8080`。
@@ -218,6 +226,7 @@ docker compose --profile openresty up -d
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/luoye663/nxpanel/main/docker-compose.host.yml
+
 docker compose -f docker-compose.yml -f docker-compose.host.yml --profile nginx up -d
 ```
 
@@ -245,6 +254,7 @@ https://服务器IP:18888/随机入口路径
 
 适合接入已有 Nginx/OpenResty，或在已经完成 Nginx 安装后部署 NxPanel。在线安装会从 GitHub Releases 下载 `nxpanel-linux-amd64.tar.gz`。
 
+
 ```bash
 # 安装脚本
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/install.sh | sudo bash
@@ -252,6 +262,10 @@ curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/install.sh | 
 # 如需卸载,执行
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh | sudo bash
 ```
+
+> 如果系统中已有 Nginx/OpenResty，那么在安装完 NxPanel 后，需要到 Nginx 管理页面，依次点击 检测 Nginx、安装 Include 入口 这2个按钮。
+
+![图片.png](https://img.326333.xyz/i/f36433dFKiyMXiazqroHpkYAn.webp)
 
 也可以下载 release 后在解压目录执行：
 
