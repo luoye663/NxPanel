@@ -259,6 +259,9 @@ https://服务器IP:18888/随机入口路径
 # 安装脚本
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/install.sh | sudo bash
 
+# 升级脚本
+curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/upgrade.sh | sudo bash
+
 # 如需卸载,执行
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh | sudo bash
 ```
