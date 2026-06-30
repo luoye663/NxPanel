@@ -29,7 +29,7 @@ INSTALL_ROOT="/usr/local/nxpanel"
 CONFIG_DIR="$INSTALL_ROOT/configs"
 BACKUP_DIR="$INSTALL_ROOT/backup"
 MAX_BACKUPS=3
-GITHUB_REPO="nxpanel/nxpanel"
+GITHUB_REPO="luoye663/NxPanel"
 MIN_UPGRADE_VERSION="0.0.1"
 
 # 运行时变量
