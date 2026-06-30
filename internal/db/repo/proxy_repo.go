@@ -35,12 +35,12 @@ func (r *ProxyRepo) Create(p *SiteProxy) error {
 		`INSERT INTO site_proxy (
 			id, site_id, name, enabled, location_path, upstream_url, host_header,
 			websocket_enabled, connect_timeout, send_timeout, read_timeout,
-			cache_enabled, cache_type, cache_time,
+			cache_enabled, cache_type, cache_time, auth_enabled, auth_htpasswd_path,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.SiteID, p.Name, enabledInt, p.LocationPath, p.UpstreamURL, p.HostHeader,
 		wsInt, p.ConnectTimeout, p.SendTimeout, p.ReadTimeout,
-		cacheEnabledInt, p.CacheType, p.CacheTime,
+		cacheEnabledInt, p.CacheType, p.CacheTime, boolToInt(p.AuthEnabled), p.AuthHtpasswdPath,
 		p.CreatedAt, p.UpdatedAt,
 	)
 	if err != nil {
@@ -52,19 +52,19 @@ func (r *ProxyRepo) Create(p *SiteProxy) error {
 // GetByID 根据 id 获取反向代理配置
 func (r *ProxyRepo) GetByID(id string) (*SiteProxy, error) {
 	p := &SiteProxy{}
-	var enabledInt, wsInt, cacheEnabledInt int
+	var enabledInt, wsInt, cacheEnabledInt, authEnabledInt int
 
 	err := r.db.QueryRow(
 		`SELECT id, site_id, name, enabled, location_path, upstream_url, host_header,
 			websocket_enabled, connect_timeout, send_timeout, read_timeout,
-			cache_enabled, cache_type, cache_time,
+			cache_enabled, cache_type, cache_time, auth_enabled, auth_htpasswd_path,
 			created_at, updated_at
 		FROM site_proxy WHERE id = ?`,
 		id,
 	).Scan(
 		&p.ID, &p.SiteID, &p.Name, &enabledInt, &p.LocationPath, &p.UpstreamURL, &p.HostHeader,
 		&wsInt, &p.ConnectTimeout, &p.SendTimeout, &p.ReadTimeout,
-		&cacheEnabledInt, &p.CacheType, &p.CacheTime,
+		&cacheEnabledInt, &p.CacheType, &p.CacheTime, &authEnabledInt, &p.AuthHtpasswdPath,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -77,6 +77,7 @@ func (r *ProxyRepo) GetByID(id string) (*SiteProxy, error) {
 	p.Enabled = enabledInt == 1
 	p.WebSocketEnabled = wsInt == 1
 	p.CacheEnabled = cacheEnabledInt == 1
+	p.AuthEnabled = authEnabledInt == 1
 	return p, nil
 }
 
@@ -85,7 +86,7 @@ func (r *ProxyRepo) ListBySiteID(siteID string) ([]*SiteProxy, error) {
 	rows, err := r.db.Query(
 		`SELECT id, site_id, name, enabled, location_path, upstream_url, host_header,
 			websocket_enabled, connect_timeout, send_timeout, read_timeout,
-			cache_enabled, cache_type, cache_time,
+			cache_enabled, cache_type, cache_time, auth_enabled, auth_htpasswd_path,
 			created_at, updated_at
 		FROM site_proxy WHERE site_id = ? ORDER BY location_path`,
 		siteID,
@@ -98,11 +99,11 @@ func (r *ProxyRepo) ListBySiteID(siteID string) ([]*SiteProxy, error) {
 	var proxies []*SiteProxy
 	for rows.Next() {
 		p := &SiteProxy{}
-		var enabledInt, wsInt, cacheEnabledInt int
+		var enabledInt, wsInt, cacheEnabledInt, authEnabledInt int
 		if err := rows.Scan(
 			&p.ID, &p.SiteID, &p.Name, &enabledInt, &p.LocationPath, &p.UpstreamURL, &p.HostHeader,
 			&wsInt, &p.ConnectTimeout, &p.SendTimeout, &p.ReadTimeout,
-			&cacheEnabledInt, &p.CacheType, &p.CacheTime,
+			&cacheEnabledInt, &p.CacheType, &p.CacheTime, &authEnabledInt, &p.AuthHtpasswdPath,
 			&p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("扫描反代配置行失败: %w", err)
@@ -110,6 +111,7 @@ func (r *ProxyRepo) ListBySiteID(siteID string) ([]*SiteProxy, error) {
 		p.Enabled = enabledInt == 1
 		p.WebSocketEnabled = wsInt == 1
 		p.CacheEnabled = cacheEnabledInt == 1
+		p.AuthEnabled = authEnabledInt == 1
 		proxies = append(proxies, p)
 	}
 	return proxies, nil
@@ -128,12 +130,12 @@ func (r *ProxyRepo) Update(p *SiteProxy) error {
 		`UPDATE site_proxy SET
 			name = ?, enabled = ?, location_path = ?, upstream_url = ?, host_header = ?,
 			websocket_enabled = ?, connect_timeout = ?, send_timeout = ?, read_timeout = ?,
-			cache_enabled = ?, cache_type = ?, cache_time = ?,
+			cache_enabled = ?, cache_type = ?, cache_time = ?, auth_enabled = ?, auth_htpasswd_path = ?,
 			updated_at = ?
 		WHERE id = ?`,
 		p.Name, enabledInt, p.LocationPath, p.UpstreamURL, p.HostHeader,
 		wsInt, p.ConnectTimeout, p.SendTimeout, p.ReadTimeout,
-		cacheEnabledInt, p.CacheType, p.CacheTime,
+		cacheEnabledInt, p.CacheType, p.CacheTime, boolToInt(p.AuthEnabled), p.AuthHtpasswdPath,
 		p.UpdatedAt,
 		p.ID,
 	)
@@ -141,6 +143,61 @@ func (r *ProxyRepo) Update(p *SiteProxy) error {
 		return fmt.Errorf("更新反代配置失败 id=%s: %w", p.ID, err)
 	}
 	return nil
+}
+
+func (r *ProxyRepo) GetAccountIDs(proxyID string) ([]string, error) {
+	rows, err := r.db.Query(`SELECT account_id FROM site_proxy_auth_accounts WHERE proxy_id = ? ORDER BY account_id`, proxyID)
+	if err != nil {
+		return nil, fmt.Errorf("查询反代访问账户失败 proxy_id=%s: %w", proxyID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (r *ProxyRepo) SetAccountIDs(proxyID string, accountIDs []string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM site_proxy_auth_accounts WHERE proxy_id = ?`, proxyID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("清理反代访问账户失败: %w", err)
+	}
+	for _, accountID := range accountIDs {
+		if _, err := tx.Exec(`INSERT INTO site_proxy_auth_accounts (proxy_id, account_id) VALUES (?, ?)`, proxyID, accountID); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("保存反代访问账户失败: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交反代访问账户失败: %w", err)
+	}
+	return nil
+}
+
+func (r *ProxyRepo) ListProxyIDsByAccountID(accountID string) ([]string, error) {
+	rows, err := r.db.Query(`SELECT proxy_id FROM site_proxy_auth_accounts WHERE account_id = ?`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("查询账户关联反代失败 account_id=%s: %w", accountID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // Delete 删除反向代理配置

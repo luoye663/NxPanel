@@ -97,6 +97,61 @@ func (r *AuthRuleRepo) Delete(id string) error {
 	return nil
 }
 
+func (r *AuthRuleRepo) GetAccountIDs(ruleID string) ([]string, error) {
+	rows, err := r.db.Query(`SELECT account_id FROM site_auth_rule_accounts WHERE rule_id = ? ORDER BY account_id`, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("查询加密访问规则账户失败 rule_id=%s: %w", ruleID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (r *AuthRuleRepo) SetAccountIDs(ruleID string, accountIDs []string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM site_auth_rule_accounts WHERE rule_id = ?`, ruleID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("清理加密访问规则账户失败: %w", err)
+	}
+	for _, accountID := range accountIDs {
+		if _, err := tx.Exec(`INSERT INTO site_auth_rule_accounts (rule_id, account_id) VALUES (?, ?)`, ruleID, accountID); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("保存加密访问规则账户失败: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交加密访问规则账户失败: %w", err)
+	}
+	return nil
+}
+
+func (r *AuthRuleRepo) ListRuleIDsByAccountID(accountID string) ([]string, error) {
+	rows, err := r.db.Query(`SELECT rule_id FROM site_auth_rule_accounts WHERE account_id = ?`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("查询账户关联规则失败 account_id=%s: %w", accountID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 type DenyRuleRepo struct {
 	db *sql.DB
 }

@@ -59,10 +59,11 @@ func DefaultNginxTimeouts() NginxTimeouts {
 //
 // Bin 和 ConfPath 在 Detect 后会被更新，因此需要用互斥锁保护。
 type NginxExecutor struct {
-	mu       sync.Mutex
-	bin      string
-	confPath string
-	timeouts NginxTimeouts
+	mu            sync.Mutex
+	bin           string
+	confPath      string
+	timeouts      NginxTimeouts
+	systemctlPath string
 }
 
 // NewNginxExecutor 创建 Nginx 执行器
@@ -163,10 +164,55 @@ func (e *NginxExecutor) Start(ctx context.Context) (CmdResult, error) {
 		return CmdResult{}, fmt.Errorf("nginx 二进制路径未设置，请先执行 detect")
 	}
 
+	if result, err := e.startViaSystemd(ctx, bin); err == nil {
+		return result, nil
+	} else {
+		slog.Warn("systemd 启动 nginx 失败，回退到直接执行 nginx", "error", err, "stderr", result.Stderr)
+	}
+
 	if confPath != "" {
 		return e.run(ctx, bin, "-c", confPath)
 	}
 	return e.run(ctx, bin)
+}
+
+func (e *NginxExecutor) startViaSystemd(ctx context.Context, bin string) (CmdResult, error) {
+	systemctlPath := e.systemctlPath
+	if systemctlPath == "" {
+		var err error
+		systemctlPath, err = exec.LookPath("systemctl")
+		if err != nil {
+			return CmdResult{}, err
+		}
+	}
+	if systemctlPath == "none" {
+		return CmdResult{}, fmt.Errorf("systemctl disabled")
+	}
+	if _, err := os.Stat(systemctlPath); err != nil {
+		return CmdResult{}, err
+	}
+
+	services := []string{"nginx", "openresty"}
+	if strings.Contains(strings.ToLower(bin), "openresty") {
+		services = []string{"openresty", "nginx"}
+	}
+
+	var lastResult CmdResult
+	var lastErr error
+	for _, service := range services {
+		result, err := e.run(ctx, systemctlPath, "start", service)
+		if err == nil {
+			slog.Info("已通过 systemd 启动 nginx", "service", service)
+			return result, nil
+		}
+		lastResult = result
+		lastErr = err
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("没有可用的 nginx systemd 服务")
+	}
+	return lastResult, lastErr
 }
 
 // Dump 执行 nginx -T 输出全部配置（用于旧站扫描）

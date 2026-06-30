@@ -6,8 +6,20 @@ export interface AuthRule {
   name: string
   path: string
   username: string
+  account_ids: string[]
+  accounts: AuthAccount[]
   enabled: boolean
   sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AuthAccount {
+  id: string
+  scope: 'global' | 'site'
+  site_id?: string
+  username: string
+  enabled: boolean
   created_at: string
   updated_at: string
 }
@@ -27,6 +39,13 @@ export interface DenyRule {
 export interface AuthRuleRequest {
   name?: string
   path?: string
+  account_ids?: string[]
+  enabled?: boolean
+}
+
+export interface AuthAccountRequest {
+  scope?: 'global' | 'site'
+  site_id?: string
   username?: string
   password?: string
   enabled?: boolean
@@ -82,11 +101,27 @@ export interface HotlinkRuleRequest {
 }
 
 // 访问限制规则写入独立 include 文件，前端只维护结构化表单数据。
+export function listAuthAccounts(siteId: string): Promise<AuthAccount[]> {
+  return get(`/sites/${siteId}/auth-accounts`)
+}
+
+export function createAuthAccount(siteId: string, data: Required<Pick<AuthAccountRequest, 'scope' | 'username' | 'password'>> & { site_id?: string; enabled?: boolean }): Promise<AuthAccount> {
+  return post(`/sites/${siteId}/auth-accounts`, data)
+}
+
+export function updateAuthAccount(siteId: string, accountId: string, data: AuthAccountRequest): Promise<AuthAccount> {
+  return put(`/sites/${siteId}/auth-accounts/${accountId}`, data)
+}
+
+export function deleteAuthAccount(siteId: string, accountId: string): Promise<{ deleted: boolean }> {
+  return del(`/sites/${siteId}/auth-accounts/${accountId}`)
+}
+
 export function listAuthRules(siteId: string): Promise<AuthRule[]> {
   return get(`/sites/${siteId}/auth-rules`)
 }
 
-export function createAuthRule(siteId: string, data: Required<Pick<AuthRuleRequest, 'name' | 'path' | 'username' | 'password'>> & { enabled?: boolean }): Promise<AuthRule> {
+export function createAuthRule(siteId: string, data: Required<Pick<AuthRuleRequest, 'name' | 'path' | 'account_ids'>> & { enabled?: boolean }): Promise<AuthRule> {
   return post(`/sites/${siteId}/auth-rules`, data)
 }
 

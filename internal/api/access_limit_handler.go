@@ -11,6 +11,71 @@ import (
 	"github.com/luoye663/nxpanel/internal/app"
 )
 
+func (s *Server) handleAuthAccountList(w http.ResponseWriter, r *http.Request) {
+	siteID := chi.URLParam(r, "site_id")
+	if siteID == "" {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "site_id 不能为空", nil)
+		return
+	}
+	result, err := s.accessLimitSvc.ListAuthAccounts(siteID)
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+
+func (s *Server) handleAuthAccountCreate(w http.ResponseWriter, r *http.Request) {
+	siteID := chi.URLParam(r, "site_id")
+	if siteID == "" {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "site_id 不能为空", nil)
+		return
+	}
+	var req accesslimit.CreateAuthAccountRequest
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.accessLimitSvc.CreateAuthAccount(r.Context(), siteID, &req, middleware.GetRequestID(r.Context()))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteCreated(w, r, result)
+}
+
+func (s *Server) handleAuthAccountUpdate(w http.ResponseWriter, r *http.Request) {
+	siteID := chi.URLParam(r, "site_id")
+	accountID := chi.URLParam(r, "account_id")
+	if siteID == "" || accountID == "" {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "参数不能为空", nil)
+		return
+	}
+	var req accesslimit.UpdateAuthAccountRequest
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.accessLimitSvc.UpdateAuthAccount(r.Context(), siteID, accountID, &req, middleware.GetRequestID(r.Context()))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+
+func (s *Server) handleAuthAccountDelete(w http.ResponseWriter, r *http.Request) {
+	siteID := chi.URLParam(r, "site_id")
+	accountID := chi.URLParam(r, "account_id")
+	if siteID == "" || accountID == "" {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "参数不能为空", nil)
+		return
+	}
+	if err := s.accessLimitSvc.DeleteAuthAccount(r.Context(), siteID, accountID, middleware.GetRequestID(r.Context())); err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, map[string]any{"deleted": true})
+}
+
 func (s *Server) handleAuthRuleList(w http.ResponseWriter, r *http.Request) {
 	siteID := chi.URLParam(r, "site_id")
 	if siteID == "" {

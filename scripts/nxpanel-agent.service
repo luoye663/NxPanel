@@ -30,6 +30,7 @@ ExecStartPre=/usr/bin/mkdir -p /run/nxpanel
 
 # 优雅关闭
 KillSignal=SIGTERM
+KillMode=process
 TimeoutStopSec=15
 
 # Socket 目录运行时配置

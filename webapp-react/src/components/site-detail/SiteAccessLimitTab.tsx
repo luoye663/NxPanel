@@ -1,8 +1,8 @@
-import { ActionIcon, Alert, Badge, Button, Group, Modal, PasswordInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea, Tooltip } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Group, Modal, Select, Stack, Switch, Tabs, Text, TextInput, Textarea, Tooltip } from '@mantine/core'
 import { useForm } from '@mantine/form'
 import { useDisclosure } from '@mantine/hooks'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { IconBan, IconCheck, IconEdit, IconPlus, IconTrash } from '@tabler/icons-react'
+import { IconBan, IconCheck, IconEdit, IconPlus, IconTrash, IconUsers } from '@tabler/icons-react'
 import type { MRT_ColumnDef } from 'mantine-react-table'
 import { useEffect, useState } from 'react'
 import {
@@ -32,6 +32,7 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { MonoText } from '@/components/common/MonoText'
 import { SectionCard } from '@/components/common/SectionCard'
 import { DataTable } from '@/components/tables/DataTable'
+import { AuthAccountManager, AuthAccountSelector, authAccountKeys } from './AuthAccountManager'
 import { confirmDanger } from '@/utils/confirm'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
@@ -45,8 +46,7 @@ interface SiteAccessLimitTabProps {
 interface AuthFormValues {
   name: string
   path: string
-  username: string
-  password: string
+  account_ids: string[]
 }
 
 interface DenyFormValues {
@@ -71,7 +71,7 @@ interface HotlinkFormValues {
 
 type AccessSubTab = 'auth' | 'deny' | 'ip-limit' | 'hotlink'
 
-const defaultAuthForm: AuthFormValues = { name: '', path: '/', username: '', password: '' }
+const defaultAuthForm: AuthFormValues = { name: '', path: '/', account_ids: [] }
 const defaultDenyForm: DenyFormValues = { name: '', extension_pattern: '', path_pattern: '' }
 const defaultIPLimitForm: IPLimitFormValues = { name: '', ruleType: 'allow', ipsText: '' }
 const defaultHotlinkForm: HotlinkFormValues = { name: '', extensionsText: 'jpg, jpeg, png, gif, webp', referersText: 'server_names', allow_empty_referer: true, block_status: '403' }
@@ -80,6 +80,7 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<AccessSubTab>(initialTab)
   const [authOpened, authHandlers] = useDisclosure(false)
+  const [accountManagerOpened, accountManagerHandlers] = useDisclosure(false)
   const [denyOpened, denyHandlers] = useDisclosure(false)
   const [ipLimitOpened, ipLimitHandlers] = useDisclosure(false)
   const [hotlinkOpened, hotlinkHandlers] = useDisclosure(false)
@@ -97,8 +98,8 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
   const hotlinkQuery = useQuery({ queryKey: hotlinkQueryKey, queryFn: () => listHotlinkRules(site.id), enabled: activeTab === 'hotlink' })
   const authSaveMutation = useMutation({
     mutationFn: (values: AuthFormValues) => editingAuthRule
-      ? updateAuthRule(site.id, editingAuthRule.id, { name: values.name, path: values.path, username: values.username, password: values.password || undefined })
-      : createAuthRule(site.id, { name: values.name, path: values.path, username: values.username, password: values.password }),
+      ? updateAuthRule(site.id, editingAuthRule.id, { name: values.name, path: values.path, account_ids: values.account_ids })
+      : createAuthRule(site.id, { name: values.name, path: values.path, account_ids: values.account_ids }),
   })
   const denySaveMutation = useMutation({
     mutationFn: (values: DenyFormValues) => editingDenyRule
@@ -122,7 +123,7 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
       return editingHotlinkRule ? updateHotlinkRule(site.id, editingHotlinkRule.id, data) : createHotlinkRule(site.id, data)
     },
   })
-  const authToggleMutation = useMutation({ mutationFn: (rule: AuthRule) => updateAuthRule(site.id, rule.id, { enabled: !rule.enabled }) })
+  const authToggleMutation = useMutation({ mutationFn: (rule: AuthRule) => updateAuthRule(site.id, rule.id, { enabled: !rule.enabled, account_ids: rule.account_ids || [] }) })
   const denyToggleMutation = useMutation({ mutationFn: (rule: DenyRule) => updateDenyRule(site.id, rule.id, { enabled: !rule.enabled }) })
   const hotlinkToggleMutation = useMutation({ mutationFn: (rule: HotlinkRule) => updateHotlinkRule(site.id, rule.id, { enabled: !rule.enabled }) })
   const authDeleteMutation = useMutation({ mutationFn: (ruleId: string) => deleteAuthRule(site.id, ruleId) })
@@ -134,8 +135,7 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
     validate: {
       name: (value) => value.trim() ? null : '请填写名称',
       path: (value) => value.trim() ? null : '请填写路径',
-      username: (value) => value.trim() ? null : '请填写用户名',
-      password: (value) => editingAuthRule || value ? null : '请填写密码',
+      account_ids: (value) => value.length > 0 ? null : '请选择至少一个账户',
     },
   })
   const denyForm = useForm<DenyFormValues>({
@@ -168,7 +168,7 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
   const authColumns: MRT_ColumnDef<AuthRule>[] = [
     { accessorKey: 'name', header: '名称', size: 140 },
     { accessorKey: 'path', header: '路径', size: 140, Cell: ({ cell }) => <MonoText value={cell.getValue<string>()} maxWidth={160} /> },
-    { accessorKey: 'username', header: '用户名', size: 120 },
+    { accessorKey: 'accounts', header: '账户', size: 120, Cell: ({ row }) => <Text size="sm">{row.original.accounts?.length || row.original.account_ids?.length || 0} 个</Text> },
     { accessorKey: 'enabled', header: '状态', size: 90, Cell: ({ row }) => <Badge color={row.original.enabled ? 'green' : 'gray'} variant="light">{row.original.enabled ? '启用' : '禁用'}</Badge> },
   ]
   const denyColumns: MRT_ColumnDef<DenyRule>[] = [
@@ -187,7 +187,7 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
 
   function openAuthDialog(rule?: AuthRule) {
     setEditingAuthRule(rule || null)
-    authForm.setValues(rule ? { name: rule.name, path: rule.path, username: rule.username, password: '' } : defaultAuthForm)
+    authForm.setValues(rule ? { name: rule.name, path: rule.path, account_ids: rule.account_ids || [] } : defaultAuthForm)
     authForm.clearErrors()
     authHandlers.open()
   }
@@ -221,10 +221,11 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
 
   async function saveAuth(values: AuthFormValues) {
     try {
-      await authSaveMutation.mutateAsync({ name: values.name.trim(), path: values.path.trim(), username: values.username.trim(), password: values.password })
+      await authSaveMutation.mutateAsync({ name: values.name.trim(), path: values.path.trim(), account_ids: values.account_ids })
       notifySuccess({ message: editingAuthRule ? '规则已更新' : '规则已创建' })
       authHandlers.close()
       await queryClient.invalidateQueries({ queryKey: authQueryKey })
+      await queryClient.invalidateQueries({ queryKey: authAccountKeys.list(site.id) })
     } catch (error) {
       showErrorModal(error, editingAuthRule ? '保存加密访问规则失败' : '创建加密访问规则失败')
     }
@@ -374,12 +375,15 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
           <Tabs.Panel value="auth">
             <Stack gap="md">
               {authQuery.isError ? <ErrorAlert error={authQuery.error} title="加载加密访问规则失败" /> : null}
+              <Group gap="xs">
+                <Button leftSection={<IconPlus size={16} />} onClick={() => openAuthDialog()}>新增规则</Button>
+                <Button variant="default" leftSection={<IconUsers size={16} />} onClick={accountManagerHandlers.open}>账户管理</Button>
+              </Group>
               <DataTable
                 columns={authColumns}
                 data={authQuery.data || []}
                 loading={authQuery.isLoading || authQuery.isFetching}
                 emptyText="暂无加密访问规则"
-                toolbarActions={<Button leftSection={<IconPlus size={16} />} onClick={() => openAuthDialog()}>新增规则</Button>}
                 renderRowActions={({ row }) => (
                   <Group gap={4} wrap="nowrap">
                     <Tooltip label="编辑"><ActionIcon variant="subtle" onClick={() => openAuthDialog(row.original)}><IconEdit size={16} /></ActionIcon></Tooltip>
@@ -394,12 +398,14 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
           <Tabs.Panel value="deny">
             <Stack gap="md">
               {denyQuery.isError ? <ErrorAlert error={denyQuery.error} title="加载禁止访问规则失败" /> : null}
+              <Group gap="xs">
+                <Button leftSection={<IconPlus size={16} />} onClick={() => openDenyDialog()}>新增规则</Button>
+              </Group>
               <DataTable
                 columns={denyColumns}
                 data={denyQuery.data || []}
                 loading={denyQuery.isLoading || denyQuery.isFetching}
                 emptyText="暂无禁止访问规则"
-                toolbarActions={<Button leftSection={<IconPlus size={16} />} onClick={() => openDenyDialog()}>新增规则</Button>}
                 renderRowActions={({ row }) => (
                   <Group gap={4} wrap="nowrap">
                     <Tooltip label="编辑"><ActionIcon variant="subtle" onClick={() => openDenyDialog(row.original)}><IconEdit size={16} /></ActionIcon></Tooltip>
@@ -415,6 +421,9 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
             <Stack gap="md">
               {ipLimitQuery.isError ? <ErrorAlert error={ipLimitQuery.error} title="加载 IP 限制失败" /> : null}
               <Alert color="orange">这是站点级限制，会作用于整个 `server`。黑名单优先，白名单未命中的请求会直接被拒绝，不会默认放行 ACME。</Alert>
+              <Group gap="xs">
+                <Button leftSection={<IconPlus size={16} />} onClick={() => openIPLimitDialog()}>新增限制</Button>
+              </Group>
               <DataTable
                 columns={[
                   { accessorKey: 'name', header: '名称', size: 140 },
@@ -425,7 +434,6 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
                 data={ipLimitQuery.data || []}
                 loading={ipLimitQuery.isLoading || ipLimitQuery.isFetching}
                 emptyText="暂无 IP 限制"
-                toolbarActions={<Button leftSection={<IconPlus size={16} />} onClick={() => openIPLimitDialog()}>新增限制</Button>}
                 renderRowActions={({ row }) => (
                   <Group gap={4} wrap="nowrap">
                     <Tooltip label="编辑"><ActionIcon variant="subtle" onClick={() => openIPLimitDialog(row.original)}><IconEdit size={16} /></ActionIcon></Tooltip>
@@ -464,12 +472,17 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
             <Stack gap="md">
               <TextInput label="名称" placeholder="如：后台管理" {...authForm.getInputProps('name')} />
               <TextInput label="路径" placeholder="/admin" {...authForm.getInputProps('path')} />
-              <TextInput label="用户名" placeholder="admin" {...authForm.getInputProps('username')} />
-              <PasswordInput label={editingAuthRule ? '新密码' : '密码'} placeholder={editingAuthRule ? '留空则不修改' : '请输入密码'} {...authForm.getInputProps('password')} />
+              <Stack gap="xs">
+                <Group justify="space-between"><Text size="sm" fw={500}>账户</Text><Button size="xs" variant="subtle" leftSection={<IconUsers size={14} />} onClick={accountManagerHandlers.open}>账户管理</Button></Group>
+                <AuthAccountSelector siteId={site.id} value={authForm.values.account_ids} onChange={(value) => authForm.setFieldValue('account_ids', value)} />
+                {authForm.errors.account_ids ? <Text size="xs" c="red">{authForm.errors.account_ids}</Text> : null}
+              </Stack>
               <Group justify="flex-end"><Button variant="default" onClick={authHandlers.close}>取消</Button><Button type="submit" loading={authSaveMutation.isPending}>保存</Button></Group>
             </Stack>
           </form>
         </Modal>
+
+        <AuthAccountManager siteId={site.id} opened={accountManagerOpened} onClose={accountManagerHandlers.close} />
 
         <Modal opened={denyOpened} onClose={denyHandlers.close} title={editingDenyRule ? '编辑禁止访问规则' : '新增禁止访问规则'} size="md" closeOnClickOutside={false} centered>
           <form onSubmit={denyForm.onSubmit(saveDeny)}>

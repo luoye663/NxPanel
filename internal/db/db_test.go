@@ -63,6 +63,10 @@ func TestOpenFile(t *testing.T) {
 
 // TestRunMigrations 测试迁移执行
 func TestRunMigrations(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("加载迁移失败: %v", err)
+	}
 	db, err := Open(":memory:")
 	if err != nil {
 		t.Fatalf("打开内存数据库失败: %v", err)
@@ -88,13 +92,18 @@ func TestRunMigrations(t *testing.T) {
 	if err := db.QueryRow("SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("查询迁移版本失败: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("迁移版本期望 1，实际 %d", version)
+	wantVersion := migrations[len(migrations)-1].Version
+	if version != wantVersion {
+		t.Errorf("迁移版本期望 %d，实际 %d", wantVersion, version)
 	}
 }
 
 // TestRunMigrations_Idempotent 测试迁移幂等性（重复执行不应报错）
 func TestRunMigrations_Idempotent(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("加载迁移失败: %v", err)
+	}
 	db, err := Open(":memory:")
 	if err != nil {
 		t.Fatalf("打开内存数据库失败: %v", err)
@@ -114,8 +123,8 @@ func TestRunMigrations_Idempotent(t *testing.T) {
 	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatalf("查询迁移记录失败: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("幂等迁移后只应有 1 条记录（1个迁移文件），实际 %d", count)
+	if count != len(migrations) {
+		t.Errorf("幂等迁移后应有 %d 条记录，实际 %d", len(migrations), count)
 	}
 }
 
@@ -156,6 +165,9 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"access_analysis_entries",
 		"access_analysis_anomalies",
 		"site_hotlink_rules",
+		"auth_accounts",
+		"site_auth_rule_accounts",
+		"site_proxy_auth_accounts",
 		"rewrite_templates",
 	}
 

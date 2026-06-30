@@ -38,6 +38,8 @@ TARGET_VERSION=""
 LOCAL_TARBALL=""
 TEMP_DIR=""
 ACTION="upgrade"  # upgrade / check / list / current / rollback
+NGINX_WAS_RUNNING=false
+NGINX_SERVICE_NAME=""
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -170,6 +172,163 @@ get_package_version() {
 
     if [ -x "$source_dir/bin/nxpanel-agent" ]; then
         "$source_dir/bin/nxpanel-agent" --version 2>/dev/null || true
+    fi
+}
+
+read_api_config_value() {
+    local key="$1"
+    local config_file="$CONFIG_DIR/config.yaml"
+
+    [ -f "$config_file" ] || return 1
+
+    awk -v key="$key" '
+        /^[[:space:]]*api:[[:space:]]*$/ { in_api=1; next }
+        /^[^[:space:]]/ { if (in_api) exit }
+        in_api && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
+            line=$0
+            sub("^[[:space:]]*" key ":[[:space:]]*", "", line)
+            sub(/[[:space:]]+#.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            gsub(/^["\047]+|["\047]+$/, "", line)
+            print line
+            exit
+        }
+    ' "$config_file"
+}
+
+read_api_tls_enabled() {
+    local config_file="$CONFIG_DIR/config.yaml"
+
+    [ -f "$config_file" ] || return 1
+
+    awk '
+        function indent_len(s) {
+            match(s, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        /^[[:space:]]*api:[[:space:]]*$/ { in_api=1; api_indent=indent_len($0); next }
+        in_api && indent_len($0) <= api_indent && /^[^[:space:]]/ { exit }
+        in_api && /^[[:space:]]*tls:[[:space:]]*$/ { in_tls=1; tls_indent=indent_len($0); next }
+        in_api && in_tls && indent_len($0) <= tls_indent && $0 !~ /^[[:space:]]*($|#)/ { in_tls=0 }
+        in_api && in_tls && /^[[:space:]]*enabled:[[:space:]]*/ {
+            line=$0
+            sub(/^[[:space:]]*enabled:[[:space:]]*/, "", line)
+            sub(/[[:space:]]+#.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            gsub(/^["\047]+|["\047]+$/, "", line)
+            print line
+            exit
+        }
+    ' "$config_file"
+}
+
+read_nginx_config_value() {
+    local key="$1"
+    local config_file="$CONFIG_DIR/config.yaml"
+
+    [ -f "$config_file" ] || return 1
+
+    awk -v key="$key" '
+        /^[[:space:]]*nginx:[[:space:]]*$/ { in_nginx=1; next }
+        /^[^[:space:]]/ { if (in_nginx) exit }
+        in_nginx && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
+            line=$0
+            sub("^[[:space:]]*" key ":[[:space:]]*", "", line)
+            sub(/[[:space:]]+#.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            gsub(/^["\047]+|["\047]+$/, "", line)
+            print line
+            exit
+        }
+    ' "$config_file"
+}
+
+normalize_health_listen() {
+    local listen="$1"
+
+    listen=${listen:-"127.0.0.1:8888"}
+    case "$listen" in
+        0.0.0.0:*)
+            echo "127.0.0.1:${listen#0.0.0.0:}"
+            ;;
+        "[::]:"*)
+            echo "127.0.0.1:${listen#\[::\]:}"
+            ;;
+        ":::"*)
+            echo "127.0.0.1:${listen#:::}"
+            ;;
+        :*)
+            echo "127.0.0.1$listen"
+            ;;
+        *)
+            echo "$listen"
+            ;;
+    esac
+}
+
+detect_nginx_runtime_state() {
+    NGINX_WAS_RUNNING=false
+    NGINX_SERVICE_NAME=""
+
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        NGINX_WAS_RUNNING=true
+        NGINX_SERVICE_NAME="nginx"
+        return
+    fi
+
+    if systemctl is-active --quiet openresty 2>/dev/null; then
+        NGINX_WAS_RUNNING=true
+        NGINX_SERVICE_NAME="openresty"
+        return
+    fi
+
+    if pgrep -x nginx >/dev/null 2>&1; then
+        NGINX_WAS_RUNNING=true
+    fi
+}
+
+restore_nginx_runtime_state() {
+    if [ "$NGINX_WAS_RUNNING" != "true" ]; then
+        return 0
+    fi
+
+    if pgrep -x nginx >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log_warn "检测到升级前 Nginx 正在运行，当前未运行，尝试恢复启动..."
+
+    if [ -n "$NGINX_SERVICE_NAME" ]; then
+        if systemctl start "$NGINX_SERVICE_NAME" 2>/dev/null; then
+            log_info "$NGINX_SERVICE_NAME 已恢复启动"
+            return 0
+        fi
+        log_warn "通过 systemd 启动 $NGINX_SERVICE_NAME 失败，尝试直接启动"
+    fi
+
+    local nginx_bin
+    local nginx_conf
+    nginx_bin=$(read_nginx_config_value "bin" || true)
+    nginx_conf=$(read_nginx_config_value "conf_path" || true)
+    nginx_bin=${nginx_bin:-"/usr/sbin/nginx"}
+
+    if [ ! -x "$nginx_bin" ]; then
+        log_warn "Nginx 二进制不存在或不可执行，无法自动恢复: $nginx_bin"
+        return 1
+    fi
+
+    if [ -n "$nginx_conf" ]; then
+        if ! "$nginx_bin" -t -c "$nginx_conf" >/dev/null 2>&1; then
+            log_warn "nginx -t 失败，跳过自动恢复: $nginx_conf"
+            return 1
+        fi
+        "$nginx_bin" -c "$nginx_conf" >/dev/null 2>&1
+    else
+        if ! "$nginx_bin" -t >/dev/null 2>&1; then
+            log_warn "nginx -t 失败，跳过自动恢复"
+            return 1
+        fi
+        "$nginx_bin" >/dev/null 2>&1
     fi
 }
 
@@ -442,6 +601,10 @@ rollback() {
     fi
     
     log_step "开始回滚..."
+
+    if [ "$NGINX_WAS_RUNNING" != "true" ]; then
+        detect_nginx_runtime_state
+    fi
     
     # 停止服务
     stop_services_ignore_error
@@ -468,6 +631,8 @@ rollback() {
     
     # 启动服务
     start_services
+
+    restore_nginx_runtime_state || log_warn "Nginx 自动恢复失败，请手动检查"
     
     # 健康检查
     if health_check; then
@@ -561,24 +726,43 @@ start_services() {
 
 health_check() {
     log_info "执行健康检查..."
-    
+
     local api_listen
-    api_listen=$(grep -E '^\s*listen:' "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
-    api_listen=${api_listen:-"127.0.0.1:8888"}
-    
+    api_listen=$(read_api_config_value "listen" || true)
+    api_listen=$(normalize_health_listen "$api_listen")
+
+    local tls_enabled
+    tls_enabled=$(read_api_tls_enabled || true)
+    local scheme="http"
+    local curl_tls_opts=()
+    if [ "$tls_enabled" = "true" ] || [ "$tls_enabled" = "1" ]; then
+        scheme="https"
+        curl_tls_opts=(-k)
+    fi
+
+    local public_health
+    public_health=$(read_api_config_value "public_health" || true)
+    local health_path="/health"
+    if [ "$public_health" != "true" ] && [ "$public_health" != "1" ]; then
+        health_path=$(read_api_config_value "login_path" || true)
+        health_path=${health_path:-"/"}
+    fi
+
+    local health_url="${scheme}://${api_listen}${health_path}"
+
     local max_retries=10
     local retry_interval=3
-    
+
     for ((i=1; i<=max_retries; i++)); do
-        if curl -s -f "http://$api_listen/health" >/dev/null 2>&1; then
+        if curl -s -f "${curl_tls_opts[@]}" "$health_url" >/dev/null 2>&1; then
             log_info "健康检查通过"
             return 0
         fi
-        
+
         log_warn "健康检查失败，重试 ($i/$max_retries)..."
         sleep $retry_interval
     done
-    
+
     log_error "健康检查失败"
     return 1
 }
@@ -591,6 +775,8 @@ replace_files() {
     log_step "替换文件..."
     
     local source_dir="$TEMP_DIR/nxpanel"
+
+    detect_nginx_runtime_state
     
     # 停止服务
     stop_services
@@ -840,6 +1026,8 @@ do_upgrade() {
         rollback
         exit 1
     fi
+
+    restore_nginx_runtime_state || log_warn "Nginx 自动恢复失败，请手动检查"
     
     # 健康检查
     if ! health_check; then

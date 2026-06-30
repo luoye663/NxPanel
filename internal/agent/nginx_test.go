@@ -269,6 +269,45 @@ func TestNginxExecutor_Reload_Fail(t *testing.T) {
 	}
 }
 
+func TestNginxExecutor_Start_PrefersSystemd(t *testing.T) {
+	tmpDir := t.TempDir()
+	systemctlPath := filepath.Join(tmpDir, "systemctl")
+	logPath := filepath.Join(tmpDir, "systemctl.log")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> %q
+exit 0
+`, logPath)
+	if err := os.WriteFile(systemctlPath, []byte(script), 0755); err != nil {
+		t.Fatalf("创建 fake systemctl 失败: %v", err)
+	}
+
+	fakeBin := createFakeNginx(t, "fail")
+	executor := NewNginxExecutorWithDefaults(fakeBin, "/etc/nginx/nginx.conf")
+	executor.systemctlPath = systemctlPath
+
+	if _, err := executor.Start(context.Background()); err != nil {
+		t.Fatalf("Start 应通过 systemd 成功: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("读取 systemctl 日志失败: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, "start nginx") {
+		t.Fatalf("应优先启动 nginx service，实际: %s", got)
+	}
+}
+
+func TestNginxExecutor_Start_FallbackToDirect(t *testing.T) {
+	fakeBin := createFakeNginx(t, "success")
+	executor := NewNginxExecutorWithDefaults(fakeBin, "/etc/nginx/nginx.conf")
+	executor.systemctlPath = "none"
+
+	if _, err := executor.Start(context.Background()); err != nil {
+		t.Fatalf("systemd 不可用时应回退直接启动成功: %v", err)
+	}
+}
+
 func TestNginxExecutor_Detect_Success(t *testing.T) {
 	fakeBin := createFakeNginx(t, "success")
 	executor := NewNginxExecutorWithDefaults("", "")
