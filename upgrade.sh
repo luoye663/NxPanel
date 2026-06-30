@@ -173,6 +173,76 @@ get_package_version() {
     fi
 }
 
+read_api_config_value() {
+    local key="$1"
+    local config_file="$CONFIG_DIR/config.yaml"
+
+    [ -f "$config_file" ] || return 1
+
+    awk -v key="$key" '
+        /^[[:space:]]*api:[[:space:]]*$/ { in_api=1; next }
+        /^[^[:space:]]/ { if (in_api) exit }
+        in_api && $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {
+            line=$0
+            sub("^[[:space:]]*" key ":[[:space:]]*", "", line)
+            sub(/[[:space:]]+#.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            gsub(/^["\047]+|["\047]+$/, "", line)
+            print line
+            exit
+        }
+    ' "$config_file"
+}
+
+read_api_tls_enabled() {
+    local config_file="$CONFIG_DIR/config.yaml"
+
+    [ -f "$config_file" ] || return 1
+
+    awk '
+        function indent_len(s) {
+            match(s, /^[[:space:]]*/)
+            return RLENGTH
+        }
+        /^[[:space:]]*api:[[:space:]]*$/ { in_api=1; api_indent=indent_len($0); next }
+        in_api && indent_len($0) <= api_indent && /^[^[:space:]]/ { exit }
+        in_api && /^[[:space:]]*tls:[[:space:]]*$/ { in_tls=1; tls_indent=indent_len($0); next }
+        in_api && in_tls && indent_len($0) <= tls_indent && $0 !~ /^[[:space:]]*($|#)/ { in_tls=0 }
+        in_api && in_tls && /^[[:space:]]*enabled:[[:space:]]*/ {
+            line=$0
+            sub(/^[[:space:]]*enabled:[[:space:]]*/, "", line)
+            sub(/[[:space:]]+#.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            gsub(/^["\047]+|["\047]+$/, "", line)
+            print line
+            exit
+        }
+    ' "$config_file"
+}
+
+normalize_health_listen() {
+    local listen="$1"
+
+    listen=${listen:-"127.0.0.1:8888"}
+    case "$listen" in
+        0.0.0.0:*)
+            echo "127.0.0.1:${listen#0.0.0.0:}"
+            ;;
+        "[::]:"*)
+            echo "127.0.0.1:${listen#\[::\]:}"
+            ;;
+        ":::"*)
+            echo "127.0.0.1:${listen#:::}"
+            ;;
+        :*)
+            echo "127.0.0.1$listen"
+            ;;
+        *)
+            echo "$listen"
+            ;;
+    esac
+}
+
 get_latest_release() {
     local api_url="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
     
@@ -561,24 +631,43 @@ start_services() {
 
 health_check() {
     log_info "执行健康检查..."
-    
+
     local api_listen
-    api_listen=$(grep -E '^\s*listen:' "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
-    api_listen=${api_listen:-"127.0.0.1:8888"}
-    
+    api_listen=$(read_api_config_value "listen" || true)
+    api_listen=$(normalize_health_listen "$api_listen")
+
+    local tls_enabled
+    tls_enabled=$(read_api_tls_enabled || true)
+    local scheme="http"
+    local curl_tls_opts=()
+    if [ "$tls_enabled" = "true" ] || [ "$tls_enabled" = "1" ]; then
+        scheme="https"
+        curl_tls_opts=(-k)
+    fi
+
+    local public_health
+    public_health=$(read_api_config_value "public_health" || true)
+    local health_path="/health"
+    if [ "$public_health" != "true" ] && [ "$public_health" != "1" ]; then
+        health_path=$(read_api_config_value "login_path" || true)
+        health_path=${health_path:-"/"}
+    fi
+
+    local health_url="${scheme}://${api_listen}${health_path}"
+
     local max_retries=10
     local retry_interval=3
-    
+
     for ((i=1; i<=max_retries; i++)); do
-        if curl -s -f "http://$api_listen/health" >/dev/null 2>&1; then
+        if curl -s -f "${curl_tls_opts[@]}" "$health_url" >/dev/null 2>&1; then
             log_info "健康检查通过"
             return 0
         fi
-        
+
         log_warn "健康检查失败，重试 ($i/$max_retries)..."
         sleep $retry_interval
     done
-    
+
     log_error "健康检查失败"
     return 1
 }
