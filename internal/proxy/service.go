@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/agentclient"
@@ -24,19 +25,21 @@ import (
 
 // Service 反向代理业务服务
 type Service struct {
-	siteRepo  *repo.SiteRepo
-	proxyRepo *repo.ProxyRepo
-	opRepo    *repo.OperationRepo
-	agent     *agentclient.Client
-	panelDir  string // /opt/nxpanel/nginx
-	webUser   string
-	webGroup  string
+	siteRepo    *repo.SiteRepo
+	proxyRepo   *repo.ProxyRepo
+	accountRepo *repo.AuthAccountRepo
+	opRepo      *repo.OperationRepo
+	agent       *agentclient.Client
+	panelDir    string // /opt/nxpanel/nginx
+	webUser     string
+	webGroup    string
 }
 
 // NewService 创建反向代理服务
 func NewService(
 	siteRepo *repo.SiteRepo,
 	proxyRepo *repo.ProxyRepo,
+	accountRepo *repo.AuthAccountRepo,
 	opRepo *repo.OperationRepo,
 	agent *agentclient.Client,
 	cfg *app.Config,
@@ -46,63 +49,79 @@ func NewService(
 		webGroup = cfg.Nginx.WebUser
 	}
 	return &Service{
-		siteRepo:  siteRepo,
-		proxyRepo: proxyRepo,
-		opRepo:    opRepo,
-		agent:     agent,
-		panelDir:  cfg.Nginx.PanelDir,
-		webUser:   cfg.Nginx.WebUser,
-		webGroup:  webGroup,
+		siteRepo:    siteRepo,
+		proxyRepo:   proxyRepo,
+		accountRepo: accountRepo,
+		opRepo:      opRepo,
+		agent:       agent,
+		panelDir:    cfg.Nginx.PanelDir,
+		webUser:     cfg.Nginx.WebUser,
+		webGroup:    webGroup,
 	}
 }
 
 // CreateProxyRequest 创建反代配置的请求参数
 type CreateProxyRequest struct {
-	Name             string `json:"name"`
-	Enabled          bool   `json:"enabled"`
-	LocationPath     string `json:"location_path"`
-	UpstreamURL      string `json:"upstream_url"`
-	HostHeader       string `json:"host_header"`
-	WebSocketEnabled bool   `json:"websocket_enabled"`
-	ConnectTimeout   int    `json:"connect_timeout"`
-	SendTimeout      int    `json:"send_timeout"`
-	ReadTimeout      int    `json:"read_timeout"`
-	CacheEnabled     bool   `json:"cache_enabled"`
-	CacheType        string `json:"cache_type"`
-	CacheTime        int    `json:"cache_time"`
+	Name             string   `json:"name"`
+	Enabled          bool     `json:"enabled"`
+	LocationPath     string   `json:"location_path"`
+	UpstreamURL      string   `json:"upstream_url"`
+	HostHeader       string   `json:"host_header"`
+	WebSocketEnabled bool     `json:"websocket_enabled"`
+	ConnectTimeout   int      `json:"connect_timeout"`
+	SendTimeout      int      `json:"send_timeout"`
+	ReadTimeout      int      `json:"read_timeout"`
+	CacheEnabled     bool     `json:"cache_enabled"`
+	CacheType        string   `json:"cache_type"`
+	CacheTime        int      `json:"cache_time"`
+	AuthEnabled      bool     `json:"auth_enabled"`
+	AuthAccountIDs   []string `json:"auth_account_ids"`
 }
 
 // UpdateProxyRequest 更新反代配置的请求参数
 type UpdateProxyRequest struct {
-	Name             string `json:"name"`
-	Enabled          bool   `json:"enabled"`
-	LocationPath     string `json:"location_path"`
-	UpstreamURL      string `json:"upstream_url"`
-	HostHeader       string `json:"host_header"`
-	WebSocketEnabled bool   `json:"websocket_enabled"`
-	ConnectTimeout   int    `json:"connect_timeout"`
-	SendTimeout      int    `json:"send_timeout"`
-	ReadTimeout      int    `json:"read_timeout"`
-	CacheEnabled     bool   `json:"cache_enabled"`
-	CacheType        string `json:"cache_type"`
-	CacheTime        int    `json:"cache_time"`
+	Name             string   `json:"name"`
+	Enabled          bool     `json:"enabled"`
+	LocationPath     string   `json:"location_path"`
+	UpstreamURL      string   `json:"upstream_url"`
+	HostHeader       string   `json:"host_header"`
+	WebSocketEnabled bool     `json:"websocket_enabled"`
+	ConnectTimeout   int      `json:"connect_timeout"`
+	SendTimeout      int      `json:"send_timeout"`
+	ReadTimeout      int      `json:"read_timeout"`
+	CacheEnabled     bool     `json:"cache_enabled"`
+	CacheType        string   `json:"cache_type"`
+	CacheTime        int      `json:"cache_time"`
+	AuthEnabled      bool     `json:"auth_enabled"`
+	AuthAccountIDs   []string `json:"auth_account_ids"`
 }
 
 // ProxyResponse 反代配置响应
 type ProxyResponse struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Enabled          bool   `json:"enabled"`
-	LocationPath     string `json:"location_path"`
-	UpstreamURL      string `json:"upstream_url"`
-	HostHeader       string `json:"host_header"`
-	WebSocketEnabled bool   `json:"websocket_enabled"`
-	ConnectTimeout   int    `json:"connect_timeout"`
-	SendTimeout      int    `json:"send_timeout"`
-	ReadTimeout      int    `json:"read_timeout"`
-	CacheEnabled     bool   `json:"cache_enabled"`
-	CacheType        string `json:"cache_type"`
-	CacheTime        int    `json:"cache_time"`
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name"`
+	Enabled          bool                   `json:"enabled"`
+	LocationPath     string                 `json:"location_path"`
+	UpstreamURL      string                 `json:"upstream_url"`
+	HostHeader       string                 `json:"host_header"`
+	WebSocketEnabled bool                   `json:"websocket_enabled"`
+	ConnectTimeout   int                    `json:"connect_timeout"`
+	SendTimeout      int                    `json:"send_timeout"`
+	ReadTimeout      int                    `json:"read_timeout"`
+	CacheEnabled     bool                   `json:"cache_enabled"`
+	CacheType        string                 `json:"cache_type"`
+	CacheTime        int                    `json:"cache_time"`
+	AuthEnabled      bool                   `json:"auth_enabled"`
+	AuthAccountIDs   []string               `json:"auth_account_ids"`
+	AuthAccounts     []*AuthAccountResponse `json:"auth_accounts"`
+}
+
+type AuthAccountResponse struct {
+	ID       string `json:"id"`
+	Scope    string `json:"scope"`
+	SiteID   string `json:"site_id,omitempty"`
+	Username string `json:"username"`
+	Enabled  bool   `json:"enabled"`
 }
 
 // List 列出站点的所有反向代理配置
@@ -122,7 +141,11 @@ func (svc *Service) List(siteID string) ([]*ProxyResponse, error) {
 
 	var responses []*ProxyResponse
 	for _, p := range proxies {
-		responses = append(responses, toProxyResponse(p))
+		resp, err := svc.toProxyResponse(p)
+		if err != nil {
+			return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		responses = append(responses, resp)
 	}
 	return responses, nil
 }
@@ -145,7 +168,7 @@ func (svc *Service) Get(siteID, proxyID string) (*ProxyResponse, error) {
 		return nil, app.NewAppError(app.ErrNotFound, "代理配置不存在", nil)
 	}
 
-	return toProxyResponse(proxy), nil
+	return svc.toProxyResponse(proxy)
 }
 
 // Create 创建反向代理配置
@@ -167,6 +190,10 @@ func (svc *Service) Create(ctx context.Context, siteID string, req *CreateProxyR
 	if err := svc.checkPathConflict(siteID, req.LocationPath, ""); err != nil {
 		return nil, "", err
 	}
+	accounts, accountIDs, err := svc.validateAuthAccounts(siteID, req.AuthAccountIDs, req.AuthEnabled)
+	if err != nil {
+		return nil, "", err
+	}
 
 	proxy := &repo.SiteProxy{
 		ID:               app.NewOperationID(),
@@ -183,21 +210,40 @@ func (svc *Service) Create(ctx context.Context, siteID string, req *CreateProxyR
 		CacheEnabled:     req.CacheEnabled,
 		CacheType:        req.CacheType,
 		CacheTime:        req.CacheTime,
+		AuthEnabled:      req.AuthEnabled,
+		AuthHtpasswdPath: proxyHtpasswdPath(svc.panelDir, ""),
 	}
+	proxy.AuthHtpasswdPath = proxyHtpasswdPath(svc.panelDir, proxy.ID)
 
-	// 先应用 Nginx 配置（包括创建目录）
-	opID, err := svc.applyNginxConfig(ctx, site, []*repo.SiteProxy{proxy}, "proxy.create")
-	if err != nil {
-		return nil, "", err
-	}
-
-	// 成功后再入库
 	if err := svc.proxyRepo.Create(proxy); err != nil {
 		return nil, "", app.NewAppError(app.ErrInternalError, "创建反代配置失败: "+err.Error(), nil)
 	}
+	if err := svc.proxyRepo.SetAccountIDs(proxy.ID, accountIDs); err != nil {
+		_ = svc.proxyRepo.Delete(proxy.ID)
+		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+
+	allProxies, err := svc.proxyRepo.ListBySiteID(siteID)
+	if err != nil {
+		_ = svc.proxyRepo.Delete(proxy.ID)
+		return nil, "", app.NewAppError(app.ErrInternalError, "读取代理配置失败: "+err.Error(), nil)
+	}
+	extraFiles := map[string]string{}
+	if proxy.AuthEnabled {
+		extraFiles[proxy.AuthHtpasswdPath] = renderHtpasswd(accounts)
+	}
+	opID, err := svc.applyNginxConfig(ctx, site, allProxies, "proxy.create", extraFiles)
+	if err != nil {
+		_ = svc.proxyRepo.Delete(proxy.ID)
+		return nil, "", err
+	}
 
 	slog.Info("反代配置创建成功", "site_id", siteID, "proxy_id", proxy.ID, "operation_id", opID)
-	return toProxyResponse(proxy), opID, nil
+	resp, err := svc.toProxyResponse(proxy)
+	if err != nil {
+		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	return resp, opID, nil
 }
 
 // Update 更新反向代理配置
@@ -227,10 +273,20 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 	if err := svc.checkPathConflict(siteID, req.LocationPath, proxyID); err != nil {
 		return nil, "", err
 	}
+	accounts, accountIDs, err := svc.validateAuthAccounts(siteID, req.AuthAccountIDs, req.AuthEnabled)
+	if err != nil {
+		return nil, "", err
+	}
 
 	// 保存旧的缓存状态，用于判断是否需要清理
+	oldProxy := *existing
+	oldAccountIDs, err := svc.proxyRepo.GetAccountIDs(existing.ID)
+	if err != nil {
+		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
 	oldCacheEnabled := existing.CacheEnabled
 	oldCacheType := existing.CacheType
+	oldAuthHtpasswdPath := existing.AuthHtpasswdPath
 
 	existing.Name = req.Name
 	existing.Enabled = req.Enabled
@@ -244,10 +300,33 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 	existing.CacheEnabled = req.CacheEnabled
 	existing.CacheType = req.CacheType
 	existing.CacheTime = req.CacheTime
+	existing.AuthEnabled = req.AuthEnabled
+	if existing.AuthHtpasswdPath == "" {
+		existing.AuthHtpasswdPath = proxyHtpasswdPath(svc.panelDir, existing.ID)
+	}
 
-	// 先应用 Nginx 配置
-	opID, err := svc.applyNginxConfig(ctx, site, []*repo.SiteProxy{existing}, "proxy.update")
+	if err := svc.proxyRepo.Update(existing); err != nil {
+		return nil, "", app.NewAppError(app.ErrInternalError, "更新反代配置失败: "+err.Error(), nil)
+	}
+	if err := svc.proxyRepo.SetAccountIDs(existing.ID, accountIDs); err != nil {
+		_ = svc.proxyRepo.Update(&oldProxy)
+		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+
+	allProxies, err := svc.proxyRepo.ListBySiteID(siteID)
 	if err != nil {
+		_ = svc.proxyRepo.Update(&oldProxy)
+		_ = svc.proxyRepo.SetAccountIDs(existing.ID, oldAccountIDs)
+		return nil, "", app.NewAppError(app.ErrInternalError, "读取代理配置失败: "+err.Error(), nil)
+	}
+	extraFiles := map[string]string{}
+	if existing.AuthEnabled {
+		extraFiles[existing.AuthHtpasswdPath] = renderHtpasswd(accounts)
+	}
+	opID, err := svc.applyNginxConfig(ctx, site, allProxies, "proxy.update", extraFiles)
+	if err != nil {
+		_ = svc.proxyRepo.Update(&oldProxy)
+		_ = svc.proxyRepo.SetAccountIDs(existing.ID, oldAccountIDs)
 		return nil, "", err
 	}
 
@@ -255,14 +334,18 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 	if oldCacheEnabled && (!req.Enabled || !req.CacheEnabled || oldCacheType != req.CacheType) {
 		svc.cleanupCache(ctx, site, oldCacheType)
 	}
-
-	// 成功后再入库
-	if err := svc.proxyRepo.Update(existing); err != nil {
-		return nil, "", app.NewAppError(app.ErrInternalError, "更新反代配置失败: "+err.Error(), nil)
+	if !existing.AuthEnabled && oldAuthHtpasswdPath != "" {
+		if err := svc.agent.FilesRemove(ctx, []string{oldAuthHtpasswdPath}); err != nil {
+			slog.Warn("删除反代访问限制 htpasswd 失败", "error", err, "path", oldAuthHtpasswdPath)
+		}
 	}
 
 	slog.Info("反代配置更新成功", "site_id", siteID, "proxy_id", proxyID, "operation_id", opID)
-	return toProxyResponse(existing), opID, nil
+	resp, err := svc.toProxyResponse(existing)
+	if err != nil {
+		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	return resp, opID, nil
 }
 
 // Delete 删除反向代理配置
@@ -297,7 +380,7 @@ func (svc *Service) Delete(ctx context.Context, siteID, proxyID string, requestI
 	}
 
 	// 先应用 Nginx 配置（使用剩余的代理）
-	opID, err := svc.applyNginxConfig(ctx, site, remainingProxies, "proxy.delete")
+	opID, err := svc.applyNginxConfig(ctx, site, remainingProxies, "proxy.delete", nil)
 	if err != nil {
 		return "", err
 	}
@@ -313,6 +396,11 @@ func (svc *Service) Delete(ctx context.Context, siteID, proxyID string, requestI
 	if existing.CacheEnabled && !stillUsesSameCache {
 		svc.cleanupCache(ctx, site, existing.CacheType)
 	}
+	if existing.AuthHtpasswdPath != "" {
+		if err := svc.agent.FilesRemove(ctx, []string{existing.AuthHtpasswdPath}); err != nil {
+			slog.Warn("删除反代访问限制 htpasswd 失败", "error", err, "path", existing.AuthHtpasswdPath)
+		}
+	}
 
 	// 成功后再删除入库
 	if err := svc.proxyRepo.Delete(proxyID); err != nil {
@@ -324,7 +412,7 @@ func (svc *Service) Delete(ctx context.Context, siteID, proxyID string, requestI
 }
 
 // applyNginxConfig 应用 Nginx 配置
-func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxies []*repo.SiteProxy, action string) (string, error) {
+func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxies []*repo.SiteProxy, action string, extraFiles map[string]string) (string, error) {
 	// 读取当前配置
 	currentContent, _, err := svc.agent.ReadFile(ctx, site.ConfigPath)
 	if err != nil {
@@ -351,6 +439,8 @@ func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxi
 			CacheType:        p.CacheType,
 			CacheTime:        p.CacheTime,
 			CachePath:        site.RootPath + "/.cache/proxy",
+			AuthEnabled:      p.AuthEnabled,
+			AuthHtpasswdPath: p.AuthHtpasswdPath,
 		})
 	}
 
@@ -421,6 +511,18 @@ func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxi
 			})
 			break
 		}
+	}
+	for path, content := range extraFiles {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		changes = append(changes, agentclient.FileChangeRequest{Type: "mkdir", Path: filepath.Dir(path), Perm: 0755})
+		changes = append(changes, agentclient.FileChangeRequest{
+			Type:          "write",
+			Path:          path,
+			ContentBase64: base64.StdEncoding.EncodeToString([]byte(content)),
+			Perm:          0644,
+		})
 	}
 
 	// 创建操作记录
@@ -576,7 +678,23 @@ func validateProxyFields(name, locationPath, upstreamURL, hostHeader *string,
 }
 
 // toProxyResponse 转换为响应结构
-func toProxyResponse(p *repo.SiteProxy) *ProxyResponse {
+func (svc *Service) toProxyResponse(p *repo.SiteProxy) (*ProxyResponse, error) {
+	accounts, err := svc.accountsForProxy(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	accountIDs := make([]string, 0, len(accounts))
+	accountResponses := make([]*AuthAccountResponse, 0, len(accounts))
+	for _, account := range accounts {
+		accountIDs = append(accountIDs, account.ID)
+		accountResponses = append(accountResponses, &AuthAccountResponse{
+			ID:       account.ID,
+			Scope:    account.Scope,
+			SiteID:   account.SiteID,
+			Username: account.Username,
+			Enabled:  account.Enabled,
+		})
+	}
 	return &ProxyResponse{
 		ID:               p.ID,
 		Name:             p.Name,
@@ -591,5 +709,74 @@ func toProxyResponse(p *repo.SiteProxy) *ProxyResponse {
 		CacheEnabled:     p.CacheEnabled,
 		CacheType:        p.CacheType,
 		CacheTime:        p.CacheTime,
+		AuthEnabled:      p.AuthEnabled,
+		AuthAccountIDs:   accountIDs,
+		AuthAccounts:     accountResponses,
+	}, nil
+}
+
+func (svc *Service) validateAuthAccounts(siteID string, accountIDs []string, enabled bool) ([]*repo.AuthAccount, []string, error) {
+	if !enabled {
+		return nil, nil, nil
 	}
+	seen := make(map[string]struct{}, len(accountIDs))
+	ids := make([]string, 0, len(accountIDs))
+	for _, raw := range accountIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil, app.NewAppError(app.ErrValidationFailed, "开启访问限制时请选择至少一个账户", nil)
+	}
+	accounts, err := svc.accountRepo.ListByIDs(ids)
+	if err != nil {
+		return nil, nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if len(accounts) != len(ids) {
+		return nil, nil, app.NewAppError(app.ErrValidationFailed, "包含不存在的账户", nil)
+	}
+	for _, account := range accounts {
+		if account.Scope != "global" && account.SiteID != siteID {
+			return nil, nil, app.NewAppError(app.ErrValidationFailed, "包含不可用于当前站点的账户", nil)
+		}
+		if !account.Enabled {
+			return nil, nil, app.NewAppError(app.ErrValidationFailed, "不能选择已禁用账户", nil)
+		}
+	}
+	return accounts, ids, nil
+}
+
+func (svc *Service) accountsForProxy(proxyID string) ([]*repo.AuthAccount, error) {
+	ids, err := svc.proxyRepo.GetAccountIDs(proxyID)
+	if err != nil {
+		return nil, err
+	}
+	return svc.accountRepo.ListByIDs(ids)
+}
+
+func renderHtpasswd(accounts []*repo.AuthAccount) string {
+	entries := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Enabled {
+			entries = append(entries, account.PasswordHash)
+		}
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	return strings.Join(entries, "\n") + "\n"
+}
+
+func proxyHtpasswdPath(panelDir, proxyID string) string {
+	if proxyID == "" {
+		return ""
+	}
+	return filepath.Join(panelDir, "htpasswd", "proxy", proxyID+".htpasswd")
 }

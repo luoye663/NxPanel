@@ -99,8 +99,22 @@ type SiteProxy struct {
 	CacheEnabled     bool
 	CacheType        string // "nginx" or "file"
 	CacheTime        int    // 分钟
+	AuthEnabled      bool
+	AuthHtpasswdPath string
 	CreatedAt        string
 	UpdatedAt        string
+}
+
+// AuthAccount 对应 auth_accounts 表的一行。
+type AuthAccount struct {
+	ID           string
+	Scope        string
+	SiteID       string
+	Username     string
+	PasswordHash string
+	Enabled      bool
+	CreatedAt    string
+	UpdatedAt    string
 }
 
 // SiteSSL 对应 site_ssl 表的一行

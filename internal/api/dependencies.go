@@ -41,6 +41,7 @@ type repos struct {
 	rewrite         *repo.RewriteRepo
 	rewriteTemplate *repo.RewriteTemplateRepo
 	certificate     *repo.CertificateRepo
+	authAccount     *repo.AuthAccountRepo
 	authRule        *repo.AuthRuleRepo
 	denyRule        *repo.DenyRuleRepo
 	ipWhitelistRule *repo.IPWhitelistRuleRepo
@@ -115,6 +116,7 @@ func newRepos(db *sql.DB) repos {
 		rewrite:         repo.NewRewriteRepo(db),
 		rewriteTemplate: repo.NewRewriteTemplateRepo(db),
 		certificate:     repo.NewCertificateRepo(db),
+		authAccount:     repo.NewAuthAccountRepo(db),
 		authRule:        repo.NewAuthRuleRepo(db),
 		denyRule:        repo.NewDenyRuleRepo(db),
 		ipWhitelistRule: repo.NewIPWhitelistRuleRepo(db),
@@ -163,11 +165,11 @@ func (s *Server) initAgentBackedServices(r repos) error {
 		s.db, r.site, r.proxy, r.ssl, r.rewrite,
 		s.opRepo, s.agentClient, s.cfg,
 	)
-	s.proxySvc = proxy.NewService(r.site, r.proxy, s.opRepo, s.agentClient, s.cfg)
+	s.proxySvc = proxy.NewService(r.site, r.proxy, r.authAccount, s.opRepo, s.agentClient, s.cfg)
 	sslAgent := &sslAgentAdapter{client: s.agentClient}
 	s.sslSvc = ssl.NewService(r.site, r.ssl, r.certificate, s.opRepo, sslAgent, s.cfg)
 	s.rewriteSvc = rewrite.NewService(r.site, r.rewrite, s.opRepo, s.agentClient, r.rewriteTemplate)
-	s.accessLimitSvc = accesslimit.NewService(r.site, r.authRule, r.denyRule, r.ipWhitelistRule, s.opRepo, s.agentClient, s.agentClient, s.cfg.Nginx.PanelDir)
+	s.accessLimitSvc = accesslimit.NewService(r.site, r.authAccount, r.authRule, r.denyRule, r.ipWhitelistRule, r.proxy, s.opRepo, s.agentClient, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.hotlinkSvc = hotlink.NewService(r.site, r.hotlinkRule, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.configSvc = config.NewService(r.site, r.proxy, r.ssl, s.opRepo, s.agentClient)
 	s.settingsSvc = settings.NewService(

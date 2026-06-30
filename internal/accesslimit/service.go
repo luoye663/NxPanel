@@ -38,9 +38,11 @@ type configReader interface {
 
 type Service struct {
 	siteRepo            siteGetter
+	accountRepo         *repo.AuthAccountRepo
 	authRuleRepo        *repo.AuthRuleRepo
 	denyRuleRepo        *repo.DenyRuleRepo
 	ipWhitelistRuleRepo *repo.IPWhitelistRuleRepo
+	proxyRepo           *repo.ProxyRepo
 	opRepo              opRecorder
 	agent               agentTx
 	configReader        configReader
@@ -49,9 +51,11 @@ type Service struct {
 
 func NewService(
 	siteRepo siteGetter,
+	accountRepo *repo.AuthAccountRepo,
 	authRuleRepo *repo.AuthRuleRepo,
 	denyRuleRepo *repo.DenyRuleRepo,
 	ipWhitelistRuleRepo *repo.IPWhitelistRuleRepo,
+	proxyRepo *repo.ProxyRepo,
 	opRepo opRecorder,
 	agent agentTx,
 	cr configReader,
@@ -59,9 +63,11 @@ func NewService(
 ) *Service {
 	return &Service{
 		siteRepo:            siteRepo,
+		accountRepo:         accountRepo,
 		authRuleRepo:        authRuleRepo,
 		denyRuleRepo:        denyRuleRepo,
 		ipWhitelistRuleRepo: ipWhitelistRuleRepo,
+		proxyRepo:           proxyRepo,
 		opRepo:              opRepo,
 		agent:               agent,
 		configReader:        cr,
@@ -70,31 +76,57 @@ func NewService(
 }
 
 type AuthRuleResponse struct {
+	ID         string                 `json:"id"`
+	SiteID     string                 `json:"site_id"`
+	Name       string                 `json:"name"`
+	Path       string                 `json:"path"`
+	Username   string                 `json:"username"`
+	AccountIDs []string               `json:"account_ids"`
+	Accounts   []*AuthAccountResponse `json:"accounts"`
+	Enabled    bool                   `json:"enabled"`
+	SortOrder  int                    `json:"sort_order"`
+	CreatedAt  string                 `json:"created_at"`
+	UpdatedAt  string                 `json:"updated_at"`
+}
+
+type AuthAccountResponse struct {
 	ID        string `json:"id"`
-	SiteID    string `json:"site_id"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
+	Scope     string `json:"scope"`
+	SiteID    string `json:"site_id,omitempty"`
 	Username  string `json:"username"`
 	Enabled   bool   `json:"enabled"`
-	SortOrder int    `json:"sort_order"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
 
-type CreateAuthRuleRequest struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
+type CreateAuthAccountRequest struct {
+	Scope    string `json:"scope"`
+	SiteID   string `json:"site_id"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Enabled  *bool  `json:"enabled"`
 }
 
-type UpdateAuthRuleRequest struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
+type UpdateAuthAccountRequest struct {
+	Scope    string `json:"scope"`
+	SiteID   string `json:"site_id"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Enabled  *bool  `json:"enabled"`
+}
+
+type CreateAuthRuleRequest struct {
+	Name       string   `json:"name"`
+	Path       string   `json:"path"`
+	AccountIDs []string `json:"account_ids"`
+	Enabled    *bool    `json:"enabled"`
+}
+
+type UpdateAuthRuleRequest struct {
+	Name       string   `json:"name"`
+	Path       string   `json:"path"`
+	AccountIDs []string `json:"account_ids"`
+	Enabled    *bool    `json:"enabled"`
 }
 
 type DenyRuleResponse struct {
@@ -149,17 +181,39 @@ type UpdateIPLimitRuleRequest struct {
 	Enabled  *bool    `json:"enabled"`
 }
 
-func authRuleToResponse(r *repo.SiteAuthRule) *AuthRuleResponse {
+func authAccountToResponse(a *repo.AuthAccount) *AuthAccountResponse {
+	return &AuthAccountResponse{
+		ID:        a.ID,
+		Scope:     a.Scope,
+		SiteID:    a.SiteID,
+		Username:  a.Username,
+		Enabled:   a.Enabled,
+		CreatedAt: a.CreatedAt,
+		UpdatedAt: a.UpdatedAt,
+	}
+}
+
+func authRuleToResponse(r *repo.SiteAuthRule, accounts []*repo.AuthAccount) *AuthRuleResponse {
+	accountIDs := make([]string, 0, len(accounts))
+	accountResponses := make([]*AuthAccountResponse, 0, len(accounts))
+	usernames := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		accountIDs = append(accountIDs, account.ID)
+		accountResponses = append(accountResponses, authAccountToResponse(account))
+		usernames = append(usernames, account.Username)
+	}
 	return &AuthRuleResponse{
-		ID:        r.ID,
-		SiteID:    r.SiteID,
-		Name:      r.Name,
-		Path:      r.Path,
-		Username:  r.Username,
-		Enabled:   r.Enabled,
-		SortOrder: r.SortOrder,
-		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
+		ID:         r.ID,
+		SiteID:     r.SiteID,
+		Name:       r.Name,
+		Path:       r.Path,
+		Username:   strings.Join(usernames, ", "),
+		AccountIDs: accountIDs,
+		Accounts:   accountResponses,
+		Enabled:    r.Enabled,
+		SortOrder:  r.SortOrder,
+		CreatedAt:  r.CreatedAt,
+		UpdatedAt:  r.UpdatedAt,
 	}
 }
 
@@ -191,6 +245,126 @@ func ipLimitRuleToResponse(r *repo.SiteIPWhitelistRule) *IPLimitRuleResponse {
 	}
 }
 
+func (svc *Service) ListAuthAccounts(siteID string) ([]*AuthAccountResponse, error) {
+	if siteID != "" {
+		site, err := svc.siteRepo.GetByID(siteID)
+		if err != nil {
+			return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if site == nil {
+			return nil, app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+		}
+	}
+	accounts, err := svc.accountRepo.ListForSite(siteID)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	result := make([]*AuthAccountResponse, 0, len(accounts))
+	for _, account := range accounts {
+		result = append(result, authAccountToResponse(account))
+	}
+	return result, nil
+}
+
+func (svc *Service) CreateAuthAccount(ctx context.Context, siteID string, req *CreateAuthAccountRequest, requestID string) (*AuthAccountResponse, error) {
+	_ = ctx
+	_ = requestID
+	account, err := svc.buildAccountFromRequest(siteID, "", req.Scope, req.SiteID, req.Username, req.Password, req.Enabled)
+	if err != nil {
+		return nil, err
+	}
+	account.ID = NewAccountID()
+	if err := svc.accountRepo.Create(account); err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	return authAccountToResponse(account), nil
+}
+
+func (svc *Service) UpdateAuthAccount(ctx context.Context, siteID, accountID string, req *UpdateAuthAccountRequest, requestID string) (*AuthAccountResponse, error) {
+	account, err := svc.accountRepo.GetByID(accountID)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if account == nil {
+		return nil, app.NewAppError(app.ErrNotFound, "账户不存在", nil)
+	}
+	if !accountVisibleForSite(account, siteID) {
+		return nil, app.NewAppError(app.ErrNotFound, "账户不存在", nil)
+	}
+
+	scope := account.Scope
+	if req.Scope != "" {
+		scope = req.Scope
+	}
+	reqSiteID := account.SiteID
+	if req.SiteID != "" || scope == "global" {
+		reqSiteID = req.SiteID
+	}
+	username := account.Username
+	if req.Username != "" {
+		username = req.Username
+	}
+	passwordHash := account.PasswordHash
+	if req.Password != "" {
+		passwordHash = GenerateHtpasswdEntry(username, req.Password)
+	} else if username != account.Username {
+		passwordHash = username + ":" + strings.TrimPrefix(account.PasswordHash, account.Username+":")
+	}
+	enabled := account.Enabled
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
+	updated, buildErr := svc.buildAccountFromRequest(siteID, accountID, scope, reqSiteID, username, "__skip_password__", &enabled)
+	if buildErr != nil {
+		return nil, buildErr
+	}
+	updated.ID = accountID
+	updated.PasswordHash = passwordHash
+	updated.CreatedAt = account.CreatedAt
+	if !updated.Enabled {
+		if err := svc.ensureAccountCanBeDisabled(account.ID); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := svc.accountRepo.Update(updated); err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if err := svc.refreshAccountReferences(ctx, updated, requestID); err != nil {
+		if rollbackErr := svc.accountRepo.Update(account); rollbackErr != nil {
+			slog.Warn("回滚访问账户更新失败", "account_id", account.ID, "error", rollbackErr)
+		} else if refreshErr := svc.refreshAccountReferences(ctx, account, requestID); refreshErr != nil {
+			slog.Warn("回滚访问账户引用文件失败", "account_id", account.ID, "error", refreshErr)
+		}
+		return nil, err
+	}
+	return authAccountToResponse(updated), nil
+}
+
+func (svc *Service) DeleteAuthAccount(ctx context.Context, siteID, accountID string, requestID string) error {
+	_ = ctx
+	_ = requestID
+	account, err := svc.accountRepo.GetByID(accountID)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if account == nil || !accountVisibleForSite(account, siteID) {
+		return app.NewAppError(app.ErrNotFound, "账户不存在", nil)
+	}
+	refs, err := svc.accountRepo.CountReferences(accountID)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if refs > 0 {
+		return app.NewAppError(app.ErrValidationFailed, "账户正在被访问限制或反向代理引用，请先解除引用", nil)
+	}
+	if err := svc.accountRepo.Delete(accountID); err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	return nil
+}
+
 func (svc *Service) ListAuthRules(siteID string) ([]*AuthRuleResponse, error) {
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
@@ -207,14 +381,18 @@ func (svc *Service) ListAuthRules(siteID string) ([]*AuthRuleResponse, error) {
 
 	result := make([]*AuthRuleResponse, 0, len(rules))
 	for _, r := range rules {
-		result = append(result, authRuleToResponse(r))
+		accounts, err := svc.accountsForAuthRule(r.ID)
+		if err != nil {
+			return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		result = append(result, authRuleToResponse(r, accounts))
 	}
 	return result, nil
 }
 
 func (svc *Service) CreateAuthRule(ctx context.Context, siteID string, req *CreateAuthRuleRequest, requestID string) (*AuthRuleResponse, error) {
-	if req.Name == "" || req.Path == "" || req.Username == "" || req.Password == "" {
-		return nil, app.NewAppError(app.ErrValidationFailed, "名称、路径、用户名和密码不能为空", nil)
+	if req.Name == "" || req.Path == "" {
+		return nil, app.NewAppError(app.ErrValidationFailed, "名称和路径不能为空", nil)
 	}
 	if err := ValidatePath(req.Path); err != nil {
 		return nil, app.NewAppError(app.ErrValidationFailed, err.Error(), nil)
@@ -227,6 +405,10 @@ func (svc *Service) CreateAuthRule(ctx context.Context, siteID string, req *Crea
 	if site == nil {
 		return nil, app.NewAppError(app.ErrNotFound, "站点不存在", nil)
 	}
+	accounts, accountIDs, err := svc.validateSelectableAccounts(siteID, req.AccountIDs, true)
+	if err != nil {
+		return nil, err
+	}
 
 	enabled := true
 	if req.Enabled != nil {
@@ -235,17 +417,15 @@ func (svc *Service) CreateAuthRule(ctx context.Context, siteID string, req *Crea
 
 	ruleID := NewRuleID()
 	path := SanitizePath(req.Path)
-	htpasswdPath := filepath.Join(svc.panelDir, "htpasswd", siteID+"_"+ruleID+".htpasswd")
-
-	htpasswdContent := GenerateHtpasswdContent(req.Username, req.Password)
+	htpasswdPath := authRuleHtpasswdPath(svc.panelDir, ruleID)
 
 	rule := &repo.SiteAuthRule{
 		ID:           ruleID,
 		SiteID:       siteID,
 		Name:         req.Name,
 		Path:         path,
-		Username:     req.Username,
-		PasswordHash: htpasswdContent[:len(htpasswdContent)-1],
+		Username:     accountSummary(accounts),
+		PasswordHash: "",
 		HtpasswdPath: htpasswdPath,
 		Enabled:      enabled,
 	}
@@ -253,15 +433,18 @@ func (svc *Service) CreateAuthRule(ctx context.Context, siteID string, req *Crea
 	if err := svc.authRuleRepo.Create(rule); err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-
+	if err := svc.authRuleRepo.SetAccountIDs(rule.ID, accountIDs); err != nil {
+		_ = svc.authRuleRepo.Delete(ruleID)
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
 	if err := svc.renderAndApply(ctx, site, requestID, "创建加密访问规则: "+req.Name, map[string]string{
-		htpasswdPath: htpasswdContent,
+		htpasswdPath: RenderHtpasswdContent(accountPasswordEntries(accounts)),
 	}); err != nil {
 		_ = svc.authRuleRepo.Delete(ruleID)
 		return nil, err
 	}
 
-	return authRuleToResponse(rule), nil
+	return authRuleToResponse(rule, accounts), nil
 }
 
 func (svc *Service) UpdateAuthRule(ctx context.Context, siteID, ruleID string, req *UpdateAuthRuleRequest, requestID string) (*AuthRuleResponse, error) {
@@ -281,6 +464,12 @@ func (svc *Service) UpdateAuthRule(ctx context.Context, siteID, ruleID string, r
 		return nil, app.NewAppError(app.ErrNotFound, "规则不存在", nil)
 	}
 
+	oldRule := *rule
+	oldAccountIDs, err := svc.authRuleRepo.GetAccountIDs(rule.ID)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+
 	if req.Name != "" {
 		rule.Name = req.Name
 	}
@@ -290,21 +479,31 @@ func (svc *Service) UpdateAuthRule(ctx context.Context, siteID, ruleID string, r
 		}
 		rule.Path = SanitizePath(req.Path)
 	}
-	if req.Username != "" {
-		rule.Username = req.Username
-	}
 
-	htpasswdUpdates := map[string]string{}
-	if req.Password != "" {
-		htpasswdContent := GenerateHtpasswdContent(req.Username, req.Password)
-		rule.PasswordHash = htpasswdContent[:len(htpasswdContent)-1]
-		htpasswdUpdates[rule.HtpasswdPath] = htpasswdContent
-	} else if req.Username != "" {
-		if rule.PasswordHash != "" {
-			htpasswdUpdates[rule.HtpasswdPath] = rule.Username + ":" + strings.TrimPrefix(rule.PasswordHash, rule.Username+":") + "\n"
-			rule.PasswordHash = rule.Username + ":" + strings.TrimPrefix(rule.PasswordHash, rule.Username+":")
+	var accounts []*repo.AuthAccount
+	var accountIDs []string
+	if len(req.AccountIDs) > 0 {
+		var err error
+		accounts, accountIDs, err = svc.validateSelectableAccounts(siteID, req.AccountIDs, true)
+		if err != nil {
+			return nil, err
 		}
+	} else {
+		var err error
+		accounts, err = svc.accountsForAuthRule(rule.ID)
+		if err != nil {
+			return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if len(accountPasswordEntries(accounts)) == 0 {
+			return nil, app.NewAppError(app.ErrValidationFailed, "请选择至少一个可用账户", nil)
+		}
+		accountIDs = accountIDsFromAccounts(accounts)
 	}
+	if rule.HtpasswdPath == "" {
+		rule.HtpasswdPath = authRuleHtpasswdPath(svc.panelDir, rule.ID)
+	}
+	rule.Username = accountSummary(accounts)
+	rule.PasswordHash = ""
 
 	if req.Enabled != nil {
 		rule.Enabled = *req.Enabled
@@ -313,12 +512,20 @@ func (svc *Service) UpdateAuthRule(ctx context.Context, siteID, ruleID string, r
 	if err := svc.authRuleRepo.Update(rule); err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
+	if err := svc.authRuleRepo.SetAccountIDs(rule.ID, accountIDs); err != nil {
+		_ = svc.authRuleRepo.Update(&oldRule)
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
 
-	if err := svc.renderAndApply(ctx, site, requestID, "更新加密访问规则: "+rule.Name, htpasswdUpdates); err != nil {
+	if err := svc.renderAndApply(ctx, site, requestID, "更新加密访问规则: "+rule.Name, map[string]string{
+		rule.HtpasswdPath: RenderHtpasswdContent(accountPasswordEntries(accounts)),
+	}); err != nil {
+		_ = svc.authRuleRepo.Update(&oldRule)
+		_ = svc.authRuleRepo.SetAccountIDs(rule.ID, oldAccountIDs)
 		return nil, err
 	}
 
-	return authRuleToResponse(rule), nil
+	return authRuleToResponse(rule, accounts), nil
 }
 
 func (svc *Service) DeleteAuthRule(ctx context.Context, siteID, ruleID string, requestID string) error {
@@ -727,6 +934,9 @@ func (svc *Service) buildAccessLimitContent(siteID string) string {
 			if !rule.Enabled {
 				continue
 			}
+			if rule.HtpasswdPath == "" {
+				rule.HtpasswdPath = authRuleHtpasswdPath(svc.panelDir, rule.ID)
+			}
 			buf.WriteString(fmt.Sprintf("\n# %s\n", rule.Name))
 			buf.WriteString(RenderAuthRule(rule.ID, rule.Path, rule.HtpasswdPath))
 		}
@@ -783,6 +993,9 @@ func (svc *Service) renderAndApply(ctx context.Context, site *repo.Site, request
 	}
 
 	for path, content := range extraFiles {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
 		changes = append(changes, agentclient.FileChangeRequest{
 			Type: "mkdir",
 			Path: filepath.Dir(path),
@@ -858,6 +1071,301 @@ func mustJSONString(values []string) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+func authRuleHtpasswdPath(panelDir, ruleID string) string {
+	return filepath.Join(panelDir, "htpasswd", "auth-rule", ruleID+".htpasswd")
+}
+
+func proxyHtpasswdPath(panelDir, proxyID string) string {
+	return filepath.Join(panelDir, "htpasswd", "proxy", proxyID+".htpasswd")
+}
+
+func accountSummary(accounts []*repo.AuthAccount) string {
+	usernames := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		usernames = append(usernames, account.Username)
+	}
+	return strings.Join(usernames, ", ")
+}
+
+func accountPasswordEntries(accounts []*repo.AuthAccount) []string {
+	entries := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		if !account.Enabled {
+			continue
+		}
+		entries = append(entries, account.PasswordHash)
+	}
+	return entries
+}
+
+func accountIDsFromAccounts(accounts []*repo.AuthAccount) []string {
+	ids := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		ids = append(ids, account.ID)
+	}
+	return ids
+}
+
+func accountVisibleForSite(account *repo.AuthAccount, siteID string) bool {
+	return account.Scope == "global" || account.SiteID == siteID
+}
+
+func (svc *Service) buildAccountFromRequest(currentSiteID, excludeID, scope, siteID, username, password string, enabledPtr *bool) (*repo.AuthAccount, error) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "site"
+	}
+	if scope != "global" && scope != "site" {
+		return nil, app.NewAppError(app.ErrValidationFailed, "账户类型无效", nil)
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, app.NewAppError(app.ErrValidationFailed, "用户名不能为空", nil)
+	}
+	if containsNginxInjectionChars(username) || strings.ContainsAny(username, ": ") {
+		return nil, app.NewAppError(app.ErrValidationFailed, "用户名包含非法字符", nil)
+	}
+	exists, err := svc.accountRepo.UsernameExists(username, excludeID)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if exists {
+		return nil, app.NewAppError(app.ErrValidationFailed, "用户名已存在", nil)
+	}
+	if scope == "global" {
+		siteID = ""
+	} else {
+		if siteID == "" {
+			siteID = currentSiteID
+		}
+		if siteID == "" {
+			return nil, app.NewAppError(app.ErrValidationFailed, "站点账户必须关联站点", nil)
+		}
+	}
+	if scope == "site" {
+		site, err := svc.siteRepo.GetByID(siteID)
+		if err != nil {
+			return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if site == nil {
+			return nil, app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+		}
+	}
+	enabled := true
+	if enabledPtr != nil {
+		enabled = *enabledPtr
+	}
+	if password == "" {
+		return nil, app.NewAppError(app.ErrValidationFailed, "密码不能为空", nil)
+	}
+	passwordHash := ""
+	if password != "__skip_password__" {
+		passwordHash = GenerateHtpasswdEntry(username, password)
+	}
+	return &repo.AuthAccount{Scope: scope, SiteID: siteID, Username: username, PasswordHash: passwordHash, Enabled: enabled}, nil
+}
+
+func (svc *Service) validateSelectableAccounts(siteID string, accountIDs []string, requireEnabled bool) ([]*repo.AuthAccount, []string, error) {
+	seen := make(map[string]struct{}, len(accountIDs))
+	ids := make([]string, 0, len(accountIDs))
+	for _, raw := range accountIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil, app.NewAppError(app.ErrValidationFailed, "请选择至少一个账户", nil)
+	}
+	accounts, err := svc.accountRepo.ListByIDs(ids)
+	if err != nil {
+		return nil, nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if len(accounts) != len(ids) {
+		return nil, nil, app.NewAppError(app.ErrValidationFailed, "包含不存在的账户", nil)
+	}
+	for _, account := range accounts {
+		if !accountVisibleForSite(account, siteID) {
+			return nil, nil, app.NewAppError(app.ErrValidationFailed, "包含不可用于当前站点的账户", nil)
+		}
+		if requireEnabled && !account.Enabled {
+			return nil, nil, app.NewAppError(app.ErrValidationFailed, "不能选择已禁用账户", nil)
+		}
+	}
+	return accounts, ids, nil
+}
+
+func (svc *Service) ensureAccountCanBeDisabled(accountID string) error {
+	ruleIDs, err := svc.authRuleRepo.ListRuleIDsByAccountID(accountID)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	for _, ruleID := range ruleIDs {
+		accounts, err := svc.accountsForAuthRule(ruleID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		available := 0
+		for _, account := range accounts {
+			if account.ID != accountID && account.Enabled {
+				available++
+			}
+		}
+		if available == 0 {
+			return app.NewAppError(app.ErrValidationFailed, "该账户被加密访问规则引用，禁用后会导致规则没有可用账户", nil)
+		}
+	}
+	if svc.proxyRepo == nil {
+		return nil
+	}
+	proxyIDs, err := svc.proxyRepo.ListProxyIDsByAccountID(accountID)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	for _, proxyID := range proxyIDs {
+		proxy, err := svc.proxyRepo.GetByID(proxyID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if proxy == nil || !proxy.AuthEnabled {
+			continue
+		}
+		accounts, err := svc.accountsForProxy(proxyID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		available := 0
+		for _, account := range accounts {
+			if account.ID != accountID && account.Enabled {
+				available++
+			}
+		}
+		if available == 0 {
+			return app.NewAppError(app.ErrValidationFailed, "该账户被反向代理访问限制引用，禁用后会导致反向代理没有可用账户", nil)
+		}
+	}
+	return nil
+}
+
+func (svc *Service) accountsForAuthRule(ruleID string) ([]*repo.AuthAccount, error) {
+	ids, err := svc.authRuleRepo.GetAccountIDs(ruleID)
+	if err != nil {
+		return nil, err
+	}
+	return svc.accountRepo.ListByIDs(ids)
+}
+
+func (svc *Service) accountsForProxy(proxyID string) ([]*repo.AuthAccount, error) {
+	if svc.proxyRepo == nil {
+		return nil, nil
+	}
+	ids, err := svc.proxyRepo.GetAccountIDs(proxyID)
+	if err != nil {
+		return nil, err
+	}
+	return svc.accountRepo.ListByIDs(ids)
+}
+
+func (svc *Service) refreshAccountReferences(ctx context.Context, account *repo.AuthAccount, requestID string) error {
+	ruleIDs, err := svc.authRuleRepo.ListRuleIDsByAccountID(account.ID)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	visitedSites := map[string]*repo.Site{}
+	for _, ruleID := range ruleIDs {
+		rule, err := svc.authRuleRepo.GetByID(ruleID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if rule == nil {
+			continue
+		}
+		site, ok := visitedSites[rule.SiteID]
+		if !ok {
+			var err error
+			site, err = svc.siteRepo.GetByID(rule.SiteID)
+			if err != nil {
+				return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+			}
+			if site == nil {
+				continue
+			}
+			visitedSites[rule.SiteID] = site
+		}
+		accounts, err := svc.accountsForAuthRule(rule.ID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if len(accountPasswordEntries(accounts)) == 0 {
+			return app.NewAppError(app.ErrValidationFailed, "该操作会导致加密访问规则没有可用账户，请先调整引用关系", nil)
+		}
+		if rule.HtpasswdPath == "" {
+			rule.HtpasswdPath = authRuleHtpasswdPath(svc.panelDir, rule.ID)
+		}
+		if err := svc.renderAndApply(ctx, site, requestID, "更新账户引用: "+account.Username, map[string]string{
+			rule.HtpasswdPath: RenderHtpasswdContent(accountPasswordEntries(accounts)),
+		}); err != nil {
+			return err
+		}
+	}
+	if svc.proxyRepo == nil {
+		return nil
+	}
+	proxyIDs, err := svc.proxyRepo.ListProxyIDsByAccountID(account.ID)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	for _, proxyID := range proxyIDs {
+		proxy, err := svc.proxyRepo.GetByID(proxyID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if proxy == nil || !proxy.AuthEnabled {
+			continue
+		}
+		accounts, err := svc.accountsForProxy(proxy.ID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if proxy.AuthHtpasswdPath == "" {
+			proxy.AuthHtpasswdPath = proxyHtpasswdPath(svc.panelDir, proxy.ID)
+			_ = svc.proxyRepo.Update(proxy)
+		}
+		if len(accountPasswordEntries(accounts)) == 0 {
+			return app.NewAppError(app.ErrValidationFailed, "该操作会导致反向代理没有可用账户，请先调整引用关系", nil)
+		}
+		site, err := svc.siteRepo.GetByID(proxy.SiteID)
+		if err != nil {
+			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+		if site == nil {
+			continue
+		}
+		opID := app.NewOperationID()
+		_ = svc.opRepo.Create(&repo.Operation{ID: opID, Action: "site.update_proxy_auth", TargetType: "site", TargetID: site.ID, Status: "pending", RequestID: requestID, Actor: "admin", Message: "更新反向代理访问账户", CreatedAt: time.Now().UTC().Format(time.RFC3339)})
+		_, agentErr := svc.agent.ApplyTransaction(ctx, &agentclient.TransactionRequest{
+			OperationID: opID,
+			Changes: []agentclient.FileChangeRequest{
+				{Type: "mkdir", Path: filepath.Dir(proxy.AuthHtpasswdPath), Perm: 0755},
+				{Type: "write", Path: proxy.AuthHtpasswdPath, ContentBase64: base64.StdEncoding.EncodeToString([]byte(RenderHtpasswdContent(accountPasswordEntries(accounts)))), Perm: 0644},
+			},
+			TestNginx:   true,
+			ReloadNginx: site.Status == "enabled",
+		})
+		if agentErr != nil {
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, agentErr.Error(), "")
+			return app.NewAppError(app.ErrAgentUnavailable, "应用反代访问账户失败: "+agentErr.Error(), nil)
+		}
+		_ = svc.opRepo.UpdateStatus(opID, "success")
+	}
+	return nil
 }
 
 func NewIPLimitRuleID() string {

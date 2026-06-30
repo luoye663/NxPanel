@@ -111,6 +111,10 @@ func (s *Server) setupRoutes() {
 			r.Post("/sites/{site_id}/rewrite/apply-template", s.handleRewriteApplyTemplate)
 
 			// Access Limit
+			r.Get("/sites/{site_id}/auth-accounts", s.handleAuthAccountList)
+			r.Post("/sites/{site_id}/auth-accounts", s.handleAuthAccountCreate)
+			r.Put("/sites/{site_id}/auth-accounts/{account_id}", s.handleAuthAccountUpdate)
+			r.Delete("/sites/{site_id}/auth-accounts/{account_id}", s.handleAuthAccountDelete)
 			r.Get("/sites/{site_id}/auth-rules", s.handleAuthRuleList)
 			r.Post("/sites/{site_id}/auth-rules", s.handleAuthRuleCreate)
 			r.Put("/sites/{site_id}/auth-rules/{rule_id}", s.handleAuthRuleUpdate)

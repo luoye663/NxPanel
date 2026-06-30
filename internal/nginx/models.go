@@ -87,6 +87,8 @@ type ProxyData struct {
 	CacheType        string // "nginx" or "file"
 	CacheTime        int    // 分钟
 	CachePath        string // 文件缓存路径
+	AuthEnabled      bool
+	AuthHtpasswdPath string
 }
 
 // SSLData SSL 渲染参数

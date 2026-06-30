@@ -621,6 +621,9 @@ export interface SiteProxy {
   cache_enabled: boolean
   cache_type: 'nginx' | 'file'
   cache_time: number
+  auth_enabled: boolean
+  auth_account_ids: string[]
+  auth_accounts?: { id: string; scope: 'global' | 'site'; site_id?: string; username: string; enabled: boolean }[]
 }
 
 export interface CreateProxyRequest {
@@ -636,6 +639,8 @@ export interface CreateProxyRequest {
   cache_enabled: boolean
   cache_type: 'nginx' | 'file'
   cache_time: number
+  auth_enabled?: boolean
+  auth_account_ids?: string[]
 }
 
 export interface UpdateProxyRequest extends CreateProxyRequest {}

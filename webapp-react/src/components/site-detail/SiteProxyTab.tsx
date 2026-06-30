@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Badge, Button, Divider, Group, Modal, NumberInput, Radio, Stack, Switch, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Divider, Group, Modal, NumberInput, Radio, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core'
 import { useForm } from '@mantine/form'
 import { useDisclosure } from '@mantine/hooks'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -11,6 +11,7 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { MonoText } from '@/components/common/MonoText'
 import { SectionCard } from '@/components/common/SectionCard'
 import { DataTable } from '@/components/tables/DataTable'
+import { AuthAccountManager, AuthAccountSelector } from './AuthAccountManager'
 import { siteDetailKeys } from '@/hooks/useSiteDetail'
 import { confirmDanger } from '@/utils/confirm'
 import { showErrorModal } from '@/utils/errorModal'
@@ -35,6 +36,8 @@ const defaultProxyForm: ProxyFormValues = {
   cache_enabled: false,
   cache_type: 'nginx',
   cache_time: 60,
+  auth_enabled: false,
+  auth_account_ids: [],
 }
 
 function isProxyMarkerMissing(site: SiteDetail): boolean {
@@ -55,12 +58,15 @@ function toProxyForm(proxy: SiteProxy): ProxyFormValues {
     cache_enabled: proxy.cache_enabled,
     cache_type: proxy.cache_type,
     cache_time: proxy.cache_time,
+    auth_enabled: proxy.auth_enabled,
+    auth_account_ids: proxy.auth_account_ids || [],
   }
 }
 
 export function SiteProxyTab({ site }: SiteProxyTabProps) {
   const queryClient = useQueryClient()
   const [opened, handlers] = useDisclosure(false)
+  const [accountManagerOpened, accountManagerHandlers] = useDisclosure(false)
   const [editingProxy, setEditingProxy] = useState<SiteProxy | null>(null)
   const proxyQueryKey = ['site-detail', site.id, 'proxy'] as const
   const proxyQuery = useQuery({ queryKey: proxyQueryKey, queryFn: () => listProxies(site.id) })
@@ -79,10 +85,11 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
       location_path: (value) => value.trim().startsWith('/') ? null : '代理路径必须以 / 开头',
       upstream_url: (value) => value.trim() ? null : '请输入目标 URL',
       host_header: (value) => value.trim() ? null : '请输入 Host 域名',
-      connect_timeout: (value) => value >= 1 && value <= 3600 ? null : '连接超时范围为 1-3600 秒',
-      send_timeout: (value) => value >= 1 && value <= 3600 ? null : '发送超时范围为 1-3600 秒',
-      read_timeout: (value) => value >= 1 && value <= 3600 ? null : '读取超时范围为 1-3600 秒',
+      connect_timeout: (value, values) => !values.websocket_enabled || (value >= 1 && value <= 3600) ? null : '连接超时范围为 1-3600 秒',
+      send_timeout: (value, values) => !values.websocket_enabled || (value >= 1 && value <= 3600) ? null : '发送超时范围为 1-3600 秒',
+      read_timeout: (value, values) => !values.websocket_enabled || (value >= 1 && value <= 3600) ? null : '读取超时范围为 1-3600 秒',
       cache_time: (value, values) => !values.cache_enabled || (value >= 1 && value <= 10080) ? null : '缓存时间范围为 1-10080 分钟',
+      auth_account_ids: (value, values) => !values.auth_enabled || (value && value.length > 0) ? null : '请选择至少一个账户',
     },
   })
 
@@ -91,6 +98,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
     { accessorKey: 'location_path', header: '代理路径', size: 120, Cell: ({ cell }) => <MonoText value={cell.getValue<string>()} maxWidth={160} /> },
     { accessorKey: 'upstream_url', header: '目标 URL', Cell: ({ cell }) => <MonoText value={cell.getValue<string>()} maxWidth={260} /> },
     { accessorKey: 'cache_enabled', header: '缓存', size: 90, Cell: ({ row }) => <Badge color={row.original.cache_enabled ? 'green' : 'gray'} variant="light">{row.original.cache_enabled ? '是' : '否'}</Badge> },
+    { accessorKey: 'auth_enabled', header: '访问限制', size: 100, Cell: ({ row }) => <Badge color={row.original.auth_enabled ? 'blue' : 'gray'} variant="light">{row.original.auth_enabled ? `${row.original.auth_account_ids?.length || 0} 个账户` : '关闭'}</Badge> },
     { accessorKey: 'enabled', header: '状态', size: 90, Cell: ({ row }) => <Switch checked={row.original.enabled} disabled={toggleMutation.isPending} onChange={(event) => handleToggle(row.original, event.currentTarget.checked)} /> },
   ]
 
@@ -118,7 +126,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
 
   async function handleSave(values: ProxyFormValues) {
     try {
-      await saveMutation.mutateAsync({ ...values, name: values.name.trim(), location_path: values.location_path.trim(), upstream_url: values.upstream_url.trim(), host_header: values.host_header.trim() })
+      await saveMutation.mutateAsync({ ...values, name: values.name.trim(), location_path: values.location_path.trim(), upstream_url: values.upstream_url.trim(), host_header: values.host_header.trim(), auth_account_ids: values.auth_enabled ? values.auth_account_ids : [] })
       notifySuccess({ message: editingProxy ? '代理配置已更新' : '代理已添加' })
       handlers.close()
       await refreshAfterWrite()
@@ -206,15 +214,26 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
 
               <Divider label="高级配置" labelPosition="left" />
               <Switch label="WebSocket" {...form.getInputProps('websocket_enabled', { type: 'checkbox' })} />
-              <Group grow align="flex-start">
-                <NumberInput label="连接超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('connect_timeout')} />
-                <NumberInput label="发送超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('send_timeout')} />
-                <NumberInput label="读取超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('read_timeout')} />
-              </Group>
+              {form.values.websocket_enabled ? (
+                <Group grow align="flex-start">
+                  <NumberInput label="连接超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('connect_timeout')} />
+                  <NumberInput label="发送超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('send_timeout')} />
+                  <NumberInput label="读取超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('read_timeout')} />
+                </Group>
+              ) : null}
+              <Switch label="访问限制" {...form.getInputProps('auth_enabled', { type: 'checkbox' })} />
+              {form.values.auth_enabled ? (
+                <Stack gap="xs">
+                  <Group justify="space-between"><Text size="sm" fw={500}>账户</Text><Button size="xs" variant="subtle" onClick={accountManagerHandlers.open}>账户管理</Button></Group>
+                  <AuthAccountSelector siteId={site.id} value={form.values.auth_account_ids || []} onChange={(value) => form.setFieldValue('auth_account_ids', value)} />
+                  {form.errors.auth_account_ids ? <Text size="xs" c="red">{form.errors.auth_account_ids}</Text> : null}
+                </Stack>
+              ) : null}
               <Group justify="flex-end"><Button variant="default" onClick={handlers.close}>取消</Button><Button type="submit" loading={saveMutation.isPending}>{editingProxy ? '保存' : '添加'}</Button></Group>
             </Stack>
           </form>
         </Modal>
+        <AuthAccountManager siteId={site.id} opened={accountManagerOpened} onClose={accountManagerHandlers.close} />
       </Stack>
     </SectionCard>
   )

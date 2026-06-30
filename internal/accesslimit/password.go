@@ -25,12 +25,27 @@ func GenerateHtpasswdContent(username, password string) string {
 	return GenerateHtpasswdEntry(username, password) + "\n"
 }
 
+func RenderHtpasswdContent(entries []string) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	return strings.Join(entries, "\n") + "\n"
+}
+
 func NewRuleID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		panic("crypto/rand.Read failed: " + err.Error())
 	}
 	return "ar_" + hex.EncodeToString(b)
+}
+
+func NewAccountID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand.Read failed: " + err.Error())
+	}
+	return "aa_" + hex.EncodeToString(b)
 }
 
 func NewDenyRuleID() string {

@@ -1,4 +1,8 @@
     location {{.LocationPath}} {
+{{- if .AuthEnabled}}
+        auth_basic "Restricted";
+        auth_basic_user_file {{.AuthHtpasswdPath}};
+{{- end}}
         proxy_pass {{.UpstreamURL}};
         proxy_set_header Host {{.HostHeader}};
         proxy_set_header X-Real-IP $remote_addr;
