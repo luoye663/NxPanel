@@ -144,6 +144,26 @@ agent:
   max_download_size: "256M"
   # 单次文件/日志下载最长传输时间
   download_timeout: "2m"
+  # Agent 子进程、日志行和访问分析扫描资源预算
+  resources:
+    command_output_max_size: "32M"
+    command_diagnostic_max_size: "64K"
+    log_line_max_size: "64K"
+    access_scan_max_bytes: "64M"
+    access_scan_max_lines: 500000
+    access_scan_timeout: "300s"
+    access_scan_line_max_size: "32K"
+    access_scan_rotated_files: 32
+  # 通用归档与站点备份/恢复共享预算
+  archive:
+    max_entries: 100000
+    max_input_size: "2G"
+    max_archive_size: "1G"
+    max_extracted_size: "2G"
+    max_entry_size: "512M"
+    max_depth: 64
+    max_compression_ratio: 100
+    timeout: "30m"
 # Nginx 相关配置
 nginx:
   # Nginx 二进制路径，为空则自动检测

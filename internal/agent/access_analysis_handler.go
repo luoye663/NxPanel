@@ -2,8 +2,11 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -44,19 +47,19 @@ func (s *Server) handleAccessAnalysisScan(w http.ResponseWriter, r *http.Request
 		writeAgentError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.MaxBytes <= 0 {
-		req.MaxBytes = 64 * 1024 * 1024
-	}
-	if req.MaxLines <= 0 {
-		req.MaxLines = 500000
-	}
+	limits := s.accessScanLimits()
+	req.MaxBytes = clampRequested(req.MaxBytes, limits.maxBytes)
+	req.MaxLines = clampRequested(req.MaxLines, limits.maxLines)
+	ctx, cancel := context.WithTimeout(r.Context(), limits.timeout)
+	defer cancel()
 
 	agg := accessanalysis.NewAggregator(from, to)
 	result := accessanalysis.AgentScanResponse{}
 	paths := []string{req.Path}
 	if req.IncludeRotated {
-		paths = append(paths, rotatedLogCandidates(req.Path)...)
+		paths = append(paths, rotatedLogCandidates(req.Path, limits.rotatedFiles)...)
 	}
+	budget := &accessScanBudget{bytesRemaining: req.MaxBytes, linesRemaining: req.MaxLines}
 	for _, path := range paths {
 		if _, err := s.policy.Validate(path); err != nil {
 			continue
@@ -65,7 +68,7 @@ func (s *Server) handleAccessAnalysisScan(w http.ResponseWriter, r *http.Request
 		if path == req.Path {
 			cursor = req.Cursor
 		}
-		fileCursor, scanned, skipped, truncated, errors := scanAccessLogFile(r.Context(), path, parser, agg, cursor, req.MaxBytes, req.MaxLines)
+		fileCursor, scanned, skipped, truncated, errors := scanAccessLogFile(ctx, path, parser, agg, cursor, budget, limits.maxLineBytes)
 		result.ScannedLines += scanned
 		result.SkippedLines += skipped
 		result.Truncated = result.Truncated || truncated
@@ -108,7 +111,7 @@ func (s *Server) handleAccessAnalysisFormatDetect(w http.ResponseWriter, r *http
 	if req.MaxLines <= 0 || req.MaxLines > 50 {
 		req.MaxLines = 20
 	}
-	sample, err := readHeadLines(req.Path, req.MaxLines)
+	sample, err := readHeadLines(req.Path, req.MaxLines, s.accessScanLimits().maxLineBytes)
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "读取日志样本失败: "+err.Error())
 		return
@@ -116,7 +119,19 @@ func (s *Server) handleAccessAnalysisFormatDetect(w http.ResponseWriter, r *http
 	writeAgentOK(w, accessanalysis.DetectFormatFromSample(sample))
 }
 
-func scanAccessLogFile(ctxDone interface{ Done() <-chan struct{} }, path string, parser *accessanalysis.Parser, agg *accessanalysis.Aggregator, cursor accessanalysis.Cursor, maxBytes, maxLines int64) (accessanalysis.Cursor, int64, int64, bool, []string) {
+type accessScanBudget struct {
+	bytesRemaining int64
+	linesRemaining int64
+}
+
+func clampRequested(value, maximum int64) int64 {
+	if value <= 0 || value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func scanAccessLogFile(ctx context.Context, path string, parser *accessanalysis.Parser, agg *accessanalysis.Aggregator, cursor accessanalysis.Cursor, budget *accessScanBudget, maxLineBytes int) (accessanalysis.Cursor, int64, int64, bool, []string) {
 	file, err := os.Open(path)
 	if err != nil {
 		return cursor, 0, 0, false, []string{err.Error()}
@@ -135,27 +150,39 @@ func scanAccessLogFile(ctxDone interface{ Done() <-chan struct{} }, path string,
 		_, _ = file.Seek(startOffset, 0)
 	}
 
-	reader := bufio.NewReaderSize(file, 64*1024)
+	limited := &io.LimitedReader{R: file, N: budget.bytesRemaining}
+	reader := bufio.NewReaderSize(limited, maxLineBytes+1)
 	var scanned, skipped, readBytes int64
 	parseErrors := []string{}
 	truncated := false
-	for scanned < maxLines && readBytes < maxBytes {
+	for budget.linesRemaining > 0 && budget.bytesRemaining > 0 {
 		select {
-		case <-ctxDone.Done():
+		case <-ctx.Done():
 			truncated = true
 			return accessanalysis.Cursor{Inode: inode, Offset: startOffset + readBytes, FileSize: info.Size()}, scanned, skipped, truncated, parseErrors
 		default:
 		}
-		line, err := reader.ReadString('\n')
-		if line == "" && err != nil {
+		lineStart := readBytes
+		line, consumed, oversized, err := readBoundedLine(reader, maxLineBytes)
+		if consumed == 0 && err != nil {
 			break
 		}
-		readBytes += int64(len(line))
-		if len(line) > 32*1024 {
+		readBytes += consumed
+		budget.bytesRemaining -= consumed
+		if err == io.EOF && limited.N == 0 && startOffset+readBytes < info.Size() && (len(line) == 0 || line[len(line)-1] != '\n') {
+			// The request byte budget ended inside this physical line. Rewind the
+			// persisted cursor so the next scan reparses the complete line.
+			return accessanalysis.Cursor{Inode: inode, Offset: startOffset + lineStart, FileSize: info.Size()}, scanned, skipped, true, parseErrors
+		}
+		budget.linesRemaining--
+		if oversized {
 			skipped++
+			if err != nil && err != io.EOF {
+				parseErrors = appendParseError(parseErrors, err)
+			}
 			continue
 		}
-		entry, parseErr := parser.ParseLine(line)
+		entry, parseErr := parser.ParseLine(string(line))
 		if parseErr != nil {
 			skipped++
 			if len(parseErrors) < 20 {
@@ -170,7 +197,7 @@ func scanAccessLogFile(ctxDone interface{ Done() <-chan struct{} }, path string,
 			break
 		}
 	}
-	if scanned >= maxLines || readBytes >= maxBytes {
+	if budget.linesRemaining <= 0 || budget.bytesRemaining <= 0 || ctx.Err() != nil {
 		truncated = true
 	}
 	return accessanalysis.Cursor{Inode: inode, Offset: startOffset + readBytes, FileSize: info.Size()}, scanned, skipped, truncated, parseErrors
@@ -183,7 +210,7 @@ func inodeOf(info os.FileInfo) uint64 {
 	return 0
 }
 
-func rotatedLogCandidates(path string) []string {
+func rotatedLogCandidates(path string, maxFiles int) []string {
 	matches, _ := filepath.Glob(path + "*")
 	items := []string{}
 	for _, item := range matches {
@@ -192,10 +219,13 @@ func rotatedLogCandidates(path string) []string {
 		}
 	}
 	sort.Strings(items)
+	if maxFiles >= 0 && len(items) > maxFiles {
+		items = items[len(items)-maxFiles:]
+	}
 	return items
 }
 
-func readHeadLines(path string, maxLines int) (string, error) {
+func readHeadLines(path string, maxLines, maxLineBytes int) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -205,7 +235,7 @@ func readHeadLines(path string, maxLines int) (string, error) {
 	}
 	defer file.Close()
 	reader := bufio.NewScanner(file)
-	reader.Buffer(make([]byte, 4096), 64*1024)
+	reader.Buffer(make([]byte, 4096), maxLineBytes)
 	lines := []string{}
 	for reader.Scan() && len(lines) < maxLines {
 		lines = append(lines, reader.Text())
@@ -214,4 +244,35 @@ func readHeadLines(path string, maxLines int) (string, error) {
 		return "", fmt.Errorf("读取样本失败: %w", err)
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func readBoundedLine(reader *bufio.Reader, maxLineBytes int) ([]byte, int64, bool, error) {
+	line := make([]byte, 0, min(maxLineBytes, 4096))
+	var consumed int64
+	oversized := false
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		consumed += int64(len(fragment))
+		if !oversized {
+			remaining := maxLineBytes - len(line)
+			if len(fragment) > remaining {
+				if remaining > 0 {
+					line = append(line, fragment[:remaining]...)
+				}
+				oversized = true
+			} else {
+				line = append(line, fragment...)
+			}
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, consumed, oversized, err
+		}
+	}
+}
+
+func appendParseError(current []string, err error) []string {
+	if err != nil && len(current) < 20 {
+		return append(current, err.Error())
+	}
+	return current
 }

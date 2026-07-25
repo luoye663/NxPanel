@@ -112,7 +112,7 @@ func (s *Server) handleLogTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lines, truncated, err := tailFile(path, req.MaxLines, req.MaxBytes)
+	lines, truncated, err := tailFileWithLineLimit(path, req.MaxLines, req.MaxBytes, s.logLineMaxBytes())
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "读取日志失败: "+err.Error())
 		return
@@ -238,7 +238,7 @@ func (s *Server) handleLogSearch(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusForbidden, "路径不允许: "+err.Error())
 		return
 	}
-	lines, matched, truncated, maxBytes, err := searchLogFile(req.Path, req.Keyword, req.MaxLines, req.MaxBytes, req.CaseSensitive)
+	lines, matched, truncated, maxBytes, err := searchLogFileWithLineLimit(req.Path, req.Keyword, req.MaxLines, req.MaxBytes, req.CaseSensitive, s.logLineMaxBytes())
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "搜索日志失败: "+err.Error())
 		return
@@ -272,7 +272,7 @@ func (s *Server) handleRotatedLogTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.MaxBytes = s.clampReadBytes(req.MaxBytes, 4*1024*1024)
-	lines, truncated, err := tailFile(path, req.MaxLines, req.MaxBytes)
+	lines, truncated, err := tailFileWithLineLimit(path, req.MaxLines, req.MaxBytes, s.logLineMaxBytes())
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "读取历史日志失败: "+err.Error())
 		return
@@ -306,6 +306,10 @@ func (s *Server) handleRotatedLogRemove(w http.ResponseWriter, r *http.Request) 
 //  3. 按换行符分割
 //  4. 取最后 maxLines 行
 func tailFile(path string, maxLines int, maxBytes int64) ([]string, bool, error) {
+	return tailFileWithLineLimit(path, maxLines, maxBytes, defaultLogLineBytes)
+}
+
+func tailFileWithLineLimit(path string, maxLines int, maxBytes int64, maxLineBytes int) ([]string, bool, error) {
 	if maxLines <= 0 {
 		maxLines = 200
 	}
@@ -363,7 +367,12 @@ func tailFile(path string, maxLines int, maxBytes int64) ([]string, bool, error)
 		if len(rawLines[i]) == 0 {
 			continue
 		}
-		lines = append(lines, string(rawLines[i]))
+		raw := rawLines[i]
+		if len(raw) > maxLineBytes {
+			raw = append(append([]byte(nil), raw[:maxLineBytes]...), []byte(" ... [truncated]")...)
+			truncated = true
+		}
+		lines = append(lines, string(raw))
 	}
 
 	// 反转为正序
@@ -375,6 +384,10 @@ func tailFile(path string, maxLines int, maxBytes int64) ([]string, bool, error)
 }
 
 func searchLogFile(path, keyword string, maxLines int, maxBytes int64, caseSensitive bool) ([]string, int, bool, int64, error) {
+	return searchLogFileWithLineLimit(path, keyword, maxLines, maxBytes, caseSensitive, defaultLogLineBytes)
+}
+
+func searchLogFileWithLineLimit(path, keyword string, maxLines int, maxBytes int64, caseSensitive bool, maxLineBytes int) ([]string, int, bool, int64, error) {
 	if maxLines <= 0 {
 		maxLines = 200
 	}
@@ -423,6 +436,12 @@ func searchLogFile(path, keyword string, maxLines int, maxBytes int64, caseSensi
 	}
 	result := make([]string, 0, maxLines)
 	for _, raw := range bytes.Split(buf, []byte("\n")) {
+		lineTruncated := false
+		if len(raw) > maxLineBytes {
+			raw = raw[:maxLineBytes]
+			lineTruncated = true
+			truncated = true
+		}
 		lineForMatch := raw
 		if !caseSensitive {
 			lineForMatch = bytes.ToLower(raw)
@@ -431,9 +450,8 @@ func searchLogFile(path, keyword string, maxLines int, maxBytes int64, caseSensi
 			continue
 		}
 		// 复制匹配行，避免返回字符串长期引用整块读取 buffer。
-		if len(raw) > 4096 {
-			raw = raw[:4096]
-			truncated = true
+		if lineTruncated {
+			raw = append(append([]byte(nil), raw...), []byte(" ... [truncated]")...)
 		}
 		result = append(result, string(append([]byte(nil), raw...)))
 		if len(result) >= maxLines {

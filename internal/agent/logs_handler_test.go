@@ -146,3 +146,21 @@ func TestTailFile_OverMaxLines(t *testing.T) {
 		t.Errorf("限制 50 行，实际 %d 行", len(result))
 	}
 }
+
+func TestLogReadersBoundOversizedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 4096)+" needle\nnormal\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lines, truncated, err := tailFileWithLineLimit(path, 10, 8192, 128)
+	if err != nil || !truncated {
+		t.Fatalf("tail oversized line: truncated=%v err=%v", truncated, err)
+	}
+	if len(lines[0]) > 160 || !strings.Contains(lines[0], "[truncated]") {
+		t.Fatalf("tail returned unbounded or unmarked line: len=%d", len(lines[0]))
+	}
+	matched, _, truncated, _, err := searchLogFileWithLineLimit(path, "x", 10, 8192, true, 128)
+	if err != nil || !truncated || len(matched) != 1 || len(matched[0]) > 160 {
+		t.Fatalf("search oversized line was not bounded: lines=%d truncated=%v err=%v", len(matched), truncated, err)
+	}
+}

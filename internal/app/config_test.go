@@ -40,6 +40,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.DownloadTimeout != "2m" {
 		t.Errorf("默认 Agent.DownloadTimeout 期望 2m，实际 %s", cfg.Agent.DownloadTimeout)
 	}
+	if cfg.Agent.Resources.CommandOutputMaxSize != "32M" || cfg.Agent.Resources.CommandDiagnosticMaxSize != "64K" || cfg.Agent.Resources.LogLineMaxSize != "64K" {
+		t.Fatalf("默认 Agent resource 配置不正确: %+v", cfg.Agent.Resources)
+	}
+	if cfg.Agent.Archive.MaxEntries != 100000 || cfg.Agent.Archive.MaxInputSize != "2G" || cfg.Agent.Archive.MaxArchiveSize != "1G" || cfg.Agent.Archive.MaxExtractedSize != "2G" || cfg.Agent.Archive.MaxEntrySize != "512M" || cfg.Agent.Archive.MaxDepth != 64 || cfg.Agent.Archive.MaxCompressionRatio != 100 || cfg.Agent.Archive.Timeout != "30m" {
+		t.Fatalf("默认 Agent archive 配置不正确: %+v", cfg.Agent.Archive)
+	}
 
 	// 默认 Nginx 主配置路径
 	if cfg.Nginx.ConfPath != "" {
@@ -80,6 +86,22 @@ func TestAsyncJobEnvironmentOverrides(t *testing.T) {
 	applyEnvOverrides(cfg)
 	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 3 || cfg.API.AsyncJobs.BackupMaxConcurrent != 4 || cfg.API.AsyncJobs.ManualQueueSize != 12 || cfg.API.AsyncJobs.ManualWorkers != 5 {
 		t.Fatalf("异步任务环境变量覆盖失败: %+v", cfg.API.AsyncJobs)
+	}
+}
+
+func TestAgentBudgetEnvironmentOverrides(t *testing.T) {
+	t.Setenv("NXPANEL_AGENT_RESOURCES_COMMAND_OUTPUT_MAX_SIZE", "8M")
+	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_LINES", "123")
+	t.Setenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRIES", "99")
+	t.Setenv("NXPANEL_AGENT_ARCHIVE_MAX_INPUT_SIZE", "12M")
+	t.Setenv("NXPANEL_AGENT_ARCHIVE_TIMEOUT", "5m")
+	cfg := defaultConfig()
+	applyEnvOverrides(cfg)
+	if cfg.Agent.Resources.CommandOutputMaxSize != "8M" || cfg.Agent.Resources.AccessScanMaxLines != 123 {
+		t.Fatalf("Agent resource 环境变量覆盖失败: %+v", cfg.Agent.Resources)
+	}
+	if cfg.Agent.Archive.MaxEntries != 99 || cfg.Agent.Archive.MaxInputSize != "12M" || cfg.Agent.Archive.Timeout != "5m" {
+		t.Fatalf("Agent archive 环境变量覆盖失败: %+v", cfg.Agent.Archive)
 	}
 }
 

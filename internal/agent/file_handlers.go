@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"archive/tar"
 	"archive/zip"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -370,6 +368,10 @@ func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		targetPath := filepath.Join(destDir, filepath.Base(srcPath))
+		if pathsOverlap(srcPath, targetPath) {
+			writeAgentError(w, http.StatusBadRequest, "复制目标不能与源路径重叠")
+			return
+		}
 		if err := copyRecursive(srcPath, targetPath); err != nil {
 			slog.Error("复制失败", "source", srcPath, "target", targetPath, "error", err)
 			writeAgentError(w, http.StatusInternalServerError, fmt.Sprintf("复制 %s 失败: %s", filepath.Base(srcPath), err.Error()))
@@ -384,6 +386,9 @@ func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 }
 
 func copyRecursive(src, dst string) error {
+	if pathsOverlap(src, dst) {
+		return fmt.Errorf("复制目标不能与源路径重叠")
+	}
 	info, err := os.Lstat(src)
 	if err != nil {
 		return fmt.Errorf("获取源文件信息失败: %w", err)
@@ -434,20 +439,21 @@ func copyFile(src, dst string, fi os.FileInfo) error {
 	if err != nil {
 		return fmt.Errorf("打开源文件失败: %w", err)
 	}
-	defer srcFile.Close()
-
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		_ = srcFile.Close()
 		return fmt.Errorf("创建目标目录失败: %w", err)
 	}
 
 	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode())
 	if err != nil {
+		_ = srcFile.Close()
 		return fmt.Errorf("创建目标文件失败: %w", err)
 	}
-	defer dstFile.Close()
-
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		return fmt.Errorf("复制文件内容失败: %w", err)
+	_, copyErr := io.Copy(dstFile, srcFile)
+	dstCloseErr := dstFile.Close()
+	srcCloseErr := srcFile.Close()
+	if err := joinCopyCloseErrors(copyErr, dstCloseErr, srcCloseErr); err != nil {
+		return fmt.Errorf("复制文件失败: %w", err)
 	}
 	return nil
 }
@@ -600,55 +606,27 @@ func (s *Server) handleFilesArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limits := s.archiveLimits()
+	ctx, cancel := context.WithTimeout(r.Context(), limits.timeout)
+	defer cancel()
+	if err := preflightArchiveSources(ctx, validPaths, limits); err != nil {
+		writeAgentError(w, http.StatusBadRequest, "打包资源检查失败: "+err.Error())
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="archive.zip"`)
 	w.WriteHeader(http.StatusOK)
 
-	zw := zip.NewWriter(w)
-	defer zw.Close()
-
-	for _, root := range validPaths {
-		err := filepath.Walk(root, func(fp string, fi os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if err := rejectSymlinkForArchive(fp, fi); err != nil {
-				return err
-			}
-
-			header, err := zip.FileInfoHeader(fi)
-			if err != nil {
-				return err
-			}
-
-			relPath, _ := filepath.Rel(filepath.Dir(root), fp)
-			if relPath == "." {
-				return nil
-			}
-			header.Name = relPath
-
-			if fi.IsDir() {
-				header.Name += "/"
-			}
-
-			writer, err := zw.CreateHeader(header)
-			if err != nil {
-				return err
-			}
-
-			if !fi.IsDir() {
-				f, err := os.Open(fp)
-				if err != nil {
-					return err
-				}
-				defer f.Close()
-				io.Copy(writer, f)
-			}
-			return nil
-		})
-		if err != nil {
-			slog.Error("打包文件失败", "path", root, "error", err)
-		}
+	budget := newArchiveBudget(limits)
+	zw := zip.NewWriter(&budgetWriter{dst: w, budget: budget})
+	if err := writeZipSources(ctx, zw, validPaths, budget); err != nil {
+		slog.Warn("流式打包中断", "error", err)
+		_ = zw.Close()
+		return
+	}
+	if err := zw.Close(); err != nil {
+		slog.Warn("关闭流式压缩包失败", "error", err)
 	}
 }
 
@@ -884,6 +862,12 @@ func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for _, source := range validPaths {
+		if pathsOverlap(source, outputPath) {
+			writeAgentError(w, http.StatusBadRequest, "输出路径不能与压缩源重叠")
+			return
+		}
+	}
 	outputDir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "创建输出目录失败: "+err.Error())
@@ -892,12 +876,12 @@ func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 
 	switch format {
 	case "zip":
-		if err := compressToZip(validPaths, outputPath); err != nil {
+		if err := compressToZipWithLimits(r.Context(), validPaths, outputPath, s.archiveLimits()); err != nil {
 			writeAgentError(w, http.StatusInternalServerError, "压缩失败: "+err.Error())
 			return
 		}
 	case "tar.gz", "tgz":
-		if err := compressToTarGz(validPaths, outputPath); err != nil {
+		if err := compressToTarGzWithLimits(r.Context(), validPaths, outputPath, s.archiveLimits()); err != nil {
 			writeAgentError(w, http.StatusInternalServerError, "压缩失败: "+err.Error())
 			return
 		}
@@ -908,115 +892,11 @@ func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 }
 
 func compressToZip(paths []string, outputPath string) error {
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("创建输出文件失败: %w", err)
-	}
-	defer f.Close()
-
-	zw := zip.NewWriter(f)
-	defer zw.Close()
-
-	for _, root := range paths {
-		base := filepath.Base(root)
-		err := filepath.Walk(root, func(fp string, fi os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if err := rejectSymlinkForArchive(fp, fi); err != nil {
-				return err
-			}
-			rel, _ := filepath.Rel(filepath.Dir(root), fp)
-			if rel == "." {
-				return nil
-			}
-			header, err := zip.FileInfoHeader(fi)
-			if err != nil {
-				return err
-			}
-			header.Name = base + "/" + rel
-			if fi.IsDir() {
-				header.Name += "/"
-			}
-			w, err := zw.CreateHeader(header)
-			if err != nil {
-				return err
-			}
-			if !fi.IsDir() {
-				f, err := os.Open(fp)
-				if err != nil {
-					return err
-				}
-				defer f.Close()
-				_, err = io.Copy(w, f)
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("打包 %s 失败: %w", root, err)
-		}
-	}
-	return nil
+	return compressToZipWithLimits(context.Background(), paths, outputPath, defaultArchiveLimits())
 }
 
 func compressToTarGz(paths []string, outputPath string) error {
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("创建输出文件失败: %w", err)
-	}
-	defer f.Close()
-
-	gw := gzip.NewWriter(f)
-	defer gw.Close()
-
-	tw := tar.NewWriter(gw)
-	defer tw.Close()
-
-	for _, root := range paths {
-		base := filepath.Base(root)
-		err := filepath.Walk(root, func(fp string, fi os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if err := rejectSymlinkForArchive(fp, fi); err != nil {
-				return err
-			}
-			rel, _ := filepath.Rel(filepath.Dir(root), fp)
-			if rel == "." {
-				return nil
-			}
-			header, err := tar.FileInfoHeader(fi, "")
-			if err != nil {
-				return err
-			}
-			header.Name = base + "/" + rel
-			if fi.IsDir() {
-				header.Name += "/"
-			}
-			if err := tw.WriteHeader(header); err != nil {
-				return err
-			}
-			if !fi.IsDir() {
-				f, err := os.Open(fp)
-				if err != nil {
-					return err
-				}
-				defer f.Close()
-				_, err = io.Copy(tw, f)
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("打包 %s 失败: %w", root, err)
-		}
-	}
-	return nil
+	return compressToTarGzWithLimits(context.Background(), paths, outputPath, defaultArchiveLimits())
 }
 
 // ============================================================
@@ -1047,19 +927,20 @@ func (s *Server) handleFilesExtract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		writeAgentError(w, http.StatusInternalServerError, "创建目标目录失败: "+err.Error())
+	if pathsOverlap(archivePath, destDir) {
+		writeAgentError(w, http.StatusBadRequest, "压缩包路径与解压目录不能重叠")
 		return
 	}
-
 	ext := strings.ToLower(filepath.Ext(archivePath))
+	ctx, cancel := context.WithTimeout(r.Context(), s.archiveLimits().timeout)
+	defer cancel()
 	switch ext {
 	case ".zip":
-		err = extractZip(s.policy, archivePath, destDir)
+		err = extractZipWithLimits(ctx, s.policy, archivePath, destDir, s.archiveLimits())
 	case ".tar":
-		err = extractTar(s.policy, archivePath, destDir, false)
+		err = extractTarWithLimits(ctx, s.policy, archivePath, destDir, false, s.archiveLimits())
 	case ".gz", ".tgz":
-		err = extractTar(s.policy, archivePath, destDir, true)
+		err = extractTarWithLimits(ctx, s.policy, archivePath, destDir, true, s.archiveLimits())
 	default:
 		writeAgentError(w, http.StatusBadRequest, "不支持的压缩格式，仅支持 zip / tar / tar.gz")
 		return
@@ -1086,101 +967,11 @@ func (s *Server) handleFilesExtract(w http.ResponseWriter, r *http.Request) {
 }
 
 func extractZip(policy *PathPolicy, archivePath, destDir string) error {
-	r, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return fmt.Errorf("打开压缩包失败: %w", err)
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("不允许解压符号链接条目: %s", f.Name)
-		}
-		target, err := safeExtractTarget(policy, destDir, f.Name)
-		if err != nil {
-			return err
-		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
-		}
-		src, err := f.Open()
-		if err != nil {
-			return err
-		}
-		dst, err := os.Create(target)
-		if err != nil {
-			src.Close()
-			return err
-		}
-		_, err = io.Copy(dst, src)
-		src.Close()
-		dst.Close()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return extractZipWithLimits(context.Background(), policy, archivePath, destDir, defaultArchiveLimits())
 }
 
 func extractTar(policy *PathPolicy, archivePath, destDir string, gzipped bool) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("打开压缩包失败: %w", err)
-	}
-	defer f.Close()
-
-	var reader io.Reader = f
-	if gzipped {
-		gr, err := gzip.NewReader(f)
-		if err != nil {
-			return fmt.Errorf("创建 gzip 读取器失败: %w", err)
-		}
-		defer gr.Close()
-		reader = gr
-	}
-
-	tr := tar.NewReader(reader)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("读取 tar 条目失败: %w", err)
-		}
-		target, err := safeExtractTarget(policy, destDir, header.Name)
-		if err != nil {
-			return err
-		}
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
-			}
-			dst, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(dst, tr)
-			dst.Close()
-			if err != nil {
-				return err
-			}
-		case tar.TypeSymlink, tar.TypeLink:
-			return fmt.Errorf("不允许解压链接条目: %s", header.Name)
-		}
-	}
-	return nil
+	return extractTarWithLimits(context.Background(), policy, archivePath, destDir, gzipped, defaultArchiveLimits())
 }
 
 func safeExtractTarget(policy *PathPolicy, destDir, entryName string) (string, error) {

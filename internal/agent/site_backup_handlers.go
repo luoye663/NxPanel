@@ -128,6 +128,17 @@ func (s *Server) createSiteBackup(ctx context.Context, req *SiteBackupCreateRequ
 	if err != nil {
 		return nil, fmt.Errorf("输出路径不在白名单内: %w", err)
 	}
+	for _, source := range append(append([]string{}, req.ConfigPaths...), req.SSLPaths...) {
+		if source != "" && pathsOverlap(source, outputPath) {
+			return nil, fmt.Errorf("备份输出路径不能与备份源重叠")
+		}
+	}
+	if req.RootPath != "" && pathsOverlap(req.RootPath, outputPath) {
+		return nil, fmt.Errorf("备份输出路径不能位于站点根目录内")
+	}
+	limits := s.archiveLimits()
+	ctx, cancel := context.WithTimeout(ctx, limits.timeout)
+	defer cancel()
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0700); err != nil {
 		return nil, fmt.Errorf("创建备份目录失败: %w", err)
 	}
@@ -140,18 +151,19 @@ func (s *Server) createSiteBackup(ctx context.Context, req *SiteBackupCreateRequ
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	hash := sha256.New()
-	gw := gzip.NewWriter(io.MultiWriter(out, hash))
+	budget := newArchiveBudget(limits)
+	gw := gzip.NewWriter(&budgetWriter{dst: io.MultiWriter(out, hash), budget: budget})
 	tw := tar.NewWriter(gw)
 	metadata := siteBackupMetadata{Version: 1, SiteID: req.SiteID, PrimaryDomain: req.PrimaryDomain, BackupType: req.BackupType, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 
 	// metadata 最后写入，这样可以记录实际归档成功的文件 hash 和大小。
-	if err := s.addBackupEntries(ctx, tw, req, &metadata); err != nil {
+	if err := s.addBackupEntries(ctx, tw, req, &metadata, budget); err != nil {
 		_ = tw.Close()
 		_ = gw.Close()
 		_ = out.Close()
 		return nil, err
 	}
-	if err := writeSiteBackupMetadata(tw, metadata); err != nil {
+	if err := writeSiteBackupMetadata(tw, metadata, budget); err != nil {
 		_ = tw.Close()
 		_ = gw.Close()
 		_ = out.Close()
@@ -180,14 +192,14 @@ func (s *Server) createSiteBackup(ctx context.Context, req *SiteBackupCreateRequ
 	return &SiteBackupCreateResponse{Path: outputPath, Size: info.Size(), SHA256: hex.EncodeToString(hash.Sum(nil))}, nil
 }
 
-func (s *Server) addBackupEntries(ctx context.Context, tw *tar.Writer, req *SiteBackupCreateRequest, metadata *siteBackupMetadata) error {
+func (s *Server) addBackupEntries(ctx context.Context, tw *tar.Writer, req *SiteBackupCreateRequest, metadata *siteBackupMetadata, budget *archiveBudget) error {
 	if req.BackupType == "config" || req.BackupType == "full" {
 		for index, path := range req.ConfigPaths {
 			if path == "" {
 				continue
 			}
 			name := siteBackupConfigEntryName(index)
-			if err := s.addFileToBackup(ctx, tw, path, name, metadata); err != nil && !os.IsNotExist(err) {
+			if err := s.addFileToBackup(ctx, tw, path, name, metadata, budget); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
@@ -198,7 +210,7 @@ func (s *Server) addBackupEntries(ctx context.Context, tw *tar.Writer, req *Site
 				continue
 			}
 			name := siteBackupSSLEntryName(index)
-			if err := s.addFileToBackup(ctx, tw, path, name, metadata); err != nil && !os.IsNotExist(err) {
+			if err := s.addFileToBackup(ctx, tw, path, name, metadata, budget); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
@@ -234,15 +246,18 @@ func (s *Server) addBackupEntries(ctx context.Context, tw *tar.Writer, req *Site
 			}
 			name := filepath.ToSlash(filepath.Join("root", rel))
 			if info.IsDir() {
+				if err := budget.checkEntry(name, 0); err != nil {
+					return err
+				}
 				return writeTarDir(tw, info, name)
 			}
-			return s.addFileToBackup(ctx, tw, path, name, metadata)
+			return s.addFileToBackup(ctx, tw, path, name, metadata, budget)
 		})
 	}
 	return nil
 }
 
-func (s *Server) addFileToBackup(ctx context.Context, tw *tar.Writer, sourcePath, entryName string, metadata *siteBackupMetadata) error {
+func (s *Server) addFileToBackup(ctx context.Context, tw *tar.Writer, sourcePath, entryName string, metadata *siteBackupMetadata, budget *archiveBudget) error {
 	path, err := s.policy.Validate(sourcePath)
 	if err != nil {
 		return fmt.Errorf("备份源路径不在白名单内: %s: %w", sourcePath, err)
@@ -253,6 +268,9 @@ func (s *Server) addFileToBackup(ctx context.Context, tw *tar.Writer, sourcePath
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("备份只允许普通文件: %s", sourcePath)
+	}
+	if err := budget.checkEntry(entryName, info.Size()); err != nil {
+		return err
 	}
 	header, err := tar.FileInfoHeader(info, "")
 	if err != nil {
@@ -266,9 +284,10 @@ func (s *Server) addFileToBackup(ctx context.Context, tw *tar.Writer, sourcePath
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(tw, io.TeeReader(file, hash)); err != nil {
+	_, copyErr := copyArchiveInput(ctx, tw, io.TeeReader(file, hash), budget, info.Size())
+	closeErr := file.Close()
+	if err := joinCopyCloseErrors(copyErr, closeErr); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -287,12 +306,15 @@ func writeTarDir(tw *tar.Writer, info os.FileInfo, name string) error {
 	return tw.WriteHeader(header)
 }
 
-func writeSiteBackupMetadata(tw *tar.Writer, metadata siteBackupMetadata) error {
+func writeSiteBackupMetadata(tw *tar.Writer, metadata siteBackupMetadata, budget *archiveBudget) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return err
 	}
 	header := &tar.Header{Name: "metadata.json", Mode: 0600, Size: int64(len(data)), ModTime: time.Now()}
+	if err := budget.checkEntry(header.Name, header.Size); err != nil {
+		return err
+	}
 	if err := tw.WriteHeader(header); err != nil {
 		return err
 	}
@@ -308,7 +330,10 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 	if err != nil {
 		return fmt.Errorf("备份路径不在白名单内: %w", err)
 	}
-	metadata, err := readSiteBackupMetadata(backupPath)
+	limits := s.archiveLimits()
+	ctx, cancel := context.WithTimeout(ctx, limits.timeout)
+	defer cancel()
+	metadata, err := readSiteBackupMetadataWithLimits(ctx, backupPath, limits)
 	if err != nil {
 		return err
 	}
@@ -320,15 +345,23 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 	if _, err := s.createSiteBackup(ctx, &snapshotReq); err != nil {
 		return fmt.Errorf("恢复前创建快照失败: %w", err)
 	}
+	if s.restoreSnapshotHook != nil {
+		s.restoreSnapshotHook(snapshotPath)
+	}
 	if err := s.extractSiteBackup(ctx, backupPath, req); err != nil {
-		return err
+		rollbackErr := s.rollbackSiteBackup(ctx, snapshotPath, req, limits)
+		if rollbackErr != nil {
+			return fmt.Errorf("恢复备份失败: %w；快照回滚失败: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("恢复备份失败，已从快照回滚: %w", err)
 	}
 	if req.RestoreConfig || req.RestoreSSL {
 		if result, testErr := s.executor.Test(ctx); testErr != nil {
-			rollbackReq := *req
-			rollbackReq.BackupPath = snapshotPath
-			_ = s.extractSiteBackup(context.Background(), snapshotPath, &rollbackReq)
-			return fmt.Errorf("nginx -t 失败，已尝试回滚: %s %v", result.Stderr, testErr)
+			rollbackErr := s.rollbackSiteBackup(ctx, snapshotPath, req, limits)
+			if rollbackErr != nil {
+				return fmt.Errorf("nginx -t 失败且快照回滚失败: %s %v；回滚错误: %v", result.Stderr, testErr, rollbackErr)
+			}
+			return fmt.Errorf("nginx -t 失败，已从快照回滚: %s %v", result.Stderr, testErr)
 		}
 		if req.ReloadNginx {
 			if _, err := s.executor.Reload(ctx); err != nil {
@@ -339,20 +372,42 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 	return nil
 }
 
+func (s *Server) rollbackSiteBackup(parent context.Context, snapshotPath string, req *SiteBackupRestoreRequest, limits archiveLimits) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), limits.timeout)
+	defer cancel()
+	rollbackReq := *req
+	rollbackReq.BackupPath = snapshotPath
+	return s.extractSiteBackup(rollbackCtx, snapshotPath, &rollbackReq)
+}
+
 func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *SiteBackupRestoreRequest) error {
+	if _, err := checkArchiveFileSize(backupPath, s.archiveLimits()); err != nil {
+		return fmt.Errorf("备份文件资源检查失败: %w", err)
+	}
 	file, err := os.Open(backupPath)
 	if err != nil {
 		return fmt.Errorf("打开备份文件失败: %w", err)
 	}
 	defer file.Close()
-	gr, err := gzip.NewReader(file)
+	compressed := &countingReader{r: file}
+	gr, err := gzip.NewReader(compressed)
 	if err != nil {
 		return fmt.Errorf("读取 gzip 失败: %w", err)
 	}
 	defer gr.Close()
 	tr := tar.NewReader(gr)
+	budget := newArchiveBudget(s.archiveLimits())
 	configTargets := mapConfigEntryNames(req.ConfigPaths)
 	sslTargets := mapSSLEntryNames(req.SSLPaths)
+	created := []string{}
+	success := false
+	defer func() {
+		if !success {
+			for i := len(created) - 1; i >= 0; i-- {
+				_ = os.Remove(created[i])
+			}
+		}
+	}()
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -367,7 +422,15 @@ func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *
 		if !safeBackupEntryName(header.Name) {
 			return fmt.Errorf("备份包含非法条目: %s", header.Name)
 		}
+		if err := budget.checkEntry(header.Name, header.Size); err != nil {
+			return err
+		}
 		if header.Name == "metadata.json" {
+			if header.Size > 0 {
+				if _, err := copyArchiveOutput(ctx, io.Discard, tr, budget, header.Size); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA && header.Typeflag != tar.TypeDir {
@@ -385,9 +448,22 @@ func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *
 			}
 			target = filepath.Join(req.RootPath, strings.TrimPrefix(header.Name, "root/"))
 		default:
+			if header.Size > 0 {
+				if _, err := copyArchiveOutput(ctx, io.Discard, tr, budget, header.Size); err != nil {
+					return err
+				}
+				if err := budget.checkRatio(budget.extracted, compressed.n, header.Name); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if target == "" {
+			if header.Size > 0 {
+				if _, err := copyArchiveOutput(ctx, io.Discard, tr, budget, header.Size); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		cleanTarget, err := safeRestoreTarget(s.policy, target)
@@ -395,28 +471,31 @@ func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *
 			return err
 		}
 		if header.Typeflag == tar.TypeDir {
+			_, statErr := os.Stat(cleanTarget)
 			if err := os.MkdirAll(cleanTarget, 0755); err != nil {
 				return err
+			}
+			if os.IsNotExist(statErr) {
+				created = append(created, cleanTarget)
 			}
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(cleanTarget), 0755); err != nil {
 			return err
 		}
-		out, err := os.OpenFile(cleanTarget, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode).Perm())
-		if err != nil {
+		_, statErr := os.Stat(cleanTarget)
+		if err := extractEntryAtomically(ctx, cleanTarget, os.FileMode(header.Mode), tr, budget, header.Size); err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(out, tr)
-		closeErr := out.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
+		if err := budget.checkRatio(budget.extracted, compressed.n, header.Name); err != nil {
+			return err
 		}
 		s.applyWebOwner(cleanTarget)
+		if os.IsNotExist(statErr) {
+			created = append(created, cleanTarget)
+		}
 	}
+	success = true
 	return nil
 }
 
@@ -481,18 +560,30 @@ func mapSSLEntryNames(paths []string) map[string]string {
 }
 
 func readSiteBackupMetadata(backupPath string) (*siteBackupMetadata, error) {
+	return readSiteBackupMetadataWithLimits(context.Background(), backupPath, defaultArchiveLimits())
+}
+
+func readSiteBackupMetadataWithLimits(ctx context.Context, backupPath string, limits archiveLimits) (*siteBackupMetadata, error) {
+	if _, err := checkArchiveFileSize(backupPath, limits); err != nil {
+		return nil, fmt.Errorf("备份文件资源检查失败: %w", err)
+	}
 	file, err := os.Open(backupPath)
 	if err != nil {
 		return nil, fmt.Errorf("打开备份文件失败: %w", err)
 	}
 	defer file.Close()
-	gr, err := gzip.NewReader(file)
+	compressed := &countingReader{r: file}
+	gr, err := gzip.NewReader(compressed)
 	if err != nil {
 		return nil, fmt.Errorf("读取 gzip 失败: %w", err)
 	}
 	defer gr.Close()
 	tr := tar.NewReader(gr)
+	budget := newArchiveBudget(limits)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -500,11 +591,23 @@ func readSiteBackupMetadata(backupPath string) (*siteBackupMetadata, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取备份条目失败: %w", err)
 		}
+		if err := budget.checkEntry(header.Name, header.Size); err != nil {
+			return nil, err
+		}
 		if header.Name != "metadata.json" {
+			if header.Size > 0 {
+				if _, err := copyArchiveOutput(ctx, io.Discard, tr, budget, header.Size); err != nil {
+					return nil, err
+				}
+				if err := budget.checkRatio(budget.extracted, compressed.n, header.Name); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
 		var metadata siteBackupMetadata
-		if err := json.NewDecoder(tr).Decode(&metadata); err != nil {
+		limited := io.LimitReader(tr, header.Size)
+		if err := json.NewDecoder(limited).Decode(&metadata); err != nil {
 			return nil, fmt.Errorf("解析备份 metadata 失败: %w", err)
 		}
 		if metadata.Version != 1 || metadata.SiteID == "" {

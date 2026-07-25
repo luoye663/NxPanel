@@ -12,6 +12,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginx"
@@ -64,14 +66,41 @@ type NginxExecutor struct {
 	confPath      string
 	timeouts      NginxTimeouts
 	systemctlPath string
+	outputMax     int64
+	diagnosticMax int64
 }
 
 // NewNginxExecutor 创建 Nginx 执行器
 func NewNginxExecutor(bin, confPath string, timeouts NginxTimeouts) *NginxExecutor {
 	return &NginxExecutor{
-		bin:      bin,
-		confPath: confPath,
-		timeouts: timeouts,
+		bin:           bin,
+		confPath:      confPath,
+		timeouts:      timeouts,
+		outputMax:     defaultCommandOutputBytes,
+		diagnosticMax: defaultCommandDiagnostic,
+	}
+}
+
+var ErrCommandOutputLimit = errors.New("command output limit exceeded")
+
+type CommandOutputLimitError struct {
+	Limit int64
+}
+
+func (e *CommandOutputLimitError) Error() string {
+	return fmt.Sprintf("%v: combined stdout/stderr exceeded %d bytes", ErrCommandOutputLimit, e.Limit)
+}
+
+func (e *CommandOutputLimitError) Unwrap() error { return ErrCommandOutputLimit }
+
+func (e *NginxExecutor) SetOutputLimits(maxOutput, maxDiagnostic int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if maxOutput > 0 {
+		e.outputMax = maxOutput
+	}
+	if maxDiagnostic > 0 {
+		e.diagnosticMax = maxDiagnostic
 	}
 }
 
@@ -412,15 +441,32 @@ func resolveDefaultWebUser() (string, string) {
 //   - 参数固定，不接受用户输入的参数
 //   - 有超时保护
 func (e *NginxExecutor) run(ctx context.Context, bin string, args ...string) (CmdResult, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, bin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = time.Second
+	e.mu.Lock()
+	maxOutput, maxDiagnostic := e.outputMax, e.diagnosticMax
+	e.mu.Unlock()
+	state := newCommandOutputState(maxOutput, maxDiagnostic, cancel)
+	cmd.Stdout = commandOutputWriter{state: state, stderr: false}
+	cmd.Stderr = commandOutputWriter{state: state, stderr: true}
 
 	err := cmd.Run()
-	result := CmdResult{
-		Stdout: out.String(),
-		Stderr: errb.String(),
+	result, overflowErr := state.result()
+	if overflowErr != nil {
+		return result, overflowErr
 	}
 
 	if err != nil {
@@ -428,4 +474,71 @@ func (e *NginxExecutor) run(ctx context.Context, bin string, args ...string) (Cm
 	}
 
 	return result, nil
+}
+
+type commandOutputState struct {
+	mu            sync.Mutex
+	max           int64
+	diagnosticMax int64
+	total         int64
+	diagnostic    int64
+	overflow      bool
+	cancel        context.CancelFunc
+	stdout        bytes.Buffer
+	stderr        bytes.Buffer
+	diagStdout    bytes.Buffer
+	diagStderr    bytes.Buffer
+}
+
+func newCommandOutputState(max, diagnosticMax int64, cancel context.CancelFunc) *commandOutputState {
+	return &commandOutputState{max: max, diagnosticMax: diagnosticMax, cancel: cancel}
+}
+
+type commandOutputWriter struct {
+	state  *commandOutputState
+	stderr bool
+}
+
+func (w commandOutputWriter) Write(p []byte) (int, error) {
+	s := w.state
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.overflow {
+		return 0, &CommandOutputLimitError{Limit: s.max}
+	}
+	if remaining := s.diagnosticMax - s.diagnostic; remaining > 0 {
+		n := int64(len(p))
+		if n > remaining {
+			n = remaining
+		}
+		if w.stderr {
+			_, _ = s.diagStderr.Write(p[:n])
+		} else {
+			_, _ = s.diagStdout.Write(p[:n])
+		}
+		s.diagnostic += n
+	}
+	if int64(len(p)) > s.max-s.total {
+		s.overflow = true
+		s.stdout = bytes.Buffer{}
+		s.stderr = bytes.Buffer{}
+		s.cancel()
+		return 0, &CommandOutputLimitError{Limit: s.max}
+	}
+	s.total += int64(len(p))
+	if w.stderr {
+		_, _ = s.stderr.Write(p)
+	} else {
+		_, _ = s.stdout.Write(p)
+	}
+	return len(p), nil
+}
+
+func (s *commandOutputState) result() (CmdResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.overflow {
+		return CmdResult{Stdout: s.diagStdout.String(), Stderr: s.diagStderr.String()}, &CommandOutputLimitError{Limit: s.max}
+	}
+	return CmdResult{Stdout: s.stdout.String(), Stderr: s.stderr.String()}, nil
 }

@@ -53,7 +53,7 @@ func (s *Server) handleServiceLogTail(w http.ResponseWriter, r *http.Request) {
 		req.MaxLines = 2000
 	}
 
-	lines, truncated, err := tailFile(logPath, req.MaxLines, s.clampReadBytes(8*1024*1024, 8*1024*1024))
+	lines, truncated, err := tailFileWithLineLimit(logPath, req.MaxLines, s.clampReadBytes(8*1024*1024, 8*1024*1024), s.logLineMaxBytes())
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "读取日志失败: "+err.Error())
 		return
@@ -186,7 +186,7 @@ func (s *Server) handleTaskLogTail(w http.ResponseWriter, r *http.Request) {
 		req.MaxLines = 2000
 	}
 
-	lines, truncated, err := tailFile(logPath, req.MaxLines, s.clampReadBytes(4*1024*1024, 4*1024*1024))
+	lines, truncated, err := tailFileWithLineLimit(logPath, req.MaxLines, s.clampReadBytes(4*1024*1024, 4*1024*1024), s.logLineMaxBytes())
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "读取任务日志失败: "+err.Error())
 		return

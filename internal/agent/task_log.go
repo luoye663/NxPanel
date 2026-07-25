@@ -15,6 +15,10 @@ func writeTaskLog(cfg taskLogConfig, level, message string) {
 	}
 
 	ts := time.Now().UTC().Format(time.RFC3339)
+	const maxTaskLogMessage = defaultLogLineBytes
+	if len(message) > maxTaskLogMessage {
+		message = message[:maxTaskLogMessage] + " ... [truncated]"
+	}
 	line := fmt.Sprintf("%s [%s] %s\n", ts, level, message)
 
 	logPath := filepath.Join(taskDir, cfg.fileName)

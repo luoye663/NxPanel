@@ -231,6 +231,34 @@ type AgentConfig struct {
 
 	// DownloadTimeout 单次文件/日志下载最长传输时间（如 "2m"）
 	DownloadTimeout string `yaml:"download_timeout"`
+
+	// Resources Agent 子进程、日志和访问分析的资源预算
+	Resources AgentResourceConfig `yaml:"resources"`
+
+	// Archive 通用压缩、解压和站点备份共享的资源预算
+	Archive AgentArchiveConfig `yaml:"archive"`
+}
+
+type AgentResourceConfig struct {
+	CommandOutputMaxSize     string `yaml:"command_output_max_size"`
+	CommandDiagnosticMaxSize string `yaml:"command_diagnostic_max_size"`
+	LogLineMaxSize           string `yaml:"log_line_max_size"`
+	AccessScanMaxBytes       string `yaml:"access_scan_max_bytes"`
+	AccessScanMaxLines       int64  `yaml:"access_scan_max_lines"`
+	AccessScanTimeout        string `yaml:"access_scan_timeout"`
+	AccessScanLineMaxSize    string `yaml:"access_scan_line_max_size"`
+	AccessScanRotatedFiles   int    `yaml:"access_scan_rotated_files"`
+}
+
+type AgentArchiveConfig struct {
+	MaxEntries          int64  `yaml:"max_entries"`
+	MaxInputSize        string `yaml:"max_input_size"`
+	MaxArchiveSize      string `yaml:"max_archive_size"`
+	MaxExtractedSize    string `yaml:"max_extracted_size"`
+	MaxEntrySize        string `yaml:"max_entry_size"`
+	MaxDepth            int    `yaml:"max_depth"`
+	MaxCompressionRatio int64  `yaml:"max_compression_ratio"`
+	Timeout             string `yaml:"timeout"`
 }
 
 // NginxConfig — Nginx 相关配置
@@ -429,6 +457,26 @@ func defaultConfig() *Config {
 			MaxReadSize:     "16M",
 			MaxDownloadSize: "256M",
 			DownloadTimeout: "2m",
+			Resources: AgentResourceConfig{
+				CommandOutputMaxSize:     "32M",
+				CommandDiagnosticMaxSize: "64K",
+				LogLineMaxSize:           "64K",
+				AccessScanMaxBytes:       "64M",
+				AccessScanMaxLines:       500000,
+				AccessScanTimeout:        "300s",
+				AccessScanLineMaxSize:    "32K",
+				AccessScanRotatedFiles:   32,
+			},
+			Archive: AgentArchiveConfig{
+				MaxEntries:          100000,
+				MaxInputSize:        "2G",
+				MaxArchiveSize:      "1G",
+				MaxExtractedSize:    "2G",
+				MaxEntrySize:        "512M",
+				MaxDepth:            64,
+				MaxCompressionRatio: 100,
+				Timeout:             "30m",
+			},
 		},
 		Nginx: NginxConfig{
 			Bin:                 "",
@@ -739,6 +787,64 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("NXPANEL_AGENT_DOWNLOAD_TIMEOUT"); v != "" {
 		cfg.Agent.DownloadTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_COMMAND_OUTPUT_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.CommandOutputMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_COMMAND_DIAGNOSTIC_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.CommandDiagnosticMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_LOG_LINE_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.LogLineMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_BYTES"); v != "" {
+		cfg.Agent.Resources.AccessScanMaxBytes = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_LINES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Agent.Resources.AccessScanMaxLines = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_TIMEOUT"); v != "" {
+		cfg.Agent.Resources.AccessScanTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_LINE_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.AccessScanLineMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_ROTATED_FILES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Agent.Resources.AccessScanRotatedFiles = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRIES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Agent.Archive.MaxEntries = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_INPUT_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxInputSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ARCHIVE_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxArchiveSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_EXTRACTED_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxExtractedSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRY_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxEntrySize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_DEPTH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Agent.Archive.MaxDepth = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_COMPRESSION_RATIO"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Agent.Archive.MaxCompressionRatio = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_TIMEOUT"); v != "" {
+		cfg.Agent.Archive.Timeout = v
 	}
 	if v := os.Getenv("NXPANEL_NGINX_LOG_DIR"); v != "" {
 		cfg.Nginx.LogDir = v
