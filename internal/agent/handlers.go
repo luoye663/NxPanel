@@ -69,8 +69,8 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 参数校验
-	if req.OperationID == "" {
-		writeAgentError(w, http.StatusBadRequest, "operation_id 不能为空")
+	if err := validateOperationID(req.OperationID); err != nil {
+		writeAgentError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if len(req.Changes) == 0 {
@@ -100,8 +100,13 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	// 创建并执行事务
-	tx := NewTransaction(req.OperationID, s.cfg.Nginx.PanelDir+"/backups", s.policy,
+	tx, err := NewTransaction(req.OperationID, s.cfg.Nginx.PanelDir+"/backups", s.policy,
 		s.cfg.Nginx.WebUser, s.cfg.Nginx.WebGroup)
+	if err != nil {
+		slog.Error("创建文件事务失败", "operation_id", req.OperationID, "error", err)
+		writeAgentError(w, http.StatusInternalServerError, "创建事务失败: "+err.Error())
+		return
+	}
 	if err := tx.Apply(ctx, req.Changes); err != nil {
 		slog.Error("文件事务执行失败", "operation_id", req.OperationID, "error", err)
 		writeAgentError(w, http.StatusInternalServerError, "事务执行失败: "+err.Error())

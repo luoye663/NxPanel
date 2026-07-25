@@ -338,6 +338,55 @@ func TestWriteFileAtomic_CreatesDeepPath(t *testing.T) {
 // 文件事务测试
 // ============================================================
 
+func newTestTransaction(t *testing.T, operationID, backupBase string, policy *PathPolicy) *Transaction {
+	t.Helper()
+	tx, err := NewTransaction(operationID, backupBase, policy, "", "")
+	if err != nil {
+		t.Fatalf("创建事务失败: %v", err)
+	}
+	return tx
+}
+
+func TestNewTransaction_ValidatesOperationIDAndContainment(t *testing.T) {
+	backupBase := filepath.Join(t.TempDir(), "backups")
+	validIDs := []string{
+		app.NewOperationID(),
+		"op_test_001",
+		"deploy-default-pages",
+		"self-signed-cert",
+	}
+	for _, operationID := range validIDs {
+		t.Run("valid_"+operationID, func(t *testing.T) {
+			tx, err := NewTransaction(operationID, backupBase, nil, "", "")
+			if err != nil {
+				t.Fatalf("合法 operation_id 被拒绝: %v", err)
+			}
+			if filepath.Dir(tx.BackupDir) != filepath.Clean(backupBase) {
+				t.Fatalf("备份目录不在 backup base 直接下级: %s", tx.BackupDir)
+			}
+		})
+	}
+
+	invalidIDs := []string{
+		"",
+		"../outside",
+		"op/child",
+		`op\\child`,
+		"/absolute",
+		"C:\\absolute",
+		"op.control\n",
+		"op space",
+		strings.Repeat("a", maxOperationIDLength+1),
+	}
+	for _, operationID := range invalidIDs {
+		t.Run(fmt.Sprintf("invalid_%q", operationID), func(t *testing.T) {
+			if tx, err := NewTransaction(operationID, backupBase, nil, "", ""); err == nil || tx != nil {
+				t.Fatalf("非法 operation_id 应被拒绝: %q", operationID)
+			}
+		})
+	}
+}
+
 func TestTransaction_WriteAndRollback(t *testing.T) {
 	tmpDir := t.TempDir()
 	// 创建允许的根目录
@@ -352,7 +401,7 @@ func TestTransaction_WriteAndRollback(t *testing.T) {
 	policy := NewPathPolicy([]string{allowedDir})
 	backupDir := filepath.Join(tmpDir, "backups")
 
-	tx := NewTransaction("op_test_001", backupDir, policy, "", "")
+	tx := newTestTransaction(t, "op_test_001", backupDir, policy)
 
 	// 写入新文件并修改已有文件
 	newFile := filepath.Join(allowedDir, "new.conf")
@@ -398,6 +447,51 @@ func TestTransaction_WriteAndRollback(t *testing.T) {
 	}
 }
 
+func TestTransaction_SameBasenameBackupsRollbackIndependently(t *testing.T) {
+	tmpDir := t.TempDir()
+	allowedDir := filepath.Join(tmpDir, "nginx")
+	firstPath := filepath.Join(allowedDir, "first", "site.conf")
+	secondPath := filepath.Join(allowedDir, "second", "site.conf")
+	if err := os.MkdirAll(filepath.Dir(firstPath), 0755); err != nil {
+		t.Fatalf("创建 first 目录失败: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(secondPath), 0755); err != nil {
+		t.Fatalf("创建 second 目录失败: %v", err)
+	}
+	if err := os.WriteFile(firstPath, []byte("first original"), 0644); err != nil {
+		t.Fatalf("写入 first 文件失败: %v", err)
+	}
+	if err := os.WriteFile(secondPath, []byte("second original"), 0644); err != nil {
+		t.Fatalf("写入 second 文件失败: %v", err)
+	}
+
+	tx := newTestTransaction(t, "op_same_basename", filepath.Join(tmpDir, "backups"), NewPathPolicy([]string{allowedDir}))
+	changes := []FileChange{
+		{Type: "write", Path: firstPath, Content: []byte("first changed"), Perm: 0644},
+		{Type: "write", Path: secondPath, Content: []byte("second changed"), Perm: 0644},
+	}
+	if err := tx.Apply(context.Background(), changes); err != nil {
+		t.Fatalf("Apply 失败: %v", err)
+	}
+	if tx.Backups[0].BackupPath == tx.Backups[1].BackupPath {
+		t.Fatal("同名源文件必须使用不同备份路径")
+	}
+	if err := tx.Rollback(context.Background()); err != nil {
+		t.Fatalf("Rollback 失败: %v", err)
+	}
+	firstData, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatalf("读取 first 文件失败: %v", err)
+	}
+	secondData, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatalf("读取 second 文件失败: %v", err)
+	}
+	if string(firstData) != "first original" || string(secondData) != "second original" {
+		t.Fatalf("同名文件未独立回滚: first=%q second=%q", firstData, secondData)
+	}
+}
+
 func TestTransaction_SymlinkAndRemove(t *testing.T) {
 	tmpDir := t.TempDir()
 	allowedDir := filepath.Join(tmpDir, "nginx")
@@ -413,7 +507,7 @@ func TestTransaction_SymlinkAndRemove(t *testing.T) {
 	policy := NewPathPolicy([]string{allowedDir})
 	backupDir := filepath.Join(tmpDir, "backups")
 
-	tx := NewTransaction("op_test_002", backupDir, policy, "", "")
+	tx := newTestTransaction(t, "op_test_002", backupDir, policy)
 
 	// 创建符号链接
 	linkPath := filepath.Join(sitesEnabled, "test.conf")
@@ -444,7 +538,7 @@ func TestTransaction_RejectsInvalidPath(t *testing.T) {
 	policy := NewPathPolicy([]string{allowedDir})
 	backupDir := filepath.Join(tmpDir, "backups")
 
-	tx := NewTransaction("op_test_003", backupDir, policy, "", "")
+	tx := newTestTransaction(t, "op_test_003", backupDir, policy)
 
 	// 尝试写入不允许的路径
 	changes := []FileChange{
@@ -473,7 +567,7 @@ func TestTransaction_RejectsWriteUnderSymlinkParentOutsideAllowedRoot(t *testing
 	}
 
 	policy := NewPathPolicy([]string{allowedDir})
-	tx := NewTransaction("op_test_symlink_parent", filepath.Join(tmpDir, "backups"), policy, "", "")
+	tx := newTestTransaction(t, "op_test_symlink_parent", filepath.Join(tmpDir, "backups"), policy)
 	targetPath := filepath.Join(allowedDir, "link-out", "new.conf")
 
 	err := tx.Apply(context.Background(), []FileChange{
@@ -499,7 +593,7 @@ func TestTransaction_MkdirAndTruncate(t *testing.T) {
 	policy := NewPathPolicy([]string{allowedDir})
 	backupDir := filepath.Join(tmpDir, "backups")
 
-	tx := NewTransaction("op_test_004", backupDir, policy, "", "")
+	tx := newTestTransaction(t, "op_test_004", backupDir, policy)
 
 	newDir := filepath.Join(allowedDir, "ssl", "site_001")
 	changes := []FileChange{
@@ -835,6 +929,41 @@ func TestHandleTransactionApply_EmptyOperationID(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("空 operation_id 应返回 400，实际 %d", rec.Code)
+	}
+}
+
+func TestHandleTransactionApply_RejectsMaliciousOperationIDBeforeFilesystemChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	panelDir := filepath.Join(tmpDir, "panel")
+	if err := os.MkdirAll(panelDir, 0755); err != nil {
+		t.Fatalf("创建 panel 目录失败: %v", err)
+	}
+	cfg := &app.Config{
+		Agent: app.AgentConfig{Token: "test-token"},
+		Nginx: app.NginxConfig{PanelDir: panelDir},
+	}
+	server, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("创建 server 失败: %v", err)
+	}
+	server.policy = NewPathPolicy([]string{panelDir})
+
+	targetPath := filepath.Join(panelDir, "target.conf")
+	body := fmt.Sprintf(`{"operation_id":"../../outside","changes":[{"type":"write","path":%q,"content_base64":"ZXZpbA=="}]}`, targetPath)
+	req := httptest.NewRequest("POST", "/internal/v1/transactions/apply", stringReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-NxPanel-Agent-Token", "test-token")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("恶意 operation_id 应返回 400，实际 %d, body: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("非法请求不应修改目标文件，stat err: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "outside")); !os.IsNotExist(err) {
+		t.Fatalf("非法 operation_id 不应在备份根外创建目录，stat err: %v", err)
 	}
 }
 

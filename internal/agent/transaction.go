@@ -10,11 +10,14 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 )
+
+const maxOperationIDLength = 128
 
 // FileChange 表示一个文件变更操作
 type FileChange struct {
@@ -53,14 +56,74 @@ type Transaction struct {
 //   - policy: 路径安全策略
 //   - webUser: 网站文件所属用户（chown 类型时使用）
 //   - webGroup: 网站文件所属组（chown 类型时使用）
-func NewTransaction(operationID, backupBase string, policy *PathPolicy, webUser, webGroup string) *Transaction {
+func NewTransaction(operationID, backupBase string, policy *PathPolicy, webUser, webGroup string) (*Transaction, error) {
+	if err := validateOperationID(operationID); err != nil {
+		return nil, err
+	}
+	if backupBase == "" {
+		return nil, fmt.Errorf("backup base 不能为空")
+	}
+
+	cleanBase, err := filepath.Abs(backupBase)
+	if err != nil {
+		return nil, fmt.Errorf("解析 backup base 失败: %w", err)
+	}
+	backupDir := filepath.Join(cleanBase, operationID)
+	rel, err := filepath.Rel(cleanBase, backupDir)
+	if err != nil || rel != operationID || filepath.Dir(backupDir) != cleanBase {
+		return nil, fmt.Errorf("备份目录必须直接位于 backup base 下")
+	}
+
 	return &Transaction{
 		OperationID: operationID,
-		BackupDir:   filepath.Join(backupBase, operationID),
+		BackupDir:   backupDir,
 		Policy:      policy,
 		WebUser:     webUser,
 		WebGroup:    webGroup,
+	}, nil
+}
+
+func validateOperationID(operationID string) error {
+	if operationID == "" {
+		return fmt.Errorf("operation_id 不能为空")
 	}
+	if len(operationID) > maxOperationIDLength {
+		return fmt.Errorf("operation_id 长度不能超过 %d 字节", maxOperationIDLength)
+	}
+	for i := 0; i < len(operationID); i++ {
+		c := operationID[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-' {
+			continue
+		}
+		return fmt.Errorf("operation_id 只能包含 ASCII 字母、数字、下划线和连字符")
+	}
+	return nil
+}
+
+func backupFileName(path string) (string, error) {
+	canonicalPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("解析备份源路径失败 %s: %w", path, err)
+	}
+	canonicalPath = filepath.Clean(canonicalPath)
+	sum := sha256.Sum256([]byte(canonicalPath))
+
+	base := filepath.Base(canonicalPath)
+	debugName := make([]byte, 0, min(len(base), 80))
+	for i := 0; i < len(base) && len(debugName) < 80; i++ {
+		c := base[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			debugName = append(debugName, c)
+		} else {
+			debugName = append(debugName, '_')
+		}
+	}
+	if len(debugName) == 0 {
+		debugName = append(debugName, "file"...)
+	}
+	return fmt.Sprintf("%s--%x", debugName, sum), nil
 }
 
 // backup 备份单个文件
@@ -69,9 +132,13 @@ func NewTransaction(operationID, backupBase string, policy *PathPolicy, webUser,
 //   - 如果文件不存在，记录 Existed=false，不创建备份
 //   - 如果文件存在，读取内容并使用原子写入保存到备份目录
 func (tx *Transaction) backup(path string) error {
+	name, err := backupFileName(path)
+	if err != nil {
+		return err
+	}
 	b := BackupRecord{
 		FilePath:   path,
-		BackupPath: filepath.Join(tx.BackupDir, filepath.Base(path)),
+		BackupPath: filepath.Join(tx.BackupDir, name),
 		Existed:    true,
 	}
 
