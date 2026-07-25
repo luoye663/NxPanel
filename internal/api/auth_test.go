@@ -7,7 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pquerna/otp/totp"
+
+	"github.com/luoye663/nxpanel/internal/api/middleware"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/captcha"
 	"github.com/luoye663/nxpanel/internal/db/repo"
@@ -343,6 +347,9 @@ func TestLogin_CaptchaFailed_HidesReasonDetails(t *testing.T) {
 	if resp.Error.Details != nil {
 		t.Fatalf("不应返回第三方或内部 reason 详情: %#v", resp.Error.Details)
 	}
+	if got := server.loginProtection.FailureCount("192.0.2.1:1234", "admin"); got != 2 {
+		t.Fatalf("CAPTCHA 失败应消费登录预算，期望 2，实际 %d", got)
+	}
 }
 
 // TestLogout 测试退出登录
@@ -537,6 +544,61 @@ func TestLogin2FA_FailuresAffectRateLimit(t *testing.T) {
 	rec := doLogin(server, "admin", "Test-password-123")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("2FA 失败达到阈值后登录应被限流，实际 %d, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLogin2FA_PasswordSuccessDoesNotResetFailureBudget(t *testing.T) {
+	server := newTestServer(t)
+	setupTestAdmin(t, server)
+	enableTestTOTP(t, server)
+	server.loginProtection.ReloadConfig(middleware.LoginProtectionConfig{
+		IPMaxFailures:      2,
+		AccountMaxFailures: 10,
+		GlobalMaxFailures:  100,
+		Window:             time.Minute,
+	})
+
+	if rec := doLogin(server, "admin", "wrong-password"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("首次密码失败应返回 401，实际 %d", rec.Code)
+	}
+	if rec := doLogin(server, "admin", "Test-password-123"); rec.Code != http.StatusOK {
+		t.Fatalf("等待 2FA 的密码成功应返回 200，实际 %d", rec.Code)
+	}
+	if rec := doLogin(server, "admin", "wrong-password"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("第二次密码失败应返回 401，实际 %d", rec.Code)
+	}
+	if rec := doLogin(server, "admin", "Test-password-123"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("等待 2FA 不应重置既有预算，实际 %d", rec.Code)
+	}
+}
+
+func TestLogin2FA_TOTPReplayConsumesFailureBudget(t *testing.T) {
+	server := newTestServer(t)
+	setupTestAdmin(t, server)
+	enableTestTOTP(t, server)
+
+	firstToken := parseTempToken(t, doLogin(server, "admin", "Test-password-123"))
+	secondToken := parseTempToken(t, doLogin(server, "admin", "Test-password-123"))
+	code, err := totp.GenerateCode("JBSWY3DPEHPK3PXP", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("生成测试 TOTP 失败: %v", err)
+	}
+	verify := func(token string) *httptest.ResponseRecorder {
+		body := `{"temp_token":"` + token + `","code":"` + code + `"}`
+		req := httptest.NewRequest(http.MethodPost, apiTestPath(server, "/auth/login/2fa"), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := verify(firstToken); rec.Code != http.StatusOK {
+		t.Fatalf("首次 TOTP 应成功，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := verify(secondToken); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("TOTP 重放应返回通用 401，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := server.loginProtection.FailureCount("192.0.2.1:1234", "admin"); got != 1 {
+		t.Fatalf("TOTP 重放应消费失败预算，期望 1，实际 %d", got)
 	}
 }
 

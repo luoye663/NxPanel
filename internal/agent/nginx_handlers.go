@@ -375,24 +375,29 @@ type configWriteBackRequest struct {
 }
 
 var configWriteBackAllowlist = map[string]bool{
-	"api.login_path":                     true,
-	"api.public_health":                  true,
-	"api.rate_limit.max_failures":        true,
-	"api.rate_limit.window":              true,
-	"api.max_sessions":                   true,
-	"api.bind_session_ip":                true,
-	"api.bind_session_ua":                true,
-	"api.trusted_proxies":                true,
-	"api.captcha.provider":               true,
-	"api.captcha.site_key":               true,
-	"api.captcha.secret_key":             true,
-	"api.captcha.trigger_after_failures": true,
-	"api.tls.enabled":                    true,
-	"api.tls.cert":                       true,
-	"api.tls.key":                        true,
-	"api.tls.cert_validity":              true,
-	"nginx.web_user":                     true,
-	"nginx.web_group":                    true,
+	"api.login_path":                           true,
+	"api.public_health":                        true,
+	"api.rate_limit.max_failures":              true,
+	"api.rate_limit.account_max_failures":      true,
+	"api.rate_limit.global_max_failures":       true,
+	"api.rate_limit.window":                    true,
+	"api.max_sessions":                         true,
+	"api.bind_session_ip":                      true,
+	"api.bind_session_ua":                      true,
+	"api.trusted_proxies":                      true,
+	"api.captcha.provider":                     true,
+	"api.captcha.site_key":                     true,
+	"api.captcha.secret_key":                   true,
+	"api.captcha.trigger_after_failures":       true,
+	"api.captcha.max_concurrent_verifications": true,
+	"api.twofa.temp_token_max_per_account":     true,
+	"api.twofa.temp_token_max_total":           true,
+	"api.tls.enabled":                          true,
+	"api.tls.cert":                             true,
+	"api.tls.key":                              true,
+	"api.tls.cert_validity":                    true,
+	"nginx.web_user":                           true,
+	"nginx.web_group":                          true,
 }
 
 func (s *Server) handleConfigWriteBack(w http.ResponseWriter, r *http.Request) {
@@ -427,6 +432,12 @@ func (s *Server) handleConfigWriteBack(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.cfg.API.RateLimit.MaxFailures = n
+		case "api.rate_limit.account_max_failures":
+			n, _ := strconv.Atoi(f.Value)
+			s.cfg.API.RateLimit.AccountMaxFailures = n
+		case "api.rate_limit.global_max_failures":
+			n, _ := strconv.Atoi(f.Value)
+			s.cfg.API.RateLimit.GlobalMaxFailures = n
 		case "api.rate_limit.window":
 			s.cfg.API.RateLimit.Window = f.Value
 		case "api.max_sessions":
@@ -460,6 +471,15 @@ func (s *Server) handleConfigWriteBack(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.cfg.API.Captcha.TriggerAfterFailures = n
+		case "api.captcha.max_concurrent_verifications":
+			n, _ := strconv.Atoi(f.Value)
+			s.cfg.API.Captcha.MaxConcurrent = n
+		case "api.twofa.temp_token_max_per_account":
+			n, _ := strconv.Atoi(f.Value)
+			s.cfg.API.TwoFA.TempTokenMaxPerAccount = n
+		case "api.twofa.temp_token_max_total":
+			n, _ := strconv.Atoi(f.Value)
+			s.cfg.API.TwoFA.TempTokenMaxTotal = n
 		case "api.tls.enabled":
 			s.cfg.API.TLS.Enabled = f.Value == "true" || f.Value == "1"
 		case "api.tls.cert":
@@ -492,8 +512,12 @@ func validateConfigWriteBackField(f configWriteBackField) error {
 		return validateLoginPathValue(f.Value)
 	case "api.rate_limit.window", "api.tls.cert_validity":
 		return validatePositiveDuration(f.Key, f.Value)
-	case "api.rate_limit.max_failures", "api.max_sessions":
+	case "api.rate_limit.max_failures", "api.rate_limit.account_max_failures", "api.max_sessions", "api.captcha.max_concurrent_verifications", "api.twofa.temp_token_max_per_account":
 		return validateIntRange(f.Key, f.Value, 1, 10000)
+	case "api.rate_limit.global_max_failures":
+		return validateIntRange(f.Key, f.Value, 1, 1000000)
+	case "api.twofa.temp_token_max_total":
+		return validateIntRange(f.Key, f.Value, 1, 100000)
 	case "api.captcha.trigger_after_failures":
 		return validateIntRange(f.Key, f.Value, 0, 10000)
 	case "nginx.web_user", "nginx.web_group":

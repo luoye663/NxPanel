@@ -1,11 +1,14 @@
 package captcha
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,132 +23,149 @@ const (
 )
 
 type Service struct {
+	config     atomic.Pointer[serviceConfig]
+	active     atomic.Int64
+	httpClient *http.Client
+}
+
+type serviceConfig struct {
 	provider          Provider
 	secretKey         string
 	siteKey           string
 	triggerAfterFails int
-	httpClient        *http.Client
+	maxConcurrent     int64
 }
 
-func NewService(provider, secretKey, siteKey string, triggerAfterFails int) *Service {
+func NewService(provider, secretKey, siteKey string, triggerAfterFails int, maxConcurrent ...int) *Service {
+	s := &Service{httpClient: &http.Client{Timeout: 10 * time.Second}}
+	s.ReloadConfig(provider, secretKey, siteKey, triggerAfterFails, maxConcurrent...)
+	return s
+}
+
+func newServiceConfig(provider, secretKey, siteKey string, triggerAfterFails int, maxConcurrent int) *serviceConfig {
 	if provider == "" {
 		provider = string(ProviderNone)
 	}
 	if triggerAfterFails < 0 {
 		triggerAfterFails = 3
 	}
-	return &Service{
+	if maxConcurrent <= 0 {
+		maxConcurrent = 8
+	}
+	return &serviceConfig{
 		provider:          Provider(provider),
 		secretKey:         secretKey,
 		siteKey:           siteKey,
 		triggerAfterFails: triggerAfterFails,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		maxConcurrent:     int64(maxConcurrent),
 	}
 }
 
 func (s *Service) Enabled() bool {
-	return s.provider != ProviderNone && s.secretKey != ""
+	cfg := s.config.Load()
+	return cfg != nil && cfg.provider != ProviderNone
 }
 
-func (s *Service) ReloadConfig(provider, secretKey, siteKey string, triggerAfterFails int) {
-	if provider == "" {
-		provider = string(ProviderNone)
+func (s *Service) ReloadConfig(provider, secretKey, siteKey string, triggerAfterFails int, maxConcurrent ...int) {
+	limit := 8
+	if len(maxConcurrent) > 0 {
+		limit = maxConcurrent[0]
 	}
-	if triggerAfterFails < 0 {
-		triggerAfterFails = 3
-	}
-	s.provider = Provider(provider)
-	s.secretKey = secretKey
-	s.siteKey = siteKey
-	s.triggerAfterFails = triggerAfterFails
+	s.config.Store(newServiceConfig(provider, secretKey, siteKey, triggerAfterFails, limit))
 }
 
 func (s *Service) ShouldTrigger(failCount int) bool {
-	return s.Enabled() && failCount >= s.triggerAfterFails
+	cfg := s.config.Load()
+	return cfg != nil && cfg.provider != ProviderNone && failCount >= cfg.triggerAfterFails
 }
 
-func (s *Service) VerifyToken(token, remoteIP string) error {
-	if !s.Enabled() {
+func (s *Service) PublicConfig() (string, string, bool) {
+	cfg := s.config.Load()
+	if cfg == nil || cfg.provider == ProviderNone {
+		return string(ProviderNone), "", false
+	}
+	return string(cfg.provider), cfg.siteKey, true
+}
+
+func (s *Service) VerifyToken(ctx context.Context, token, remoteIP string) error {
+	cfg := s.config.Load()
+	if cfg == nil || cfg.provider == ProviderNone {
 		return nil
 	}
-	if token == "" {
+	if strings.TrimSpace(cfg.secretKey) == "" || strings.TrimSpace(cfg.siteKey) == "" {
+		return fmt.Errorf("CAPTCHA 配置不完整")
+	}
+	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("验证码不能为空")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !s.tryAcquire(cfg.maxConcurrent) {
+		return fmt.Errorf("CAPTCHA 验证繁忙")
+	}
+	defer s.active.Add(-1)
+	if err := ctx.Err(); err != nil {
+		return ctx.Err()
+	}
 
-	switch s.provider {
+	switch cfg.provider {
 	case ProviderTurnstile:
-		return s.verifyTurnstile(token, remoteIP)
+		return s.verify(ctx, cfg, "https://challenges.cloudflare.com/turnstile/v0/siteverify", token, remoteIP)
 	case ProviderHCaptcha:
-		return s.verifyHCaptcha(token, remoteIP)
+		return s.verify(ctx, cfg, "https://api.hcaptcha.com/siteverify", token, remoteIP)
 	default:
-		return nil
+		return fmt.Errorf("未知 CAPTCHA provider")
 	}
 }
 
-func (s *Service) verifyTurnstile(token, remoteIP string) error {
+func (s *Service) tryAcquire(limit int64) bool {
+	for {
+		active := s.active.Load()
+		if active >= limit {
+			return false
+		}
+		if s.active.CompareAndSwap(active, active+1) {
+			return true
+		}
+	}
+}
+
+func (s *Service) verify(ctx context.Context, cfg *serviceConfig, endpoint, token, remoteIP string) error {
 	data := url.Values{}
-	data.Set("secret", s.secretKey)
+	data.Set("secret", cfg.secretKey)
 	data.Set("response", token)
 	data.Set("remoteip", remoteIP)
-	if s.siteKey != "" {
-		data.Set("sitekey", s.siteKey)
-	}
-
-	resp, err := s.httpClient.PostForm("https://challenges.cloudflare.com/turnstile/v0/siteverify", data)
+	data.Set("sitekey", cfg.siteKey)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(data.Encode()))
 	if err != nil {
-		return fmt.Errorf("Turnstile 验证请求失败: %w", err)
+		return fmt.Errorf("创建 CAPTCHA 验证请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("CAPTCHA 验证请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return fmt.Errorf("Turnstile 读取响应失败: %w", err)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("CAPTCHA 验证服务返回状态 %d", resp.StatusCode)
 	}
-
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+	if err != nil {
+		return fmt.Errorf("读取 CAPTCHA 响应失败: %w", err)
+	}
+	if len(body) > maxResponseSize {
+		return fmt.Errorf("CAPTCHA 响应过大")
+	}
 	var result struct {
 		Success    bool     `json:"success"`
 		ErrorCodes []string `json:"error-codes"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("Turnstile 解析响应失败: %w", err)
+		return fmt.Errorf("解析 CAPTCHA 响应失败: %w", err)
 	}
 	if !result.Success {
-		return fmt.Errorf("Turnstile 验证失败: %v", result.ErrorCodes)
-	}
-	return nil
-}
-
-func (s *Service) verifyHCaptcha(token, remoteIP string) error {
-	data := url.Values{}
-	data.Set("secret", s.secretKey)
-	data.Set("response", token)
-	data.Set("remoteip", remoteIP)
-	if s.siteKey != "" {
-		data.Set("sitekey", s.siteKey)
-	}
-
-	resp, err := s.httpClient.PostForm("https://api.hcaptcha.com/siteverify", data)
-	if err != nil {
-		return fmt.Errorf("hCaptcha 验证请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
-	if err != nil {
-		return fmt.Errorf("hCaptcha 读取响应失败: %w", err)
-	}
-
-	var result struct {
-		Success    bool     `json:"success"`
-		ErrorCodes []string `json:"error-codes"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("hCaptcha 解析响应失败: %w", err)
-	}
-	if !result.Success {
-		return fmt.Errorf("hCaptcha 验证失败: %v", result.ErrorCodes)
+		return fmt.Errorf("CAPTCHA 验证失败: %v", result.ErrorCodes)
 	}
 	return nil
 }

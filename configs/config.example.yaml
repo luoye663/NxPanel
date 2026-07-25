@@ -43,7 +43,11 @@ api:
   # 登录安全配置
   rate_limit:
     # 窗口内最大登录失败次数
-    max_failures: 3
+    max_failures: 5
+    # 同一规范化账号在不同 IP 下的最大失败次数
+    account_max_failures: 10
+    # 所有登录来源合计的最大失败次数；单次成功不会重置
+    global_max_failures: 100
     # 失败计数窗口时长
     window: "15m"
   # 可信代理 IP 列表（IP 或 CIDR 格式），仅来自这些 IP 的转发头才会被信任
@@ -66,7 +70,13 @@ api:
     # 密钥（后端验证使用）
     secret_key: ""
     # 登录失败 N 次后触发 CAPTCHA
-    trigger_after_failures: 1
+    trigger_after_failures: 3
+    # 同时执行的第三方 CAPTCHA 验证上限，超出时立即拒绝
+    max_concurrent_verifications: 8
+  # 登录阶段 2FA 临时令牌限制
+  twofa:
+    temp_token_max_per_account: 3
+    temp_token_max_total: 1000
   # TLS 配置
   tls:
     # 是否启用 TLS，默认 true

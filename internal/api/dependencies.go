@@ -71,7 +71,12 @@ func newServerBase(cfg *app.Config, db *sql.DB) *Server {
 		cfg.API.BindSessionIP,
 		cfg.API.BindSessionUA,
 	)
-	limiter := middleware.NewLoginRateLimiter(maxFailures, rateLimitWindow)
+	loginProtection := middleware.NewLoginProtection(middleware.LoginProtectionConfig{
+		IPMaxFailures:      maxFailures,
+		AccountMaxFailures: cfg.API.RateLimit.AccountMaxFailures,
+		GlobalMaxFailures:  cfg.API.RateLimit.GlobalMaxFailures,
+		Window:             rateLimitWindow,
+	})
 	setupLimiter := middleware.NewLoginRateLimiter(10, 1*time.Hour)
 	// 已登录后的敏感操作使用独立限流器，按 session 临时锁定，避免影响普通登录 IP 限流。
 	sensitiveActionLimiter := middleware.NewLoginRateLimiter(maxFailures, rateLimitWindow)
@@ -80,6 +85,7 @@ func newServerBase(cfg *app.Config, db *sql.DB) *Server {
 		cfg.API.Captcha.SecretKey,
 		cfg.API.Captcha.SiteKey,
 		cfg.API.Captcha.TriggerAfterFailures,
+		cfg.API.Captcha.MaxConcurrent,
 	)
 	repos := newRepos(db)
 	adminExists, _ := authSvc.AdminExists()
@@ -88,11 +94,11 @@ func newServerBase(cfg *app.Config, db *sql.DB) *Server {
 		cfg:                    cfg,
 		db:                     db,
 		authSvc:                authSvc,
-		limiter:                limiter,
+		loginProtection:        loginProtection,
 		setupLimiter:           setupLimiter,
 		sensitiveActionLimiter: sensitiveActionLimiter,
 		captchaSvc:             captchaSvc,
-		twofaSvc:               twofa.NewService(repos.admin),
+		twofaSvc:               twofa.NewService(repos.admin, cfg.API.TwoFA.TempTokenMaxPerAccount, cfg.API.TwoFA.TempTokenMaxTotal),
 		loginAuditRepo:         repos.loginAudit,
 		agentClient:            newAgentClient(cfg),
 		opRepo:                 repo.NewOperationRepo(db),

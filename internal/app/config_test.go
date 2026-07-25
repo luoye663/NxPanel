@@ -57,6 +57,15 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Nginx.PanelDir != "/opt/nxpanel/nginx" {
 		t.Errorf("默认 Nginx.PanelDir 不正确: %s", cfg.Nginx.PanelDir)
 	}
+	if cfg.API.RateLimit.AccountMaxFailures != 10 || cfg.API.RateLimit.GlobalMaxFailures != 100 {
+		t.Fatalf("登录账号/全局预算默认值不正确: %+v", cfg.API.RateLimit)
+	}
+	if cfg.API.TwoFA.TempTokenMaxPerAccount != 3 || cfg.API.TwoFA.TempTokenMaxTotal != 1000 {
+		t.Fatalf("2FA 临时令牌默认值不正确: %+v", cfg.API.TwoFA)
+	}
+	if cfg.API.Captcha.MaxConcurrent != 8 {
+		t.Fatalf("CAPTCHA 并发默认值期望 8，实际 %d", cfg.API.Captcha.MaxConcurrent)
+	}
 }
 
 // TestLoadConfig_FileNotExist 配置文件不存在时应该返回默认值
@@ -164,6 +173,11 @@ agent:
 	t.Setenv("NXPANEL_AGENT_MAX_READ_SIZE", "12M")
 	t.Setenv("NXPANEL_AGENT_MAX_DOWNLOAD_SIZE", "512M")
 	t.Setenv("NXPANEL_AGENT_DOWNLOAD_TIMEOUT", "3m")
+	t.Setenv("NXPANEL_API_RATE_LIMIT_ACCOUNT_MAX_FAILURES", "12")
+	t.Setenv("NXPANEL_API_RATE_LIMIT_GLOBAL_MAX_FAILURES", "120")
+	t.Setenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_PER_ACCOUNT", "4")
+	t.Setenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_TOTAL", "400")
+	t.Setenv("NXPANEL_API_CAPTCHA_MAX_CONCURRENT_VERIFICATIONS", "6")
 
 	cfg, err := LoadConfig(tmpFile)
 	if err != nil {
@@ -188,6 +202,15 @@ agent:
 	}
 	if cfg.Agent.DownloadTimeout != "3m" {
 		t.Errorf("环境变量覆盖后 Agent.DownloadTimeout 期望 3m，实际 %s", cfg.Agent.DownloadTimeout)
+	}
+	if cfg.API.RateLimit.AccountMaxFailures != 12 || cfg.API.RateLimit.GlobalMaxFailures != 120 {
+		t.Fatalf("登录预算环境变量覆盖失败: %+v", cfg.API.RateLimit)
+	}
+	if cfg.API.TwoFA.TempTokenMaxPerAccount != 4 || cfg.API.TwoFA.TempTokenMaxTotal != 400 {
+		t.Fatalf("2FA 临时令牌环境变量覆盖失败: %+v", cfg.API.TwoFA)
+	}
+	if cfg.API.Captcha.MaxConcurrent != 6 {
+		t.Fatalf("CAPTCHA 并发环境变量覆盖失败: %d", cfg.API.Captcha.MaxConcurrent)
 	}
 	// 未被环境变量覆盖的字段应保持 YAML 中的值
 	if cfg.Agent.SocketPath != "/run/default.sock" {

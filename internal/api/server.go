@@ -44,7 +44,7 @@ type Server struct {
 	cfg                    *app.Config
 	db                     *sql.DB
 	authSvc                *auth.AuthService
-	limiter                *middleware.LoginRateLimiter
+	loginProtection        *middleware.LoginProtection
 	setupLimiter           *middleware.LoginRateLimiter
 	sensitiveActionLimiter *middleware.LoginRateLimiter
 	captchaSvc             *captcha.Service
@@ -107,8 +107,8 @@ func (s *Server) Close() {
 	if s.cancelCleanup != nil {
 		s.cancelCleanup()
 	}
-	if s.limiter != nil {
-		s.limiter.Stop()
+	if s.loginProtection != nil {
+		s.loginProtection.Stop()
 	}
 	if s.setupLimiter != nil {
 		s.setupLimiter.Stop()
@@ -133,8 +133,13 @@ func (s *Server) ReloadSecurityConfig(cfg *app.Config) {
 		maxFailures = 5
 	}
 	window := app.ParseDurationOrDefault(cfg.API.RateLimit.Window, 15*time.Minute)
-	if s.limiter != nil {
-		s.limiter.ReloadConfig(maxFailures, window)
+	if s.loginProtection != nil {
+		s.loginProtection.ReloadConfig(middleware.LoginProtectionConfig{
+			IPMaxFailures:      maxFailures,
+			AccountMaxFailures: cfg.API.RateLimit.AccountMaxFailures,
+			GlobalMaxFailures:  cfg.API.RateLimit.GlobalMaxFailures,
+			Window:             window,
+		})
 	}
 	if s.sensitiveActionLimiter != nil {
 		s.sensitiveActionLimiter.ReloadConfig(maxFailures, window)
@@ -144,7 +149,10 @@ func (s *Server) ReloadSecurityConfig(cfg *app.Config) {
 	}
 	middleware.ReloadTrustedProxies(cfg.API.TrustedProxies)
 	if s.captchaSvc != nil {
-		s.captchaSvc.ReloadConfig(cfg.API.Captcha.Provider, cfg.API.Captcha.SecretKey, cfg.API.Captcha.SiteKey, cfg.API.Captcha.TriggerAfterFailures)
+		s.captchaSvc.ReloadConfig(cfg.API.Captcha.Provider, cfg.API.Captcha.SecretKey, cfg.API.Captcha.SiteKey, cfg.API.Captcha.TriggerAfterFailures, cfg.API.Captcha.MaxConcurrent)
+	}
+	if s.twofaSvc != nil {
+		s.twofaSvc.ReloadTempTokenLimits(cfg.API.TwoFA.TempTokenMaxPerAccount, cfg.API.TwoFA.TempTokenMaxTotal)
 	}
 	s.setGateState(cfg.API.LoginPath, cfg.API.PublicHealth)
 	slog.Info("安全配置已热重载")

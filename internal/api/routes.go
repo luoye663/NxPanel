@@ -31,11 +31,11 @@ func (s *Server) setupRoutes() {
 		r.With(middleware.LoginRateLimitMiddleware(s.setupLimiter)).Post("/setup/admin", s.handleSetupAdmin)
 
 		// Auth — 登录（限流）
-		r.With(middleware.LoginRateLimitMiddleware(s.limiter)).Post("/auth/login", s.handleLogin)
+		r.Post("/auth/login", s.handleLogin)
 
 		// Auth — 2FA 验证（公开，但需要 temp_token，限流）
-		r.With(middleware.LoginRateLimitMiddleware(s.limiter)).Post("/auth/login/2fa", s.handleLogin2FA)
-		r.With(middleware.LoginRateLimitMiddleware(s.limiter)).Post("/auth/login/recover", s.handleLoginRecover)
+		r.Post("/auth/login/2fa", s.handleLogin2FA)
+		r.Post("/auth/login/recover", s.handleLoginRecover)
 
 		// Auth — 状态查询
 		r.Get("/auth/me", s.handleMe)

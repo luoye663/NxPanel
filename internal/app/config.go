@@ -140,6 +140,8 @@ type APIConfig struct {
 
 	Captcha CaptchaConfig `yaml:"captcha"`
 
+	TwoFA TwoFAConfig `yaml:"twofa"`
+
 	BindSessionIP bool `yaml:"bind_session_ip"`
 
 	BindSessionUA bool `yaml:"bind_session_ua"`
@@ -148,8 +150,10 @@ type APIConfig struct {
 }
 
 type RateLimitConfig struct {
-	MaxFailures int    `yaml:"max_failures"`
-	Window      string `yaml:"window"`
+	MaxFailures        int    `yaml:"max_failures"`
+	AccountMaxFailures int    `yaml:"account_max_failures"`
+	GlobalMaxFailures  int    `yaml:"global_max_failures"`
+	Window             string `yaml:"window"`
 }
 
 type CaptchaConfig struct {
@@ -157,6 +161,12 @@ type CaptchaConfig struct {
 	SiteKey              string `yaml:"site_key"`
 	SecretKey            string `yaml:"secret_key"`
 	TriggerAfterFailures int    `yaml:"trigger_after_failures"`
+	MaxConcurrent        int    `yaml:"max_concurrent_verifications"`
+}
+
+type TwoFAConfig struct {
+	TempTokenMaxPerAccount int `yaml:"temp_token_max_per_account"`
+	TempTokenMaxTotal      int `yaml:"temp_token_max_total"`
 }
 
 // AgentConfig — Agent 服务的配置
@@ -343,14 +353,21 @@ func defaultConfig() *Config {
 			SystemMetricsInterval: "2s",
 			UploadTimeout:         "300s",
 			RateLimit: RateLimitConfig{
-				MaxFailures: 5,
-				Window:      "15m",
+				MaxFailures:        5,
+				AccountMaxFailures: 10,
+				GlobalMaxFailures:  100,
+				Window:             "15m",
 			},
 			TrustedProxies: []string{"127.0.0.1", "::1"},
 			MaxSessions:    5,
 			Captcha: CaptchaConfig{
 				Provider:             "none",
 				TriggerAfterFailures: 3,
+				MaxConcurrent:        8,
+			},
+			TwoFA: TwoFAConfig{
+				TempTokenMaxPerAccount: 3,
+				TempTokenMaxTotal:      1000,
 			},
 			BindSessionIP: true,
 			BindSessionUA: true,
@@ -529,6 +546,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_WINDOW"); v != "" {
 		cfg.API.RateLimit.Window = v
 	}
+	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_ACCOUNT_MAX_FAILURES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.RateLimit.AccountMaxFailures = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_GLOBAL_MAX_FAILURES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.RateLimit.GlobalMaxFailures = n
+		}
+	}
 	if v := os.Getenv("NXPANEL_API_TRUSTED_PROXIES"); v != "" {
 		cfg.API.TrustedProxies = strings.Split(v, ",")
 	}
@@ -549,6 +576,21 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_API_CAPTCHA_TRIGGER_AFTER_FAILURES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.API.Captcha.TriggerAfterFailures = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_CAPTCHA_MAX_CONCURRENT_VERIFICATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Captcha.MaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_PER_ACCOUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.TwoFA.TempTokenMaxPerAccount = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_TOTAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.TwoFA.TempTokenMaxTotal = n
 		}
 	}
 	if v := os.Getenv("NXPANEL_API_BIND_SESSION_IP"); v != "" {
@@ -827,6 +869,8 @@ func (c *Config) WriteBack() error {
 	setYAMLNodeValue(&root, "api", "login_path", c.API.LoginPath)
 	setYAMLNodeBool(&root, "api", "public_health", c.API.PublicHealth)
 	setYAMLNodeScalar3L(&root, "api", "rate_limit", "max_failures", strconv.Itoa(c.API.RateLimit.MaxFailures), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "rate_limit", "account_max_failures", strconv.Itoa(c.API.RateLimit.AccountMaxFailures), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "rate_limit", "global_max_failures", strconv.Itoa(c.API.RateLimit.GlobalMaxFailures), "!!int")
 	setYAMLNodeValue3L(&root, "api", "rate_limit", "window", c.API.RateLimit.Window)
 	setYAMLNodeScalar(&root, "api", "max_sessions", strconv.Itoa(c.API.MaxSessions), "!!int")
 	setYAMLNodeBool(&root, "api", "bind_session_ip", c.API.BindSessionIP)
@@ -836,6 +880,9 @@ func (c *Config) WriteBack() error {
 	setYAMLNodeValue3L(&root, "api", "captcha", "site_key", c.API.Captcha.SiteKey)
 	setYAMLNodeValue3L(&root, "api", "captcha", "secret_key", c.API.Captcha.SecretKey)
 	setYAMLNodeScalar3L(&root, "api", "captcha", "trigger_after_failures", strconv.Itoa(c.API.Captcha.TriggerAfterFailures), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "captcha", "max_concurrent_verifications", strconv.Itoa(c.API.Captcha.MaxConcurrent), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "twofa", "temp_token_max_per_account", strconv.Itoa(c.API.TwoFA.TempTokenMaxPerAccount), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "twofa", "temp_token_max_total", strconv.Itoa(c.API.TwoFA.TempTokenMaxTotal), "!!int")
 
 	// API TLS 配置
 	setYAMLNodeBool3L(&root, "api", "tls", "enabled", c.API.TLS.Enabled)
