@@ -39,6 +39,10 @@ api:
   shutdown_timeout: "10s"
   # SSE 心跳间隔
   sse_heartbeat: "15s"
+  # 每个 SSE 帧的滚动写超时、进程级 SSE 连接上限和异步终态保留时间
+  sse_write_timeout: "10s"
+  sse_max_connections: 64
+  async_result_ttl: "10m"
   # 仪表盘系统指标 SSE 下发间隔，最低 1s
   system_metrics_interval: "3s"
   # 已认证上传路由独立超时和文件内容上限

@@ -128,7 +128,10 @@ type APIConfig struct {
 
 	ShutdownTimeout string `yaml:"shutdown_timeout"`
 
-	SSEHeartbeat string `yaml:"sse_heartbeat"`
+	SSEHeartbeat      string `yaml:"sse_heartbeat"`
+	SSEWriteTimeout   string `yaml:"sse_write_timeout"`
+	SSEMaxConnections int    `yaml:"sse_max_connections"`
+	AsyncResultTTL    string `yaml:"async_result_ttl"`
 
 	SystemMetricsInterval string `yaml:"system_metrics_interval"`
 
@@ -365,6 +368,9 @@ func defaultConfig() *Config {
 			IdleTimeout:           "60s",
 			ShutdownTimeout:       "10s",
 			SSEHeartbeat:          "15s",
+			SSEWriteTimeout:       "10s",
+			SSEMaxConnections:     64,
+			AsyncResultTTL:        "10m",
 			SystemMetricsInterval: "2s",
 			UploadTimeout:         "300s",
 			MaxUploadSize:         "100M",
@@ -557,6 +563,17 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("NXPANEL_API_SSE_HEARTBEAT"); v != "" {
 		cfg.API.SSEHeartbeat = v
+	}
+	if v := os.Getenv("NXPANEL_API_SSE_WRITE_TIMEOUT"); v != "" {
+		cfg.API.SSEWriteTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_API_SSE_MAX_CONNECTIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.SSEMaxConnections = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_RESULT_TTL"); v != "" {
+		cfg.API.AsyncResultTTL = v
 	}
 	if v := os.Getenv("NXPANEL_API_SYSTEM_METRICS_INTERVAL"); v != "" {
 		cfg.API.SystemMetricsInterval = v

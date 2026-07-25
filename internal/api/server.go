@@ -76,6 +76,7 @@ type Server struct {
 	upgradeSvc             *upgrade.Service
 	router                 *chi.Mux
 	cancelCleanup          context.CancelFunc
+	sseSlots               chan struct{}
 	gateSecret             atomic.Value
 	loginPath              atomic.Value
 	needsSetup             atomic.Bool
@@ -122,8 +123,32 @@ func (s *Server) Close() {
 	if s.metricsSvc != nil {
 		s.metricsSvc.Close()
 	}
+	if s.sseHub != nil {
+		s.sseHub.CloseAll()
+	}
 	if s.scheduledTaskEngine != nil {
 		s.scheduledTaskEngine.Stop()
+	}
+}
+
+func (s *Server) sseCleanup(ctx context.Context) {
+	ttl := app.ParseDurationOrDefault(s.cfg.API.AsyncResultTTL, 10*time.Minute)
+	interval := ttl / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.sseHub.PruneClosedBefore(now.Add(-ttl))
+		}
 	}
 }
 

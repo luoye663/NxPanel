@@ -42,7 +42,7 @@ func (s *Server) handleACMEOrderLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ServeSSE(w, r, stream, app.ParseDurationOrDefault(s.cfg.API.SSEHeartbeat, 15*time.Second))
+	s.serveSSE(w, r, stream, app.ParseDurationOrDefault(s.cfg.API.SSEHeartbeat, 15*time.Second))
 }
 
 func (s *Server) handleACMEOrderList(w http.ResponseWriter, r *http.Request) {

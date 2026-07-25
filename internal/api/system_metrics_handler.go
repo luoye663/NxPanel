@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -16,21 +15,11 @@ func (s *Server) handleSystemMetricsStream(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// SSE 必须使用 text/event-stream，并关闭代理缓冲，否则浏览器可能收不到实时数据。
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	flusher, canFlush := w.(http.Flusher)
-	// http.Server.WriteTimeout 默认 30s；SSE 是长连接，需要清除本响应的写超时。
-	// 只影响当前 SSE 请求，不会关闭普通 HTTP 请求的超时保护。
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
+	resp, ok := s.openSSEResponse(w, r)
+	if !ok {
+		return
 	}
-	if canFlush {
-		flusher.Flush()
-	}
+	defer resp.Close()
 
 	// scope 用于按需下发：常驻仪表盘只拿轻量数据，打开弹窗时才订阅详情数据。
 	ch, unsub := s.metricsSvc.Subscribe(r.Context(), r.URL.Query().Get("scope"))
@@ -51,19 +40,12 @@ func (s *Server) handleSystemMetricsStream(w http.ResponseWriter, r *http.Reques
 				slog.Debug("序列化系统指标失败", "error", err)
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			if resp.WriteFrame(sseDataFrame(string(data))) != nil {
 				return
-			}
-			if canFlush {
-				flusher.Flush()
 			}
 		case <-heartbeat.C:
-			// 心跳是 SSE 注释行，不会触发前端 message，但可以保持连接活跃。
-			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+			if resp.WriteFrame(sseHeartbeatFrame) != nil {
 				return
-			}
-			if canFlush {
-				flusher.Flush()
 			}
 		case <-r.Context().Done():
 			slog.Debug("系统指标 SSE 客户端断开")

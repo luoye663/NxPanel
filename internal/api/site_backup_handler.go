@@ -73,7 +73,7 @@ func (s *Server) handleSiteBackupTaskStream(w http.ResponseWriter, r *http.Reque
 		writeAppError(w, r, err)
 		return
 	}
-	ServeSSE(w, r, stream, 20*time.Second)
+	s.serveSSE(w, r, stream, 20*time.Second)
 }
 
 func (s *Server) handleSiteBackupScheduleGet(w http.ResponseWriter, r *http.Request) {

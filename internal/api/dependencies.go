@@ -65,6 +65,10 @@ func newServerBase(cfg *app.Config, db *sql.DB) *Server {
 	if maxFailures <= 0 {
 		maxFailures = 5
 	}
+	sseMaxConnections := cfg.API.SSEMaxConnections
+	if sseMaxConnections <= 0 {
+		sseMaxConnections = 64
+	}
 
 	authSvc := auth.NewAuthService(db, sessionDuration,
 		cfg.API.MaxSessions,
@@ -107,6 +111,8 @@ func newServerBase(cfg *app.Config, db *sql.DB) *Server {
 		sslRepo:                repo.NewSSLRepo(db),
 		proxyRepo:              repo.NewProxyRepo(db),
 		metricsSvc:             systemmetrics.NewService(app.ParseDurationOrDefault(cfg.API.SystemMetricsInterval, 2*time.Second)),
+		sseHub:                 sse.NewHub(),
+		sseSlots:               make(chan struct{}, sseMaxConnections),
 		router:                 chi.NewRouter(),
 	}
 	server.setGateState(cfg.API.LoginPath, cfg.API.PublicHealth)
@@ -198,7 +204,6 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	if err := s.accessAnalysisSvc.MigrateSettingsToTasks(context.Background()); err != nil {
 		return fmt.Errorf("迁移访问分析计划任务失败: %w", err)
 	}
-	s.sseHub = sse.NewHub()
 	s.nginxconfSvc = nginxconf.NewService(s.agentClient, &nginxConfigRefresher{cfg: s.cfg}, s.opRepo)
 	s.siteBackupSvc = sitebackup.NewService(r.site, r.siteBackup, r.backupSchedule, r.ssl, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir, s.sseHub)
 	s.siteBackupSvc.SetTaskLogDir(s.cfg.TaskLogDir())
@@ -229,6 +234,7 @@ func (s *Server) startRuntimeServices() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelCleanup = cancel
 	go s.sessionCleanup(ctx)
+	go s.sseCleanup(ctx)
 
 	s.upgradeSvc = upgrade.NewService(s.cfg.Upgrade)
 	s.upgradeSvc.Start(ctx)
