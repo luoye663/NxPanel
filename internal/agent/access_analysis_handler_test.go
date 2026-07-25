@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/accessanalysis"
+	"github.com/luoye663/nxpanel/internal/app"
 )
 
 func TestReadBoundedLineDoesNotRetainOversizedInput(t *testing.T) {
@@ -101,5 +102,36 @@ func TestAccessScanBudgetCutReprocessesCompleteLine(t *testing.T) {
 	result := agg.Result()
 	if len(result.Paths) != 3 {
 		t.Fatalf("expected each path exactly once, got %+v", result.Paths)
+	}
+}
+
+func TestAccessScanAggregationLimitsAreHardClamped(t *testing.T) {
+	s := &Server{cfg: &app.Config{Agent: app.AgentConfig{Resources: app.AgentResourceConfig{
+		AccessScanMaxPaths: -1, AccessScanMaxIPs: 999999, AccessScanMaxHourly: 1,
+		AccessScanMaxAnomalies: 999999, AccessScanMaxEntries: 999999,
+		AccessScanMaxDistinct: 999999,
+	}}}}
+	limits := s.accessScanLimits().aggregation
+	if limits.Paths != 10000 || limits.IPs != 50000 || limits.Hourly != 24 || limits.Anomalies != 10000 || limits.Entries != 100000 || limits.TotalDistinct != 200000 {
+		t.Fatalf("unexpected hard clamps: %+v", limits)
+	}
+}
+
+func TestRequestedAggregationLimitsControlEntryCollection(t *testing.T) {
+	configured := accessanalysis.DefaultAggregationLimits()
+	disabledReq := &accessanalysis.AgentScanRequest{CollectEntries: false, MaxEntries: 50000}
+	disabled := requestedAggregationLimits(disabledReq, configured)
+	if disabled.Entries != 0 || disabledReq.MaxEntries != 0 {
+		t.Fatalf("disabled limits=%+v request=%+v", disabled, disabledReq)
+	}
+	requestedReq := &accessanalysis.AgentScanRequest{CollectEntries: true, MaxEntries: 1234}
+	requested := requestedAggregationLimits(requestedReq, configured)
+	if requested.Entries != 1234 || requestedReq.MaxEntries != 1234 {
+		t.Fatalf("requested limits=%+v request=%+v", requested, requestedReq)
+	}
+	oversizedReq := &accessanalysis.AgentScanRequest{CollectEntries: true, MaxEntries: configured.Entries + 1}
+	bounded := requestedAggregationLimits(oversizedReq, configured)
+	if bounded.Entries != configured.Entries || oversizedReq.MaxEntries != configured.Entries {
+		t.Fatalf("bounded limits=%+v request=%+v", bounded, oversizedReq)
 	}
 }

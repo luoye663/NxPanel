@@ -46,7 +46,7 @@ func (s *Server) handleAccessAnalysisJobs(w http.ResponseWriter, r *http.Request
 		return
 	}
 	page, pageSize := parsePage(r)
-	result, err := s.accessAnalysisSvc.Jobs(chi.URLParam(r, "site_id"), page, pageSize)
+	result, err := s.accessAnalysisSvc.Jobs(r.Context(), chi.URLParam(r, "site_id"), page, pageSize)
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -58,7 +58,7 @@ func (s *Server) handleAccessAnalysisPaths(w http.ResponseWriter, r *http.Reques
 	if !s.requireAccessAnalysis(w, r) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.Paths(chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
+	result, err := s.accessAnalysisSvc.Paths(r.Context(), chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -70,7 +70,7 @@ func (s *Server) handleAccessAnalysisIPs(w http.ResponseWriter, r *http.Request)
 	if !s.requireAccessAnalysis(w, r) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.IPs(chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
+	result, err := s.accessAnalysisSvc.IPs(r.Context(), chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -82,7 +82,7 @@ func (s *Server) handleAccessAnalysisEntries(w http.ResponseWriter, r *http.Requ
 	if !s.requireAccessAnalysis(w, r) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.Entries(chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
+	result, err := s.accessAnalysisSvc.Entries(r.Context(), chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -94,7 +94,7 @@ func (s *Server) handleAccessAnalysisAnomalies(w http.ResponseWriter, r *http.Re
 	if !s.requireAccessAnalysis(w, r) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.Anomalies(chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
+	result, err := s.accessAnalysisSvc.Anomalies(r.Context(), chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -110,7 +110,7 @@ func (s *Server) handleAccessAnalysisExport(w http.ResponseWriter, r *http.Reque
 	filename := fmt.Sprintf("access-analysis-%s-%s.csv", kind, time.Now().UTC().Format("20060102"))
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	if err := s.accessAnalysisSvc.ExportCSV(w, kind, chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r)); err != nil {
+	if err := s.accessAnalysisSvc.ExportCSV(r.Context(), w, kind, chi.URLParam(r, "site_id"), parseAccessAnalysisQuery(r)); err != nil {
 		// CSV 响应头可能已经写出，因此这里只记录错误到响应体末尾，避免混用 JSON。
 		_, _ = w.Write([]byte("\nexport_error," + err.Error() + "\n"))
 	}
@@ -120,7 +120,7 @@ func (s *Server) handleAccessAnalysisSettingsGet(w http.ResponseWriter, r *http.
 	if !s.requireAccessAnalysis(w, r) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.Settings(chi.URLParam(r, "site_id"))
+	result, err := s.accessAnalysisSvc.Settings(r.Context(), chi.URLParam(r, "site_id"))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -136,7 +136,7 @@ func (s *Server) handleAccessAnalysisSettingsPut(w http.ResponseWriter, r *http.
 	if !DecodeJSON(w, r, &req) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.SaveSettings(chi.URLParam(r, "site_id"), &req, middleware.GetRequestID(r.Context()))
+	result, err := s.accessAnalysisSvc.SaveSettings(r.Context(), chi.URLParam(r, "site_id"), &req, middleware.GetRequestID(r.Context()))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -180,7 +180,7 @@ func (s *Server) handleAccessAnalysisFormatOptimize(w http.ResponseWriter, r *ht
 	if !s.requireAccessAnalysis(w, r) {
 		return
 	}
-	result, err := s.accessAnalysisSvc.OptimizeFormat(chi.URLParam(r, "site_id"), middleware.GetRequestID(r.Context()))
+	result, err := s.accessAnalysisSvc.OptimizeFormat(r.Context(), chi.URLParam(r, "site_id"), middleware.GetRequestID(r.Context()))
 	if err != nil {
 		writeAppError(w, r, err)
 		return

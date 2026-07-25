@@ -288,6 +288,12 @@ type AgentResourceConfig struct {
 	AccessScanTimeout        string `yaml:"access_scan_timeout"`
 	AccessScanLineMaxSize    string `yaml:"access_scan_line_max_size"`
 	AccessScanRotatedFiles   int    `yaml:"access_scan_rotated_files"`
+	AccessScanMaxPaths       int    `yaml:"access_scan_max_paths"`
+	AccessScanMaxIPs         int    `yaml:"access_scan_max_ips"`
+	AccessScanMaxHourly      int    `yaml:"access_scan_max_hourly"`
+	AccessScanMaxAnomalies   int    `yaml:"access_scan_max_anomalies"`
+	AccessScanMaxEntries     int    `yaml:"access_scan_max_entries"`
+	AccessScanMaxDistinct    int    `yaml:"access_scan_max_distinct"`
 }
 
 type AgentArchiveConfig struct {
@@ -511,6 +517,12 @@ func defaultConfig() *Config {
 				AccessScanTimeout:        "300s",
 				AccessScanLineMaxSize:    "32K",
 				AccessScanRotatedFiles:   32,
+				AccessScanMaxPaths:       10000,
+				AccessScanMaxIPs:         10000,
+				AccessScanMaxHourly:      1000,
+				AccessScanMaxAnomalies:   1000,
+				AccessScanMaxEntries:     100000,
+				AccessScanMaxDistinct:    50000,
 			},
 			Archive: AgentArchiveConfig{
 				MaxEntries:          100000,
@@ -881,6 +893,19 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Agent.Resources.AccessScanRotatedFiles = n
 		}
 	}
+	applyEnvInt := func(name string, target *int) {
+		if v := os.Getenv(name); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				*target = n
+			}
+		}
+	}
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_PATHS", &cfg.Agent.Resources.AccessScanMaxPaths)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_IPS", &cfg.Agent.Resources.AccessScanMaxIPs)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_HOURLY", &cfg.Agent.Resources.AccessScanMaxHourly)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_ANOMALIES", &cfg.Agent.Resources.AccessScanMaxAnomalies)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_ENTRIES", &cfg.Agent.Resources.AccessScanMaxEntries)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_DISTINCT", &cfg.Agent.Resources.AccessScanMaxDistinct)
 	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRIES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.Agent.Archive.MaxEntries = n

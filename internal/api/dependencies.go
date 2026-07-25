@@ -200,7 +200,10 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	}
 	s.siteSvc.SetSettingsProvider(s.settingsSvc)
 	s.logsSvc = logs.NewService(r.site, s.opRepo, s.agentClient)
-	s.accessAnalysisSvc = accessanalysis.NewService(r.site, r.accessAnalysis, s.opRepo, s.agentClient)
+	s.accessAnalysisSvc = accessanalysis.NewService(s.rootCtx, r.site, r.accessAnalysis, s.opRepo, s.agentClient)
+	if err := s.accessAnalysisSvc.RecoverStaleJobs(s.rootCtx); err != nil {
+		return fmt.Errorf("恢复遗留访问分析任务失败: %w", err)
+	}
 	s.accessAnalysisSvc.SetTaskLogDir(s.cfg.TaskLogDir())
 	if err := s.accessAnalysisSvc.AttachScheduledTasks(s.scheduledTaskSvc); err != nil {
 		return fmt.Errorf("注册访问分析计划任务失败: %w", err)

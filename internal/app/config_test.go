@@ -150,12 +150,14 @@ func TestScheduledTaskReconcileIntervalClamp(t *testing.T) {
 func TestAgentBudgetEnvironmentOverrides(t *testing.T) {
 	t.Setenv("NXPANEL_AGENT_RESOURCES_COMMAND_OUTPUT_MAX_SIZE", "8M")
 	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_LINES", "123")
+	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_PATHS", "321")
+	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_DISTINCT", "654")
 	t.Setenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRIES", "99")
 	t.Setenv("NXPANEL_AGENT_ARCHIVE_MAX_INPUT_SIZE", "12M")
 	t.Setenv("NXPANEL_AGENT_ARCHIVE_TIMEOUT", "5m")
 	cfg := defaultConfig()
 	applyEnvOverrides(cfg)
-	if cfg.Agent.Resources.CommandOutputMaxSize != "8M" || cfg.Agent.Resources.AccessScanMaxLines != 123 {
+	if cfg.Agent.Resources.CommandOutputMaxSize != "8M" || cfg.Agent.Resources.AccessScanMaxLines != 123 || cfg.Agent.Resources.AccessScanMaxPaths != 321 || cfg.Agent.Resources.AccessScanMaxDistinct != 654 {
 		t.Fatalf("Agent resource 环境变量覆盖失败: %+v", cfg.Agent.Resources)
 	}
 	if cfg.Agent.Archive.MaxEntries != 99 || cfg.Agent.Archive.MaxInputSize != "12M" || cfg.Agent.Archive.Timeout != "5m" {

@@ -50,10 +50,11 @@ func (s *Server) handleAccessAnalysisScan(w http.ResponseWriter, r *http.Request
 	limits := s.accessScanLimits()
 	req.MaxBytes = clampRequested(req.MaxBytes, limits.maxBytes)
 	req.MaxLines = clampRequested(req.MaxLines, limits.maxLines)
+	aggregationLimits := requestedAggregationLimits(&req, limits.aggregation)
 	ctx, cancel := context.WithTimeout(r.Context(), limits.timeout)
 	defer cancel()
 
-	agg := accessanalysis.NewAggregator(from, to)
+	agg := accessanalysis.NewAggregatorWithLimits(from, to, aggregationLimits)
 	result := accessanalysis.AgentScanResponse{}
 	paths := []string{req.Path}
 	if req.IncludeRotated {
@@ -91,6 +92,8 @@ func (s *Server) handleAccessAnalysisScan(w http.ResponseWriter, r *http.Request
 	result.IPs = aggResult.IPs
 	result.EntriesSample = aggResult.EntriesSample
 	result.Anomalies = aggResult.Anomalies
+	result.Truncation = aggResult.Truncation
+	result.Truncated = result.Truncated || aggResult.Truncation.Truncated
 	writeAgentOK(w, result)
 }
 
@@ -129,6 +132,24 @@ func clampRequested(value, maximum int64) int64 {
 		return maximum
 	}
 	return value
+}
+
+func clampRequestedInt(value, maximum int) int {
+	if value <= 0 || value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func requestedAggregationLimits(req *accessanalysis.AgentScanRequest, configured accessanalysis.AggregationLimits) accessanalysis.AggregationLimits {
+	if !req.CollectEntries {
+		req.MaxEntries = 0
+		configured.Entries = 0
+		return configured
+	}
+	req.MaxEntries = clampRequestedInt(req.MaxEntries, configured.Entries)
+	configured.Entries = req.MaxEntries
+	return configured
 }
 
 func scanAccessLogFile(ctx context.Context, path string, parser *accessanalysis.Parser, agg *accessanalysis.Aggregator, cursor accessanalysis.Cursor, budget *accessScanBudget, maxLineBytes int) (accessanalysis.Cursor, int64, int64, bool, []string) {
@@ -186,7 +207,7 @@ func scanAccessLogFile(ctx context.Context, path string, parser *accessanalysis.
 		if parseErr != nil {
 			skipped++
 			if len(parseErrors) < 20 {
-				parseErrors = append(parseErrors, parseErr.Error())
+				parseErrors = append(parseErrors, accessanalysis.TruncateUTF8(parseErr.Error(), accessanalysis.MaxAnomalyReasonBytes))
 			}
 			continue
 		}
@@ -272,7 +293,7 @@ func readBoundedLine(reader *bufio.Reader, maxLineBytes int) ([]byte, int64, boo
 
 func appendParseError(current []string, err error) []string {
 	if err != nil && len(current) < 20 {
-		return append(current, err.Error())
+		return append(current, accessanalysis.TruncateUTF8(err.Error(), accessanalysis.MaxAnomalyReasonBytes))
 	}
 	return current
 }

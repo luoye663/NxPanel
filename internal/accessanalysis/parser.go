@@ -10,12 +10,6 @@ import (
 	"time"
 )
 
-const (
-	maxPathLen    = 2048
-	maxRefererLen = 1024
-	maxUALen      = 512
-)
-
 var nginxTimeLayouts = []string{
 	"02/Jan/2006:15:04:05 -0700",
 	time.RFC3339,
@@ -104,9 +98,9 @@ func (p *Parser) parseCommonCombined(line string) (Entry, error) {
 
 	entry := Entry{
 		TS:      ts.Format(time.RFC3339),
-		IP:      truncate(ip, 128),
-		Method:  truncate(parts[0], 16),
-		RawPath: truncate(parts[1], maxPathLen),
+		IP:      truncateUTF8(ip, MaxIPBytes),
+		Method:  truncateUTF8(parts[0], MaxMethodBytes),
+		RawPath: truncateUTF8(parts[1], MaxPathBytes),
 		Path:    p.normalizePath(parts[1]),
 		Status:  status,
 		Bytes:   bytesSent,
@@ -115,9 +109,9 @@ func (p *Parser) parseCommonCombined(line string) (Entry, error) {
 	// combined 在 common 之后追加 referer 和 user_agent 两个引号字段。
 	if p.format == FormatCombined {
 		if referer, tail, err := takeNextQuoted(afterReq); err == nil {
-			entry.Referer = truncate(emptyDash(referer), maxRefererLen)
+			entry.Referer = truncateUTF8(emptyDash(referer), MaxRefererBytes)
 			if ua, _, err := takeNextQuoted(tail); err == nil {
-				entry.UserAgent = truncate(emptyDash(ua), maxUALen)
+				entry.UserAgent = truncateUTF8(emptyDash(ua), MaxUserAgentBytes)
 			}
 		}
 	}
@@ -149,7 +143,7 @@ func (p *Parser) parseNxpanelJSON(line string) (Entry, error) {
 	if rawPath == "" {
 		rawPath = raw.Path
 	}
-	entry := Entry{TS: ts.Format(time.RFC3339), IP: truncate(raw.IP, 128), Method: truncate(raw.Method, 16), RawPath: truncate(rawPath, maxPathLen), Path: p.normalizePath(rawPath), Status: raw.Status, Bytes: raw.Bytes, Referer: truncate(emptyDash(raw.Referer), maxRefererLen), UserAgent: truncate(emptyDash(raw.UA), maxUALen)}
+	entry := Entry{TS: ts.Format(time.RFC3339), IP: truncateUTF8(raw.IP, MaxIPBytes), Method: truncateUTF8(raw.Method, MaxMethodBytes), RawPath: truncateUTF8(rawPath, MaxPathBytes), Path: p.normalizePath(rawPath), Status: raw.Status, Bytes: raw.Bytes, Referer: truncateUTF8(emptyDash(raw.Referer), MaxRefererBytes), UserAgent: truncateUTF8(emptyDash(raw.UA), MaxUserAgentBytes)}
 	markEntryAnomaly(&entry)
 	return entry, nil
 }
@@ -170,7 +164,7 @@ func (p *Parser) parseCustom(line string) (Entry, error) {
 		return Entry{}, err
 	}
 	status, _ := strconv.Atoi(values["status"])
-	entry := Entry{TS: ts.Format(time.RFC3339), IP: truncate(values["ip"], 128), Method: truncate(values["method"], 16), RawPath: truncate(values["path"], maxPathLen), Path: p.normalizePath(values["path"]), Status: status, Bytes: parseBytes(values["bytes"]), Referer: truncate(emptyDash(values["referer"]), maxRefererLen), UserAgent: truncate(emptyDash(values["user_agent"]), maxUALen)}
+	entry := Entry{TS: ts.Format(time.RFC3339), IP: truncateUTF8(values["ip"], MaxIPBytes), Method: truncateUTF8(values["method"], MaxMethodBytes), RawPath: truncateUTF8(values["path"], MaxPathBytes), Path: p.normalizePath(values["path"]), Status: status, Bytes: parseBytes(values["bytes"]), Referer: truncateUTF8(emptyDash(values["referer"]), MaxRefererBytes), UserAgent: truncateUTF8(emptyDash(values["user_agent"]), MaxUserAgentBytes)}
 	markEntryAnomaly(&entry)
 	return entry, nil
 }
@@ -190,7 +184,7 @@ func (p *Parser) normalizePath(raw string) string {
 			path = path[:idx]
 		}
 	}
-	return truncate(path, maxPathLen)
+	return truncateUTF8(path, MaxPathBytes)
 }
 
 func parseLogTime(value string) (time.Time, error) {
@@ -237,13 +231,6 @@ func parseBytes(value string) int64 {
 	}
 	n, _ := strconv.ParseInt(value, 10, 64)
 	return n
-}
-
-func truncate(value string, max int) string {
-	if len(value) <= max {
-		return value
-	}
-	return value[:max]
 }
 
 func emptyDash(value string) string {

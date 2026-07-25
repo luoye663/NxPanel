@@ -354,6 +354,15 @@ export interface AccessAnalysisScanResponse {
   skipped_lines: number
   truncated: boolean
   duration_ms: number
+  truncation: {
+    truncated: boolean
+    paths_dropped: number
+    ips_dropped: number
+    hourly_dropped: number
+    anomalies_dropped: number
+    entries_dropped: number
+    unique_values_dropped: number
+  }
 }
 
 export interface AccessPathStat {

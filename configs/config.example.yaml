@@ -157,6 +157,13 @@ agent:
     access_scan_timeout: "300s"
     access_scan_line_max_size: "32K"
     access_scan_rotated_files: 32
+    # 聚合结果与去重集合的全局基数预算；超限项会被确定性丢弃并计数
+    access_scan_max_paths: 10000
+    access_scan_max_ips: 10000
+    access_scan_max_hourly: 1000
+    access_scan_max_anomalies: 1000
+    access_scan_max_entries: 100000
+    access_scan_max_distinct: 50000
   # 通用归档与站点备份/恢复共享预算
   archive:
     max_entries: 100000

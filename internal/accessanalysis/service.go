@@ -3,6 +3,7 @@ package accessanalysis
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -16,6 +17,11 @@ import (
 const (
 	defaultScanMaxBytes = 64 * 1024 * 1024
 	defaultScanMaxLines = 500000
+	finalizeTimeout     = 3 * time.Second
+	exportPageSize      = 200
+	exportMaxRows       = 100000
+	staleJobThreshold   = 10 * time.Minute
+	staleJobError       = "访问分析扫描因服务异常退出或超时而中止"
 )
 
 type Agent interface {
@@ -30,30 +36,96 @@ type Service struct {
 	agent            Agent
 	scheduledTaskSvc ScheduledTaskService
 	taskLogDir       string
+	rootCtx          context.Context
 	running          sync.Map
+	admissionMu      sync.Mutex
 }
 
-func NewService(siteRepo *repo.SiteRepo, analysisRepo *Repo, opRepo *repo.OperationRepo, agent Agent) *Service {
-	return &Service{siteRepo: siteRepo, repo: analysisRepo, opRepo: opRepo, agent: agent}
+func NewService(rootCtx context.Context, siteRepo *repo.SiteRepo, analysisRepo *Repo, opRepo *repo.OperationRepo, agent Agent) *Service {
+	return &Service{siteRepo: siteRepo, repo: analysisRepo, opRepo: opRepo, agent: agent, rootCtx: rootCtx}
 }
 
 func (s *Service) SetTaskLogDir(dir string) {
 	s.taskLogDir = dir
 }
 
+func (s *Service) withRootCancellation(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.rootCtx == nil {
+		return context.WithCancel(ctx)
+	}
+	derived, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.rootCtx, cancel)
+	return derived, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (s *Service) RecoverStaleJobs(ctx context.Context) error {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	protected := make([]string, 0)
+	s.running.Range(func(key, _ any) bool {
+		if siteID, ok := key.(string); ok {
+			protected = append(protected, siteID)
+		}
+		return true
+	})
+	now := time.Now().UTC()
+	_, err := s.repo.RecoverStaleJobs(ctx, "", now.Add(-staleJobThreshold), now, protected)
+	if err != nil {
+		return app.NewAppError(app.ErrInternalError, "恢复遗留访问分析任务失败: "+err.Error(), nil)
+	}
+	return nil
+}
+
+func (s *Service) admitScan(ctx context.Context, siteID string) (*Job, error) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	if _, active := s.running.Load(siteID); active {
+		existing, err := s.repo.GetRunningJob(ctx, siteID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return existing, nil
+		}
+		return nil, app.NewAppError(app.ErrConflict, "当前站点已有访问分析扫描正在运行", nil)
+	}
+	now := time.Now().UTC()
+	if _, err := s.repo.RecoverStaleJobs(ctx, siteID, now.Add(-staleJobThreshold), now, nil); err != nil {
+		return nil, err
+	}
+	existing, err := s.repo.GetRunningJob(ctx, siteID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+	s.running.Store(siteID, struct{}{})
+	return nil, nil
+}
+
+func (s *Service) releaseScan(siteID string) {
+	s.admissionMu.Lock()
+	s.running.Delete(siteID)
+	s.admissionMu.Unlock()
+}
+
 func (s *Service) Summary(ctx context.Context, siteID string, q Query) (*SummaryResponse, error) {
-	if _, err := s.requireSite(siteID); err != nil {
+	if _, err := s.requireSiteContext(ctx, siteID); err != nil {
 		return nil, err
 	}
 	from, to, err := normalizeQueryRange(q)
 	if err != nil {
 		return nil, err
 	}
-	summary, err := s.repo.Summary(siteID, time.Now().UTC().Format("2006-01-02"))
+	summary, err := s.repo.Summary(ctx, siteID, time.Now().UTC().Format("2006-01-02"))
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-	trend, err := s.repo.Hourly(siteID, from.Format(time.RFC3339), to.Format(time.RFC3339))
+	trend, err := s.repo.Hourly(ctx, siteID, from.Format(time.RFC3339), to.Format(time.RFC3339))
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
@@ -64,25 +136,28 @@ func (s *Service) Scan(ctx context.Context, siteID string, req ScanRequest, requ
 	return s.scan(ctx, siteID, req, requestID, "manual")
 }
 
-func (s *Service) scan(ctx context.Context, siteID string, req ScanRequest, requestID, trigger string) (*ScanResponse, error) {
-	if existing, err := s.repo.GetRunningJob(siteID); err != nil {
+func (s *Service) scan(ctx context.Context, siteID string, req ScanRequest, requestID, trigger string) (response *ScanResponse, retErr error) {
+	ctx, cancel := s.withRootCancellation(ctx)
+	defer cancel()
+	if existing, err := s.admitScan(ctx, siteID); err != nil {
+		var appErr *app.AppError
+		if errors.As(err, &appErr) {
+			return nil, appErr
+		}
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	} else if existing != nil {
 		return &ScanResponse{JobID: existing.ID, Status: existing.Status, ScannedLines: existing.ScannedLines, SkippedLines: existing.SkippedLines, DurationMS: existing.DurationMS}, nil
 	}
-	if _, loaded := s.running.LoadOrStore(siteID, struct{}{}); loaded {
-		return nil, app.NewAppError(app.ErrConflict, "当前站点已有访问分析扫描正在运行", nil)
-	}
-	defer s.running.Delete(siteID)
+	defer s.releaseScan(siteID)
 
-	site, err := s.requireSite(siteID)
+	site, err := s.requireSiteContext(ctx, siteID)
 	if err != nil {
 		return nil, err
 	}
 	if site.AccessLogPath == "" {
 		return nil, app.NewAppError(app.ErrValidationFailed, "站点未配置 access log 路径", nil)
 	}
-	settings, err := s.repo.GetSettings(siteID)
+	settings, err := s.repo.GetSettings(ctx, siteID)
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
@@ -93,103 +168,120 @@ func (s *Service) scan(ctx context.Context, siteID string, req ScanRequest, requ
 
 	jobID := app.NewOperationID()
 	job := &Job{ID: jobID, SiteID: siteID, Trigger: trigger, RangeStart: from.Format(time.RFC3339), RangeEnd: to.Format(time.RFC3339), Status: "running", CreatedAt: time.Now().UTC().Format(time.RFC3339)}
-	if err := s.repo.CreateJob(job); err != nil {
+	if err := s.repo.CreateJob(ctx, job); err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
+	jobFinalized := false
+	start := time.Now()
 	opID := app.NewOperationID()
 	message := "手动扫描访问日志 " + site.PrimaryDomain
 	if trigger == "scheduler" {
 		message = "定时扫描访问日志 " + site.PrimaryDomain
 	}
-	_ = s.opRepo.Create(&repo.Operation{ID: opID, Action: "site.access_analysis.scan", TargetType: "site", TargetID: siteID, Status: "pending", RequestID: requestID, Actor: "admin", Message: message, CreatedAt: time.Now().UTC().Format(time.RFC3339)})
+	_ = s.opRepo.CreateContext(ctx, &repo.Operation{ID: opID, Action: "site.access_analysis.scan", TargetType: "site", TargetID: siteID, Status: "pending", RequestID: requestID, Actor: "admin", Message: message, CreatedAt: time.Now().UTC().Format(time.RFC3339)})
+	defer func() {
+		if jobFinalized {
+			return
+		}
+		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
+		defer finalCancel()
+		failure := "访问分析扫描异常中止"
+		if retErr != nil {
+			failure = retErr.Error()
+		} else if ctx.Err() != nil {
+			failure = "访问分析扫描已取消: " + ctx.Err().Error()
+		}
+		durationMS := time.Since(start).Milliseconds()
+		_ = s.repo.FinishJobFailed(finalCtx, jobID, failure, durationMS)
+		_ = s.opRepo.UpdateErrorContext(finalCtx, opID, "failed", app.ErrInternalError, failure, "")
+	}()
 
-	start := time.Now()
-	cursor, _ := s.repo.GetCursor(siteID, site.AccessLogPath)
+	cursor, err := s.repo.GetCursor(ctx, siteID, site.AccessLogPath)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
 	includeRotated := settings.IncludeRotated
 	if req.IncludeRotated != nil {
 		includeRotated = *req.IncludeRotated
 	}
-	result, err := s.agent.AccessAnalysisScan(ctx, &AgentScanRequest{Path: site.AccessLogPath, FromTime: job.RangeStart, ToTime: job.RangeEnd, MaxBytes: defaultScanMaxBytes, MaxLines: defaultScanMaxLines, Format: settings.LogFormat, CustomPattern: settings.CustomPattern, Cursor: cursor, IncludeRotated: includeRotated, NormalizeQuery: settings.NormalizeQuery})
+	result, err := s.agent.AccessAnalysisScan(ctx, &AgentScanRequest{Path: site.AccessLogPath, FromTime: job.RangeStart, ToTime: job.RangeEnd, MaxBytes: defaultScanMaxBytes, MaxLines: defaultScanMaxLines, Format: settings.LogFormat, CustomPattern: settings.CustomPattern, Cursor: cursor, IncludeRotated: includeRotated, NormalizeQuery: settings.NormalizeQuery, CollectEntries: settings.SaveEntries, MaxEntries: settings.MaxEntries})
 	durationMS := time.Since(start).Milliseconds()
 	if err != nil {
-		_ = s.repo.FinishJobFailed(jobID, err.Error(), durationMS)
-		_ = s.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, err.Error(), "")
 		return nil, app.NewAppError(app.ErrAgentUnavailable, "扫描访问日志失败: "+err.Error(), nil)
 	}
-	if err := s.repo.SaveScanResult(siteID, site.AccessLogPath, jobID, result.Cursor, result, settings, durationMS); err != nil {
-		_ = s.repo.FinishJobFailed(jobID, err.Error(), durationMS)
-		_ = s.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
+	if err := s.repo.SaveScanResult(ctx, siteID, site.AccessLogPath, jobID, result.Cursor, result, settings, durationMS); err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-	_ = s.repo.CleanupSite(siteID, settings)
-	_ = s.opRepo.UpdateStatus(opID, "success")
-	return &ScanResponse{JobID: jobID, Status: "success", ScannedLines: result.ScannedLines, SkippedLines: result.SkippedLines, Truncated: result.Truncated, DurationMS: durationMS}, nil
+	jobFinalized = true
+	_ = s.repo.CleanupSite(ctx, siteID, settings)
+	_ = s.opRepo.UpdateStatusContext(ctx, opID, "success")
+	return &ScanResponse{JobID: jobID, Status: "success", ScannedLines: result.ScannedLines, SkippedLines: result.SkippedLines, Truncated: result.Truncated, DurationMS: durationMS, Truncation: result.Truncation}, nil
 }
 
-func (s *Service) Settings(siteID string) (*Settings, error) {
-	if _, err := s.requireSite(siteID); err != nil {
+func (s *Service) Settings(ctx context.Context, siteID string) (*Settings, error) {
+	if _, err := s.requireSiteContext(ctx, siteID); err != nil {
 		return nil, err
 	}
-	settings, err := s.repo.GetSettings(siteID)
+	settings, err := s.repo.GetSettings(ctx, siteID)
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-	return s.applyTaskScheduleToSettings(context.Background(), settings)
+	return s.applyTaskScheduleToSettings(ctx, settings)
 }
 
-func (s *Service) SaveSettings(siteID string, settings *Settings, requestID string) (*Settings, error) {
-	if _, err := s.requireSite(siteID); err != nil {
+func (s *Service) SaveSettings(ctx context.Context, siteID string, settings *Settings, requestID string) (*Settings, error) {
+	if _, err := s.requireSiteContext(ctx, siteID); err != nil {
 		return nil, err
 	}
 	settings.SiteID = siteID
 	if err := validateSettings(settings); err != nil {
 		return nil, err
 	}
-	if err := s.repo.SaveSettings(settings); err != nil {
+	if err := s.repo.SaveSettings(ctx, settings); err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-	if err := s.syncSettingsTask(context.Background(), settings); err != nil {
+	if err := s.syncSettingsTask(ctx, settings); err != nil {
 		return nil, err
 	}
 	opID := app.NewOperationID()
 	_ = s.opRepo.Create(&repo.Operation{ID: opID, Action: "site.access_analysis.settings", TargetType: "site", TargetID: siteID, Status: "success", RequestID: requestID, Actor: "admin", Message: "保存访问分析设置", CreatedAt: time.Now().UTC().Format(time.RFC3339)})
-	return s.repo.GetSettings(siteID)
+	return s.repo.GetSettings(ctx, siteID)
 }
 
-func (s *Service) Paths(siteID string, q Query) (*Page[PathStat], error) {
-	if err := s.validateQuerySite(siteID, &q); err != nil {
+func (s *Service) Paths(ctx context.Context, siteID string, q Query) (*Page[PathStat], error) {
+	if err := s.validateQuerySite(ctx, siteID, &q); err != nil {
 		return nil, err
 	}
-	return s.repo.Paths(siteID, q)
+	return s.repo.Paths(ctx, siteID, q)
 }
-func (s *Service) IPs(siteID string, q Query) (*Page[IPStat], error) {
-	if err := s.validateQuerySite(siteID, &q); err != nil {
+func (s *Service) IPs(ctx context.Context, siteID string, q Query) (*Page[IPStat], error) {
+	if err := s.validateQuerySite(ctx, siteID, &q); err != nil {
 		return nil, err
 	}
-	return s.repo.IPs(siteID, q)
+	return s.repo.IPs(ctx, siteID, q)
 }
-func (s *Service) Entries(siteID string, q Query) (*Page[Entry], error) {
-	if err := s.validateQuerySite(siteID, &q); err != nil {
+func (s *Service) Entries(ctx context.Context, siteID string, q Query) (*Page[Entry], error) {
+	if err := s.validateQuerySite(ctx, siteID, &q); err != nil {
 		return nil, err
 	}
-	return s.repo.Entries(siteID, q)
+	return s.repo.Entries(ctx, siteID, q)
 }
-func (s *Service) Anomalies(siteID string, q Query) ([]Anomaly, error) {
-	if err := s.validateQuerySite(siteID, &q); err != nil {
+func (s *Service) Anomalies(ctx context.Context, siteID string, q Query) ([]Anomaly, error) {
+	if err := s.validateQuerySite(ctx, siteID, &q); err != nil {
 		return nil, err
 	}
-	return s.repo.Anomalies(siteID, q)
+	return s.repo.Anomalies(ctx, siteID, q)
 }
-func (s *Service) Jobs(siteID string, page, pageSize int) (*Page[Job], error) {
-	if _, err := s.requireSite(siteID); err != nil {
+func (s *Service) Jobs(ctx context.Context, siteID string, page, pageSize int) (*Page[Job], error) {
+	if _, err := s.requireSiteContext(ctx, siteID); err != nil {
 		return nil, err
 	}
 	normalizePage(&page, &pageSize)
-	return s.repo.Jobs(siteID, page, pageSize)
+	return s.repo.Jobs(ctx, siteID, page, pageSize)
 }
 
 func (s *Service) DetectFormat(ctx context.Context, siteID string, sample string) (*FormatDetectResponse, error) {
-	site, err := s.requireSite(siteID)
+	site, err := s.requireSiteContext(ctx, siteID)
 	if err != nil {
 		return nil, err
 	}
@@ -205,69 +297,122 @@ func (s *Service) TestFormat(pattern, sample string) (*FormatDetectResponse, err
 	return &resp, nil
 }
 
-func (s *Service) OptimizeFormat(siteID, requestID string) (*OptimizeResponse, error) {
-	if _, err := s.requireSite(siteID); err != nil {
+func (s *Service) OptimizeFormat(ctx context.Context, siteID, requestID string) (*OptimizeResponse, error) {
+	if _, err := s.requireSiteContext(ctx, siteID); err != nil {
 		return nil, err
 	}
-	settings, err := s.repo.GetSettings(siteID)
+	settings, err := s.repo.GetSettings(ctx, siteID)
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	settings.LogFormat = string(FormatNxpanelJSON)
 	settings.CustomPattern = ""
-	if err := s.repo.SaveSettings(settings); err != nil {
+	if err := s.repo.SaveSettings(ctx, settings); err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	opID := app.NewOperationID()
-	_ = s.opRepo.Create(&repo.Operation{ID: opID, Action: "site.access_analysis.optimize_format", TargetType: "site", TargetID: siteID, Status: "success", RequestID: requestID, Actor: "admin", Message: "优化访问分析日志格式设置为 nxpanel_json", CreatedAt: time.Now().UTC().Format(time.RFC3339)})
+	_ = s.opRepo.CreateContext(ctx, &repo.Operation{ID: opID, Action: "site.access_analysis.optimize_format", TargetType: "site", TargetID: siteID, Status: "success", RequestID: requestID, Actor: "admin", Message: "优化访问分析日志格式设置为 nxpanel_json", CreatedAt: time.Now().UTC().Format(time.RFC3339)})
 	return &OptimizeResponse{RecommendedConf: RecommendedNxpanelJSON, OperationID: opID}, nil
 }
 
-func (s *Service) ExportCSV(w io.Writer, kind, siteID string, q Query) error {
-	if err := s.validateQuerySite(siteID, &q); err != nil {
-		return err
-	}
-	cw := csv.NewWriter(w)
-	defer cw.Flush()
-	switch kind {
-	case "paths":
-		page, err := s.repo.Paths(siteID, q)
-		if err != nil {
-			return err
-		}
-		_ = cw.Write([]string{"date", "path", "requests", "unique_ips", "status_2xx", "status_3xx", "status_4xx", "status_5xx", "bytes", "last_seen_at"})
-		for _, item := range page.Items {
-			_ = cw.Write([]string{safeCSV(item.Date), safeCSV(item.Path), fmt.Sprint(item.Requests), fmt.Sprint(item.UniqueIPs), fmt.Sprint(item.Status2xx), fmt.Sprint(item.Status3xx), fmt.Sprint(item.Status4xx), fmt.Sprint(item.Status5xx), fmt.Sprint(item.Bytes), safeCSV(item.LastSeenAt)})
-		}
-	case "ips":
-		page, err := s.repo.IPs(siteID, q)
-		if err != nil {
-			return err
-		}
-		_ = cw.Write([]string{"date", "ip", "requests", "unique_paths", "error_requests", "bytes", "first_seen_at", "last_seen_at", "sample_user_agent"})
-		for _, item := range page.Items {
-			_ = cw.Write([]string{safeCSV(item.Date), safeCSV(item.IP), fmt.Sprint(item.Requests), fmt.Sprint(item.UniquePaths), fmt.Sprint(item.ErrorRequests), fmt.Sprint(item.Bytes), safeCSV(item.FirstSeenAt), safeCSV(item.LastSeenAt), safeCSV(item.SampleUserAgent)})
-		}
-	case "entries":
-		page, err := s.repo.Entries(siteID, q)
-		if err != nil {
-			return err
-		}
-		_ = cw.Write([]string{"ts", "ip", "method", "path", "status", "bytes", "referer", "user_agent", "anomaly"})
-		for _, item := range page.Items {
-			_ = cw.Write([]string{safeCSV(item.TS), safeCSV(item.IP), safeCSV(item.Method), safeCSV(item.Path), fmt.Sprint(item.Status), fmt.Sprint(item.Bytes), safeCSV(item.Referer), safeCSV(item.UserAgent), safeCSV(item.AnomalyReason)})
-		}
-	default:
+func (s *Service) ExportCSV(ctx context.Context, w io.Writer, kind, siteID string, q Query) error {
+	if kind != "paths" && kind != "ips" && kind != "entries" {
 		return app.NewAppError(app.ErrBadRequest, "kind 必须是 paths、ips 或 entries", nil)
 	}
-	return cw.Error()
+	if err := s.validateQuerySite(ctx, siteID, &q); err != nil {
+		return err
+	}
+	q.Page, q.PageSize = 1, exportPageSize
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	headings := map[string][]string{
+		"paths":   {"date", "path", "requests", "unique_ips", "status_2xx", "status_3xx", "status_4xx", "status_5xx", "bytes", "last_seen_at"},
+		"ips":     {"date", "ip", "requests", "unique_paths", "error_requests", "bytes", "first_seen_at", "last_seen_at", "sample_user_agent"},
+		"entries": {"ts", "ip", "method", "path", "status", "bytes", "referer", "user_agent", "anomaly"},
+	}
+	if err := cw.Write(headings[kind]); err != nil {
+		return err
+	}
+	written := 0
+	for written < exportMaxRows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rows, err := s.exportPage(ctx, cw, kind, siteID, q, exportMaxRows-written)
+		if err != nil {
+			return err
+		}
+		written += rows
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			return err
+		}
+		if rows < q.PageSize {
+			return nil
+		}
+		q.Page++
+	}
+	return nil
 }
 
-func (s *Service) requireSite(siteID string) (*repo.Site, error) {
+func (s *Service) exportPage(ctx context.Context, cw *csv.Writer, kind, siteID string, q Query, remaining int) (int, error) {
+	write := func(row []string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return cw.Write(row)
+	}
+	switch kind {
+	case "paths":
+		page, err := s.repo.Paths(ctx, siteID, q)
+		if err != nil {
+			return 0, err
+		}
+		for i, item := range page.Items {
+			if i >= remaining {
+				return i, nil
+			}
+			if err := write([]string{safeCSV(item.Date), safeCSV(item.Path), fmt.Sprint(item.Requests), fmt.Sprint(item.UniqueIPs), fmt.Sprint(item.Status2xx), fmt.Sprint(item.Status3xx), fmt.Sprint(item.Status4xx), fmt.Sprint(item.Status5xx), fmt.Sprint(item.Bytes), safeCSV(item.LastSeenAt)}); err != nil {
+				return i, err
+			}
+		}
+		return len(page.Items), nil
+	case "ips":
+		page, err := s.repo.IPs(ctx, siteID, q)
+		if err != nil {
+			return 0, err
+		}
+		for i, item := range page.Items {
+			if i >= remaining {
+				return i, nil
+			}
+			if err := write([]string{safeCSV(item.Date), safeCSV(item.IP), fmt.Sprint(item.Requests), fmt.Sprint(item.UniquePaths), fmt.Sprint(item.ErrorRequests), fmt.Sprint(item.Bytes), safeCSV(item.FirstSeenAt), safeCSV(item.LastSeenAt), safeCSV(item.SampleUserAgent)}); err != nil {
+				return i, err
+			}
+		}
+		return len(page.Items), nil
+	default:
+		page, err := s.repo.Entries(ctx, siteID, q)
+		if err != nil {
+			return 0, err
+		}
+		for i, item := range page.Items {
+			if i >= remaining {
+				return i, nil
+			}
+			if err := write([]string{safeCSV(item.TS), safeCSV(item.IP), safeCSV(item.Method), safeCSV(item.Path), fmt.Sprint(item.Status), fmt.Sprint(item.Bytes), safeCSV(item.Referer), safeCSV(item.UserAgent), safeCSV(item.AnomalyReason)}); err != nil {
+				return i, err
+			}
+		}
+		return len(page.Items), nil
+	}
+}
+
+func (s *Service) requireSiteContext(ctx context.Context, siteID string) (*repo.Site, error) {
 	if siteID == "" {
 		return nil, app.NewAppError(app.ErrBadRequest, "site_id 不能为空", nil)
 	}
-	site, err := s.siteRepo.GetByID(siteID)
+	site, err := s.siteRepo.GetByIDContext(ctx, siteID)
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
@@ -277,8 +422,8 @@ func (s *Service) requireSite(siteID string) (*repo.Site, error) {
 	return site, nil
 }
 
-func (s *Service) validateQuerySite(siteID string, q *Query) error {
-	if _, err := s.requireSite(siteID); err != nil {
+func (s *Service) validateQuerySite(ctx context.Context, siteID string, q *Query) error {
+	if _, err := s.requireSiteContext(ctx, siteID); err != nil {
 		return err
 	}
 	from, to, err := normalizeQueryRange(*q)
@@ -286,6 +431,9 @@ func (s *Service) validateQuerySite(siteID string, q *Query) error {
 		return err
 	}
 	q.From, q.To = from.Format(time.RFC3339), to.Format(time.RFC3339)
+	q.IP = truncateUTF8(q.IP, MaxIPBytes)
+	q.Path = truncateUTF8(q.Path, MaxPathBytes)
+	q.Method = truncateUTF8(q.Method, MaxMethodBytes)
 	normalizePage(&q.Page, &q.PageSize)
 	return nil
 }
@@ -338,6 +486,12 @@ func normalizeQueryRange(q Query) (time.Time, time.Time, error) {
 			return time.Time{}, time.Time{}, app.NewAppError(app.ErrBadRequest, "to 时间格式无效", nil)
 		}
 	}
+	if to.Before(from) {
+		return time.Time{}, time.Time{}, app.NewAppError(app.ErrValidationFailed, "结束时间不能早于开始时间", nil)
+	}
+	if to.Sub(from) > 366*24*time.Hour {
+		return time.Time{}, time.Time{}, app.NewAppError(app.ErrValidationFailed, "查询范围最多 366 天", nil)
+	}
 	return from, to, nil
 }
 
@@ -388,6 +542,9 @@ func normalizePage(page, pageSize *int) {
 	}
 	if *pageSize > 200 {
 		*pageSize = 200
+	}
+	if *page > 1000000 {
+		*page = 1000000
 	}
 }
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"time"
 
+	"github.com/luoye663/nxpanel/internal/accessanalysis"
 	"github.com/luoye663/nxpanel/internal/app"
 )
 
@@ -51,6 +52,7 @@ type accessScanLimits struct {
 	timeout      time.Duration
 	maxLineBytes int
 	rotatedFiles int
+	aggregation  accessanalysis.AggregationLimits
 }
 
 func (s *Server) accessScanLimits() accessScanLimits {
@@ -61,7 +63,11 @@ func (s *Server) accessScanLimits() accessScanLimits {
 		hardRotated = 32
 	)
 	if s == nil || s.cfg == nil {
-		return accessScanLimits{hardBytes, hardLines, 300 * time.Second, hardLine, hardRotated}
+		return accessScanLimits{
+			maxBytes: hardBytes, maxLines: hardLines, timeout: 300 * time.Second,
+			maxLineBytes: hardLine, rotatedFiles: hardRotated,
+			aggregation: accessanalysis.DefaultAggregationLimits(),
+		}
 	}
 	c := s.cfg.Agent.Resources
 	return accessScanLimits{
@@ -70,6 +76,14 @@ func (s *Server) accessScanLimits() accessScanLimits {
 		timeout:      clampDuration(c.AccessScanTimeout, 300*time.Second, time.Second, 300*time.Second),
 		maxLineBytes: int(clampSize(c.AccessScanLineMaxSize, hardLine, 256, hardLine)),
 		rotatedFiles: int(clampInt64(int64(c.AccessScanRotatedFiles), hardRotated, 0, hardRotated)),
+		aggregation: accessanalysis.AggregationLimits{
+			Paths:         int(clampInt64(int64(c.AccessScanMaxPaths), 10000, 100, 50000)),
+			IPs:           int(clampInt64(int64(c.AccessScanMaxIPs), 10000, 100, 50000)),
+			Hourly:        int(clampInt64(int64(c.AccessScanMaxHourly), 1000, 24, 1000)),
+			Anomalies:     int(clampInt64(int64(c.AccessScanMaxAnomalies), 1000, 100, 10000)),
+			Entries:       int(clampInt64(int64(c.AccessScanMaxEntries), 100000, 1000, 100000)),
+			TotalDistinct: int(clampInt64(int64(c.AccessScanMaxDistinct), 50000, 1000, 200000)),
+		},
 	}
 }
 
