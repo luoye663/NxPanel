@@ -262,6 +262,52 @@ func TestLogin_EmptyFields(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsOversizedFieldsAndCountsFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		value string
+	}{
+		{"username", "username", strings.Repeat("u", loginUsernameMaxBytes+1)},
+		{"password", "password", strings.Repeat("p", loginPasswordMaxBytes+1)},
+		{"captcha", "captcha_token", strings.Repeat("c", loginCaptchaMaxBytes+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newTestServer(t)
+			setupTestAdmin(t, server)
+			payload := map[string]string{"username": "admin", "password": "Test-password-123"}
+			payload[tt.field] = tt.value
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal login: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, apiTestPath(server, "/auth/login"), strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", strings.Repeat("a", repo.LoginAuditUAMaxBytes+50))
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("oversized %s status = %d, body=%s", tt.field, rec.Code, rec.Body.String())
+			}
+			boundedAccount := payload["username"]
+			if len(boundedAccount) > loginUsernameMaxBytes {
+				boundedAccount = boundedAccount[:loginUsernameMaxBytes]
+			}
+			if got := server.loginProtection.FailureCount("192.0.2.1:1234", boundedAccount); got != 1 {
+				t.Fatalf("failure count = %d, want 1", got)
+			}
+			var username, ua, reason string
+			if err := server.db.QueryRow(`SELECT username, user_agent, failure_reason FROM login_audit ORDER BY id DESC LIMIT 1`).Scan(&username, &ua, &reason); err != nil {
+				t.Fatalf("query audit: %v", err)
+			}
+			if len(username) > loginUsernameMaxBytes || len(ua) > repo.LoginAuditUAMaxBytes || len(reason) > repo.LoginAuditReasonMaxBytes {
+				t.Fatalf("audit fields exceed bounds username=%d ua=%d reason=%d", len(username), len(ua), len(reason))
+			}
+		})
+	}
+}
+
 func TestCaptchaConfig_NotRequired_HidesProviderAndSiteKey(t *testing.T) {
 	server := newCaptchaTestServer(t)
 

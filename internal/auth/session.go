@@ -5,25 +5,31 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
 )
 
-const DefaultSessionDuration = 24 * time.Hour
+const (
+	DefaultSessionDuration   = 24 * time.Hour
+	SessionUserAgentMaxBytes = 512
+	SessionIPMaxBytes        = 64
+)
 
 const SessionCookieName = "openrest_session"
 
 const CSRFCookieName = "csrf-token"
 
 type SessionService struct {
-	sessionRepo    *repo.SessionRepo
-	adminRepo      *repo.AdminRepo
+	sessionRepo     *repo.SessionRepo
+	adminRepo       *repo.AdminRepo
 	sessionDuration time.Duration
-	maxSessions    int
-	bindIP         bool
-	bindUA         bool
+	maxSessions     int
+	bindIP          bool
+	bindUA          bool
 }
 
 type SessionServiceOption func(*SessionService)
@@ -66,6 +72,8 @@ func (s *SessionService) ReloadSecurityConfig(maxSessions int, bindIP, bindUA bo
 }
 
 func (s *SessionService) CreateSession(userAgent, ip string) (sessionID, csrfToken string, err error) {
+	userAgent = NormalizeSessionUserAgent(userAgent)
+	ip = NormalizeSessionIP(ip)
 	if s.maxSessions > 0 && s.adminRepo != nil {
 		for {
 			count, cerr := s.adminRepo.CountSessions()
@@ -108,6 +116,8 @@ func (s *SessionService) CreateSession(userAgent, ip string) (sessionID, csrfTok
 }
 
 func (s *SessionService) ValidateSession(sessionID, currentIP, currentUA string) (*repo.Session, error) {
+	currentIP = NormalizeSessionIP(currentIP)
+	currentUA = NormalizeSessionUserAgent(currentUA)
 	session, err := s.sessionRepo.GetByID(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("查询 session 失败: %w", err)
@@ -137,6 +147,31 @@ func (s *SessionService) ValidateSession(sessionID, currentIP, currentUA string)
 	_ = s.sessionRepo.TouchLastSeen(sessionID)
 
 	return session, nil
+}
+
+func NormalizeSessionUserAgent(value string) string {
+	value = strings.ToValidUTF8(value, "")
+	if len(value) <= SessionUserAgentMaxBytes {
+		return value
+	}
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func NormalizeSessionIP(value string) string {
+	return truncateSessionContext(value, SessionIPMaxBytes)
+}
+
+func truncateSessionContext(value string, maxBytes int) string {
+	value = strings.ToValidUTF8(value, "")
+	if len(value) <= maxBytes {
+		return value
+	}
+	value = value[:maxBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (s *SessionService) DestroySession(sessionID string) error {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +34,27 @@ func TestTempTokenStoreContextBinding(t *testing.T) {
 	}
 	if entry.AdminID != 1 || entry.Username != "admin" {
 		t.Fatalf("临时令牌信息不正确: %+v", entry)
+	}
+}
+
+func TestTempTokenStoreNormalizesLongContextConsistently(t *testing.T) {
+	store := NewTempTokenStore(5 * time.Minute)
+	t.Cleanup(store.Stop)
+	longUA := strings.Repeat("a", auth.SessionUserAgentMaxBytes+80)
+	longIP := strings.Repeat("1", auth.SessionIPMaxBytes+20)
+	token := mustCreateTempToken(t, store, 1, "admin", longIP, longUA)
+	entry, ok := store.ValidateContext(token, longIP, longUA)
+	if !ok {
+		t.Fatal("相同长上下文应在归一化后通过")
+	}
+	if len(entry.UserAgent) > auth.SessionUserAgentMaxBytes || entry.UserAgent != auth.NormalizeSessionUserAgent(longUA) || len(entry.IP) != auth.SessionIPMaxBytes {
+		t.Fatalf("临时令牌上下文未受限: ua=%d ip=%d", len(entry.UserAgent), len(entry.IP))
+	}
+	if _, ok := store.ValidateContext(token, longIP, "b"+longUA[1:]); ok {
+		t.Fatal("有效前缀变化后不应通过临时令牌校验")
+	}
+	if _, ok := store.ValidateContext(token, longIP, longUA[:len(longUA)-1]+"b"); ok {
+		t.Fatal("哈希覆盖范围内的后缀变化后不应通过临时令牌校验")
 	}
 }
 

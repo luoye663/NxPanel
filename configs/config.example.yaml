@@ -208,6 +208,15 @@ nginx:
 database:
   # SQLite 忙等超时（毫秒）
   busy_timeout: 5000
+  # 审计与任务执行历史保留；不能用 0 禁用，超出硬限制的值会被钳制
+  # login audit: age 24h..87600h, count 100..1000000
+  # scheduled runs: age 1h..87600h, per task 1..10000; cleanup: 1m..24h
+  retention:
+    login_audit_max_age: "2160h"
+    login_audit_max_count: 50000
+    scheduled_task_runs_max_age: "720h"
+    scheduled_task_runs_max_per_task: 100
+    cleanup_interval: "1h"
 # ACME / Let's Encrypt 配置
 acme:
   # 使用 Let's Encrypt 测试环境（证书不受信任，但无频率限制）

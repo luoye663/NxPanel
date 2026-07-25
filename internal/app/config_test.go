@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDefaultConfig 验证默认配置值的合理性
@@ -74,6 +75,38 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 2 || cfg.API.AsyncJobs.BackupMaxConcurrent != 2 || cfg.API.AsyncJobs.ManualQueueSize != 32 || cfg.API.AsyncJobs.ManualWorkers != 2 {
 		t.Fatalf("异步任务默认值不正确: %+v", cfg.API.AsyncJobs)
+	}
+	policy := cfg.Database.Retention.Policy()
+	if policy.LoginAuditMaxAge != 2160*time.Hour || policy.LoginAuditMaxCount != 50000 || policy.ScheduledRunMaxAge != 720*time.Hour || policy.ScheduledRunMaxPerTask != 100 || policy.CleanupInterval != time.Hour {
+		t.Fatalf("数据库保留默认值不正确: %+v", policy)
+	}
+}
+
+func TestRetentionConfigYAMLEnvAndHardClamps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`database:
+  retention:
+    login_audit_max_age: "1h"
+    login_audit_max_count: -5
+    scheduled_task_runs_max_age: "999999h"
+    scheduled_task_runs_max_per_task: 0
+    cleanup_interval: "1s"
+`)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("NXPANEL_DATABASE_RETENTION_LOGIN_AUDIT_MAX_COUNT", "200")
+	t.Setenv("NXPANEL_DATABASE_RETENTION_SCHEDULED_TASK_RUNS_MAX_PER_TASK", "250")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	policy := cfg.Database.Retention.Policy()
+	if policy.LoginAuditMaxAge != 24*time.Hour || policy.LoginAuditMaxCount != 200 {
+		t.Fatalf("login audit policy = %+v", policy)
+	}
+	if policy.ScheduledRunMaxAge != 10*365*24*time.Hour || policy.ScheduledRunMaxPerTask != 250 || policy.CleanupInterval != time.Minute {
+		t.Fatalf("scheduled run policy = %+v", policy)
 	}
 }
 

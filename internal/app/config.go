@@ -85,6 +85,32 @@ type ServiceLogRotateConfig struct {
 type DatabaseConfig struct {
 	// BusyTimeout SQLite 忙等超时（毫秒）
 	BusyTimeout int `yaml:"busy_timeout"`
+
+	Retention DatabaseRetentionConfig `yaml:"retention"`
+}
+
+type DatabaseRetentionConfig struct {
+	LoginAuditMaxAge       string `yaml:"login_audit_max_age"`
+	LoginAuditMaxCount     int    `yaml:"login_audit_max_count"`
+	ScheduledRunMaxAge     string `yaml:"scheduled_task_runs_max_age"`
+	ScheduledRunMaxPerTask int    `yaml:"scheduled_task_runs_max_per_task"`
+	CleanupInterval        string `yaml:"cleanup_interval"`
+}
+
+const (
+	defaultLoginAuditMaxAge       = 2160 * time.Hour
+	defaultLoginAuditMaxCount     = 50000
+	defaultScheduledRunMaxAge     = 720 * time.Hour
+	defaultScheduledRunMaxPerTask = 100
+	defaultRetentionCleanup       = time.Hour
+)
+
+type RetentionPolicy struct {
+	LoginAuditMaxAge       time.Duration
+	LoginAuditMaxCount     int
+	ScheduledRunMaxAge     time.Duration
+	ScheduledRunMaxPerTask int
+	CleanupInterval        time.Duration
 }
 
 // UpgradeConfig — 升级检测配置
@@ -359,6 +385,7 @@ func LoadConfig(path string) (*Config, error) {
 		if os.IsNotExist(err) {
 			// 配置文件不存在是合法的，使用默认值 + 环境变量
 			applyEnvOverrides(cfg)
+			normalizeRetentionConfig(cfg)
 			normalizeLoginPath(cfg)
 			return cfg, nil
 		}
@@ -372,6 +399,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	// 环境变量覆盖 YAML 配置（优先级最高）
 	applyEnvOverrides(cfg)
+	normalizeRetentionConfig(cfg)
 	normalizeLoginPath(cfg)
 
 	return cfg, nil
@@ -508,6 +536,13 @@ func defaultConfig() *Config {
 		},
 		Database: DatabaseConfig{
 			BusyTimeout: 5000,
+			Retention: DatabaseRetentionConfig{
+				LoginAuditMaxAge:       "2160h",
+				LoginAuditMaxCount:     defaultLoginAuditMaxCount,
+				ScheduledRunMaxAge:     "720h",
+				ScheduledRunMaxPerTask: defaultScheduledRunMaxPerTask,
+				CleanupInterval:        "1h",
+			},
 		},
 		Upgrade: UpgradeConfig{
 			Enabled:       true,
@@ -883,6 +918,25 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Database.BusyTimeout = n
 		}
 	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_LOGIN_AUDIT_MAX_AGE"); v != "" {
+		cfg.Database.Retention.LoginAuditMaxAge = v
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_LOGIN_AUDIT_MAX_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Database.Retention.LoginAuditMaxCount = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_SCHEDULED_TASK_RUNS_MAX_AGE"); v != "" {
+		cfg.Database.Retention.ScheduledRunMaxAge = v
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_SCHEDULED_TASK_RUNS_MAX_PER_TASK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Database.Retention.ScheduledRunMaxPerTask = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_CLEANUP_INTERVAL"); v != "" {
+		cfg.Database.Retention.CleanupInterval = v
+	}
 	if v := os.Getenv("NXPANEL_UPGRADE_ENABLED"); v != "" {
 		cfg.Upgrade.Enabled = v == "true" || v == "1"
 	}
@@ -1048,6 +1102,48 @@ func ParseDurationOrDefault(s string, defaultVal time.Duration) time.Duration {
 		return defaultVal
 	}
 	return d
+}
+
+func (c DatabaseRetentionConfig) Policy() RetentionPolicy {
+	return RetentionPolicy{
+		LoginAuditMaxAge:       clampDuration(ParseDurationOrDefault(c.LoginAuditMaxAge, defaultLoginAuditMaxAge), 24*time.Hour, 10*365*24*time.Hour),
+		LoginAuditMaxCount:     clampIntDefault(c.LoginAuditMaxCount, defaultLoginAuditMaxCount, 100, 1000000),
+		ScheduledRunMaxAge:     clampDuration(ParseDurationOrDefault(c.ScheduledRunMaxAge, defaultScheduledRunMaxAge), time.Hour, 10*365*24*time.Hour),
+		ScheduledRunMaxPerTask: clampIntDefault(c.ScheduledRunMaxPerTask, defaultScheduledRunMaxPerTask, 1, 10000),
+		CleanupInterval:        clampDuration(ParseDurationOrDefault(c.CleanupInterval, defaultRetentionCleanup), time.Minute, 24*time.Hour),
+	}
+}
+
+func normalizeRetentionConfig(cfg *Config) {
+	policy := cfg.Database.Retention.Policy()
+	cfg.Database.Retention.LoginAuditMaxAge = policy.LoginAuditMaxAge.String()
+	cfg.Database.Retention.LoginAuditMaxCount = policy.LoginAuditMaxCount
+	cfg.Database.Retention.ScheduledRunMaxAge = policy.ScheduledRunMaxAge.String()
+	cfg.Database.Retention.ScheduledRunMaxPerTask = policy.ScheduledRunMaxPerTask
+	cfg.Database.Retention.CleanupInterval = policy.CleanupInterval.String()
+}
+
+func clampDuration(value, minValue, maxValue time.Duration) time.Duration {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func clampIntDefault(value, defaultValue, minValue, maxValue int) int {
+	if value == 0 {
+		value = defaultValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 // WriteBack 将当前配置写回配置文件，保留注释和格式

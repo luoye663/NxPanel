@@ -210,6 +210,9 @@ func TestMigrationCreatesIndexes(t *testing.T) {
 		"idx_site_backup_schedules_enabled",
 		"idx_scheduled_tasks_enabled_next",
 		"idx_scheduled_task_runs_task_created",
+		"idx_login_audit_retention",
+		"idx_scheduled_task_runs_terminal_finished",
+		"idx_scheduled_task_runs_terminal_task_created",
 		"idx_rewrite_templates_enabled_sort",
 	}
 

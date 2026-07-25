@@ -4,13 +4,21 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luoye663/nxpanel/internal/api/middleware"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/auth"
 	"github.com/luoye663/nxpanel/internal/captcha"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+)
+
+const (
+	loginUsernameMaxBytes = 256
+	loginPasswordMaxBytes = 1024
+	loginCaptchaMaxBytes  = 8192
 )
 
 type loginRequest struct {
@@ -68,10 +76,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Username == "" || req.Password == "" {
+	if req.Username == "" || req.Password == "" || len(req.Username) > loginUsernameMaxBytes ||
+		len(req.Password) > loginPasswordMaxBytes || len(req.CaptchaToken) > loginCaptchaMaxBytes {
+		boundedUsername := truncateLoginUsername(req.Username)
 		if s.loginProtection != nil {
-			s.loginProtection.RecordFailure(ip, req.Username)
+			s.loginProtection.RecordFailure(ip, boundedUsername)
 		}
+		s.auditLogin(boundedUsername, ip, ua, false, "请求字段无效", false, false)
 		WriteError(w, r, http.StatusUnprocessableEntity, app.ErrValidationFailed,
 			"认证失败", nil)
 		return
@@ -321,6 +332,18 @@ func (s *Server) handleLoginRecover(w http.ResponseWriter, r *http.Request) {
 		Username:    entry.Username,
 		Requires2FA: false,
 	})
+}
+
+func truncateLoginUsername(value string) string {
+	value = strings.ToValidUTF8(value, "")
+	if len(value) <= loginUsernameMaxBytes {
+		return value
+	}
+	value = value[:loginUsernameMaxBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (s *Server) CreateSession(ua, ip string) (string, string, error) {

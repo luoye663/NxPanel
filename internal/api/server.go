@@ -195,6 +195,42 @@ func (s *Server) sseCleanup(ctx context.Context) {
 	}
 }
 
+func maintenanceLoop(ctx context.Context, interval time.Duration, run func(context.Context)) {
+	run(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run(ctx)
+		}
+	}
+}
+
+func (s *Server) pruneRetainedData(ctx context.Context) {
+	policy := s.cfg.Database.Retention.Policy()
+	now := time.Now().UTC()
+	if deleted, err := s.loginAuditRepo.Prune(ctx, now.Add(-policy.LoginAuditMaxAge), policy.LoginAuditMaxCount); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("清理登录审计失败", "error", err)
+		}
+	} else if deleted > 0 {
+		slog.Info("登录审计清理完成", "deleted", deleted)
+	}
+	if s.scheduledTaskSvc == nil {
+		return
+	}
+	if deleted, err := scheduledtask.NewRepo(s.db).PruneRuns(ctx, now.Add(-policy.ScheduledRunMaxAge), policy.ScheduledRunMaxPerTask); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("清理计划任务执行历史失败", "error", err)
+		}
+	} else if deleted > 0 {
+		slog.Info("计划任务执行历史清理完成", "deleted", deleted)
+	}
+}
+
 func (s *Server) ReloadSecurityConfig(cfg *app.Config) {
 	maxFailures := cfg.API.RateLimit.MaxFailures
 	if maxFailures <= 0 {

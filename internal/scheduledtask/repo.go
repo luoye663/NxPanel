@@ -163,6 +163,26 @@ func (r *Repo) ListRuns(ctx context.Context, taskID string, limit int) ([]*Run, 
 	return result, rows.Err()
 }
 
+func (r *Repo) PruneRuns(ctx context.Context, cutoff time.Time, maxPerTask int) (int64, error) {
+	if maxPerTask < 1 {
+		return 0, fmt.Errorf("计划任务执行记录每任务最大保留数必须大于 0")
+	}
+	result, err := r.db.ExecContext(ctx, `WITH ranked AS (
+		SELECT id,
+			ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC, id DESC) AS row_num
+		FROM scheduled_task_runs
+		WHERE status != 'running'
+	), over_limit AS (
+		SELECT id FROM ranked WHERE row_num > ?
+	)
+	DELETE FROM scheduled_task_runs
+	WHERE status != 'running' AND (COALESCE(NULLIF(finished_at, ''), created_at) < ? OR id IN (SELECT id FROM over_limit))`, maxPerTask, formatTime(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("清理计划任务执行历史失败: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 func (r *Repo) UpdateNextRun(ctx context.Context, taskID string, next time.Time, status string, errText string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE scheduled_tasks
 		SET next_run_at = ?, status = ?, last_error = ?, version = version + 1, updated_at = ?

@@ -235,7 +235,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 }
 
 func (s *Server) startRuntimeServices() {
-	s.backgroundWG.Add(2)
+	s.backgroundWG.Add(3)
 	go func() {
 		defer s.backgroundWG.Done()
 		s.sessionCleanup(s.rootCtx)
@@ -243,6 +243,11 @@ func (s *Server) startRuntimeServices() {
 	go func() {
 		defer s.backgroundWG.Done()
 		s.sseCleanup(s.rootCtx)
+	}()
+	go func() {
+		defer s.backgroundWG.Done()
+		policy := s.cfg.Database.Retention.Policy()
+		maintenanceLoop(s.rootCtx, policy.CleanupInterval, s.pruneRetainedData)
 	}()
 
 	s.upgradeSvc = upgrade.NewService(s.cfg.Upgrade)

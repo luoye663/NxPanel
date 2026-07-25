@@ -301,6 +301,8 @@ func (s *TempTokenStore) Stop() {
 }
 
 func (s *TempTokenStore) Create(adminID int, username, ip, userAgent string) (string, error) {
+	ip = auth.NormalizeSessionIP(ip)
+	userAgent = auth.NormalizeSessionUserAgent(userAgent)
 	b := make([]byte, 32)
 	if _, err := io.ReadFull(s.randReader, b); err != nil {
 		return "", fmt.Errorf("生成临时令牌失败: %w", err)
@@ -328,6 +330,8 @@ func (s *TempTokenStore) Create(adminID int, username, ip, userAgent string) (st
 }
 
 func (s *TempTokenStore) ValidateContext(token, ip, userAgent string) (*TempTokenEntry, bool) {
+	ip = auth.NormalizeSessionIP(ip)
+	userAgent = auth.NormalizeSessionUserAgent(userAgent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.validateLocked(token, ip, userAgent)
@@ -353,6 +357,8 @@ func (s *TempTokenStore) RecordFailure(token string) *TempTokenEntry {
 }
 
 func (s *TempTokenStore) Consume(token, ip, userAgent string) (*TempTokenEntry, bool) {
+	ip = auth.NormalizeSessionIP(ip)
+	userAgent = auth.NormalizeSessionUserAgent(userAgent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.validateLocked(token, ip, userAgent)

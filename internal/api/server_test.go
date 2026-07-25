@@ -187,3 +187,24 @@ func TestServerCloseIsIdempotentAndCancelsRoot(t *testing.T) {
 		t.Fatal("Server.Close did not cancel root context")
 	}
 }
+
+func TestMaintenanceLoopRunsImmediatelyAndStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		maintenanceLoop(ctx, time.Hour, func(context.Context) { called <- struct{}{} })
+		close(done)
+	}()
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not run immediately")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not stop after cancellation")
+	}
+}
