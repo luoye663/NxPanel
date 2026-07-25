@@ -78,6 +78,8 @@ type Run struct {
 	Trigger        string
 	Status         string
 	Attempt        int
+	TaskVersion    int
+	RunnerID       string
 	StartedAt      time.Time
 	FinishedAt     *time.Time
 	DurationMillis int64
@@ -86,6 +88,13 @@ type Run struct {
 	OperationID    string
 	RequestID      string
 	CreatedAt      time.Time
+}
+
+// FinishOutcome distinguishes a normal terminal transition from a stale claim.
+type FinishOutcome struct {
+	RunFinalized    bool
+	ScheduleUpdated bool
+	Stale           bool
 }
 
 // RunContext 传给具体任务 handler，后续写日志、审计和 request id 都从这里扩展。

@@ -162,12 +162,13 @@ func newAgentClient(cfg *app.Config) *agentclient.Client {
 func (s *Server) initScheduledTaskCenter(taskRepo *scheduledtask.Repo) error {
 	registry := scheduledtask.NewRegistry()
 	runner := scheduledtask.NewRunner(taskRepo, registry, app.NewID("runner"), 2)
-	engine := scheduledtask.NewEngine(s.rootCtx, taskRepo, runner)
+	engine := scheduledtask.NewEngineWithConfig(s.rootCtx, taskRepo, runner, scheduledtask.EngineConfig{
+		ReconcileInterval: s.cfg.API.AsyncJobs.ScheduledTaskReconcileInterval(),
+		DispatchWorkers:   s.cfg.API.AsyncJobs.ScheduledWorkers,
+		DispatchQueueSize: s.cfg.API.AsyncJobs.ScheduledQueueSize,
+	})
 	s.scheduledTaskSvc = scheduledtask.NewService(s.rootCtx, taskRepo, registry, runner, engine, s.cfg.API.AsyncJobs.ManualQueueSize, s.cfg.API.AsyncJobs.ManualWorkers)
 	s.scheduledTaskEngine = engine
-	if err := engine.Start(); err != nil {
-		return fmt.Errorf("启动计划任务中心失败: %w", err)
-	}
 	return nil
 }
 

@@ -102,6 +102,11 @@ func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
 	if err := s.initAgentBackedServices(r); err != nil {
 		return nil, err
 	}
+	// Handlers and startup-created/migrated tasks must exist before any due task
+	// can be claimed. ReloadTask calls made during setup are retained by Engine.
+	if err := s.scheduledTaskEngine.Start(); err != nil {
+		return nil, fmt.Errorf("启动计划任务中心失败: %w", err)
+	}
 	s.startRuntimeServices()
 
 	s.setupMiddleware()

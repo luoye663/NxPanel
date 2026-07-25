@@ -75,6 +75,8 @@ type RunListItem struct {
 	Trigger        string  `json:"trigger"`
 	Status         string  `json:"status"`
 	Attempt        int     `json:"attempt"`
+	TaskVersion    int     `json:"task_version"`
+	RunnerID       string  `json:"runner_id"`
 	StartedAt      string  `json:"started_at"`
 	FinishedAt     *string `json:"finished_at"`
 	DurationMillis int64   `json:"duration_ms"`

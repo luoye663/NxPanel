@@ -49,6 +49,9 @@ api:
     backup_max_concurrent: 2
     manual_queue_size: 32
     manual_workers: 2
+    scheduled_queue_size: 128
+    scheduled_workers: 2
+    task_reconcile_interval: "1m"
   # 仪表盘系统指标 SSE 下发间隔，最低 1s
   system_metrics_interval: "3s"
   # 已认证上传路由独立超时和文件内容上限

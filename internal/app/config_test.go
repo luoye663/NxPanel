@@ -73,7 +73,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.API.Captcha.MaxConcurrent != 8 {
 		t.Fatalf("CAPTCHA 并发默认值期望 8，实际 %d", cfg.API.Captcha.MaxConcurrent)
 	}
-	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 2 || cfg.API.AsyncJobs.BackupMaxConcurrent != 2 || cfg.API.AsyncJobs.ManualQueueSize != 32 || cfg.API.AsyncJobs.ManualWorkers != 2 {
+	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 2 || cfg.API.AsyncJobs.BackupMaxConcurrent != 2 || cfg.API.AsyncJobs.ManualQueueSize != 32 || cfg.API.AsyncJobs.ManualWorkers != 2 || cfg.API.AsyncJobs.ScheduledQueueSize != 128 || cfg.API.AsyncJobs.ScheduledWorkers != 2 || cfg.API.AsyncJobs.TaskReconcileInterval != "1m" {
 		t.Fatalf("异步任务默认值不正确: %+v", cfg.API.AsyncJobs)
 	}
 	policy := cfg.Database.Retention.Policy()
@@ -115,10 +115,35 @@ func TestAsyncJobEnvironmentOverrides(t *testing.T) {
 	t.Setenv("NXPANEL_API_ASYNC_JOBS_BACKUP_MAX_CONCURRENT", "4")
 	t.Setenv("NXPANEL_API_ASYNC_JOBS_MANUAL_QUEUE_SIZE", "12")
 	t.Setenv("NXPANEL_API_ASYNC_JOBS_MANUAL_WORKERS", "5")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_QUEUE_SIZE", "96")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_WORKERS", "6")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_TASK_RECONCILE_INTERVAL", "30s")
 	cfg := defaultConfig()
 	applyEnvOverrides(cfg)
-	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 3 || cfg.API.AsyncJobs.BackupMaxConcurrent != 4 || cfg.API.AsyncJobs.ManualQueueSize != 12 || cfg.API.AsyncJobs.ManualWorkers != 5 {
+	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 3 || cfg.API.AsyncJobs.BackupMaxConcurrent != 4 || cfg.API.AsyncJobs.ManualQueueSize != 12 || cfg.API.AsyncJobs.ManualWorkers != 5 || cfg.API.AsyncJobs.ScheduledQueueSize != 96 || cfg.API.AsyncJobs.ScheduledWorkers != 6 || cfg.API.AsyncJobs.TaskReconcileInterval != "30s" {
 		t.Fatalf("异步任务环境变量覆盖失败: %+v", cfg.API.AsyncJobs)
+	}
+}
+
+func TestScheduledTaskReconcileIntervalClamp(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "default empty", value: "", want: time.Minute},
+		{name: "invalid default", value: "invalid", want: time.Minute},
+		{name: "minimum", value: "1s", want: 5 * time.Second},
+		{name: "normal", value: "30s", want: 30 * time.Second},
+		{name: "maximum", value: "2h", want: time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := AsyncJobConfig{TaskReconcileInterval: tc.value}
+			if got := cfg.ScheduledTaskReconcileInterval(); got != tc.want {
+				t.Fatalf("ScheduledTaskReconcileInterval()=%s want=%s", got, tc.want)
+			}
+		})
 	}
 }
 

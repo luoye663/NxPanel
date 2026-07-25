@@ -186,10 +186,24 @@ type APIConfig struct {
 }
 
 type AsyncJobConfig struct {
-	ACMEMaxConcurrent   int `yaml:"acme_max_concurrent"`
-	BackupMaxConcurrent int `yaml:"backup_max_concurrent"`
-	ManualQueueSize     int `yaml:"manual_queue_size"`
-	ManualWorkers       int `yaml:"manual_workers"`
+	ACMEMaxConcurrent     int    `yaml:"acme_max_concurrent"`
+	BackupMaxConcurrent   int    `yaml:"backup_max_concurrent"`
+	ManualQueueSize       int    `yaml:"manual_queue_size"`
+	ManualWorkers         int    `yaml:"manual_workers"`
+	ScheduledQueueSize    int    `yaml:"scheduled_queue_size"`
+	ScheduledWorkers      int    `yaml:"scheduled_workers"`
+	TaskReconcileInterval string `yaml:"task_reconcile_interval"`
+}
+
+func (c AsyncJobConfig) ScheduledTaskReconcileInterval() time.Duration {
+	interval := ParseDurationOrDefault(c.TaskReconcileInterval, time.Minute)
+	if interval < 5*time.Second {
+		return 5 * time.Second
+	}
+	if interval > time.Hour {
+		return time.Hour
+	}
+	return interval
 }
 
 type IngressConfig struct {
@@ -436,10 +450,13 @@ func defaultConfig() *Config {
 			SSEMaxConnections: 64,
 			AsyncResultTTL:    "10m",
 			AsyncJobs: AsyncJobConfig{
-				ACMEMaxConcurrent:   2,
-				BackupMaxConcurrent: 2,
-				ManualQueueSize:     32,
-				ManualWorkers:       2,
+				ACMEMaxConcurrent:     2,
+				BackupMaxConcurrent:   2,
+				ManualQueueSize:       32,
+				ManualWorkers:         2,
+				ScheduledQueueSize:    128,
+				ScheduledWorkers:      2,
+				TaskReconcileInterval: "1m",
 			},
 			SystemMetricsInterval: "2s",
 			UploadTimeout:         "300s",
@@ -691,6 +708,19 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.API.AsyncJobs.ManualWorkers = n
 		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_QUEUE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ScheduledQueueSize = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ScheduledWorkers = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_TASK_RECONCILE_INTERVAL"); v != "" {
+		cfg.API.AsyncJobs.TaskReconcileInterval = v
 	}
 	if v := os.Getenv("NXPANEL_API_SYSTEM_METRICS_INTERVAL"); v != "" {
 		cfg.API.SystemMetricsInterval = v

@@ -46,6 +46,8 @@ export interface ScheduledTaskRunItem {
   trigger: string
   status: string
   attempt: number
+  task_version: number
+  runner_id: string
   started_at: string
   finished_at?: string | null
   duration_ms: number

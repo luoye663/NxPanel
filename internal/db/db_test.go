@@ -230,6 +230,35 @@ func TestMigrationCreatesIndexes(t *testing.T) {
 	}
 }
 
+func TestMigrationAddsScheduledRunClaimColumns(t *testing.T) {
+	database, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := RunMigrations(database); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.Query(`PRAGMA table_info(scheduled_task_runs)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatal(err)
+		}
+		found[name] = true
+	}
+	if !found["task_version"] || !found["runner_id"] {
+		t.Fatalf("scheduled run claim columns missing: %v", found)
+	}
+}
+
 // TestDSNFromPath 测试 DSN 生成
 func TestDSNFromPath(t *testing.T) {
 	dsn := DSNFromPath("/opt/nxpanel/data/panel.db", 5000)
