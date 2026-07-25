@@ -141,7 +141,9 @@ func newAccessAnalysisTaskTestService() (*sql.DB, *Service, *scheduledtask.Repo,
 	taskRepo := scheduledtask.NewRepo(database)
 	registry := scheduledtask.NewRegistry()
 	runner := scheduledtask.NewRunner(taskRepo, registry, app.NewID("runner"), 1)
-	taskSvc := scheduledtask.NewService(taskRepo, registry, runner, nil)
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	taskSvc := scheduledtask.NewService(workerCtx, taskRepo, registry, runner, nil, 4, 1)
+	cancelWorkers()
 	svc := NewService(repo.NewSiteRepo(database), NewRepo(database), repo.NewOperationRepo(database), fakeAnalysisAgent{})
 	if err := svc.AttachScheduledTasks(taskSvc); err != nil {
 		database.Close()

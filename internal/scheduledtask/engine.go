@@ -12,17 +12,18 @@ type Engine struct {
 	repo   *Repo
 	runner *Runner
 
-	mu     sync.Mutex
-	items  taskHeap
-	reload chan string
-	wake   chan struct{}
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu       sync.Mutex
+	items    taskHeap
+	reload   chan string
+	wake     chan struct{}
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	stopOnce sync.Once
 }
 
-func NewEngine(repo *Repo, runner *Runner) *Engine {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewEngine(parent context.Context, repo *Repo, runner *Runner) *Engine {
+	ctx, cancel := context.WithCancel(parent)
 	return &Engine{repo: repo, runner: runner, reload: make(chan string, 32), wake: make(chan struct{}, 1), ctx: ctx, cancel: cancel}
 }
 
@@ -39,7 +40,7 @@ func (e *Engine) Start() error {
 }
 
 func (e *Engine) Stop() {
-	e.cancel()
+	e.stopOnce.Do(e.cancel)
 	e.wg.Wait()
 }
 
@@ -136,7 +137,9 @@ func (e *Engine) dispatchDue() {
 			continue
 		}
 		// 执行前重新读取 DB，heap 只作为轻量提醒，不作为任务状态源。
+		e.wg.Add(1)
 		go func(taskID string) {
+			defer e.wg.Done()
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					slog.Warn("计划任务 runner panic", "task_id", taskID, "panic", recovered)

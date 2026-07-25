@@ -118,7 +118,7 @@ func (s *Server) getNginxInfo() map[string]any {
 	running := false
 
 	if detected && s.agentClient != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(s.rootCtx, 5*time.Second)
 		defer cancel()
 		if _, err := s.agentClient.TestNginx(ctx); err == nil {
 			running = true

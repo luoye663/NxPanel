@@ -46,6 +46,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("创建测试服务器失败: %v", err)
 	}
+	t.Cleanup(server.Close)
 	return server
 }
 
@@ -65,6 +66,7 @@ func newTestServerWithAgent(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("创建测试服务器失败: %v", err)
 	}
+	t.Cleanup(server.Close)
 	return server
 }
 
@@ -172,5 +174,16 @@ func TestHiddenGateFixedAPIPathsReturn404(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("固定路径 %s 应返回 404，实际 %d", path, rec.Code)
 		}
+	}
+}
+
+func TestServerCloseIsIdempotentAndCancelsRoot(t *testing.T) {
+	server := newTestServer(t)
+	server.Close()
+	server.Close()
+	select {
+	case <-server.Context().Done():
+	default:
+		t.Fatal("Server.Close did not cancel root context")
 	}
 }

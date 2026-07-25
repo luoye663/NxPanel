@@ -8,69 +8,91 @@ import (
 	"time"
 )
 
-type Service struct {
-	collector *Collector
-	interval  time.Duration
+type snapshotCollector interface {
+	Collect(CollectOptions) (Snapshot, error)
+}
 
-	// 一个 Service 只启动一个采集循环，所有 SSE 客户端复用同一份采样结果。
-	// 这样多个浏览器同时打开仪表盘时，不会重复扫描 /proc 造成额外压力。
-	mu      sync.Mutex
-	subs    map[uint64]subscriber
-	nextSub uint64
-	stop    chan struct{}
-	running bool
-	last    *Snapshot
+type Service struct {
+	collector snapshotCollector
+	interval  time.Duration
+	ctx       context.Context
+	cancel    context.CancelFunc
+
+	mu        sync.Mutex
+	subs      map[uint64]subscriber
+	nextSub   uint64
+	last      *Snapshot
+	wake      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closing   bool
 }
 
 type subscriber struct {
-	ch chan Snapshot
-	// scope 记录当前客户端需要哪些详情字段，用于下发前过滤 Snapshot。
+	ch    chan Snapshot
 	scope Scope
 }
 
-func NewService(interval time.Duration) *Service {
+func NewService(parent context.Context, interval time.Duration) *Service {
+	return newService(parent, interval, NewCollector())
+}
+
+func newService(parent context.Context, interval time.Duration, collector snapshotCollector) *Service {
 	if interval < time.Second {
 		interval = time.Second
 	}
-	return &Service{
-		collector: NewCollector(),
+	ctx, cancel := context.WithCancel(parent)
+	s := &Service{
+		collector: collector,
 		interval:  interval,
+		ctx:       ctx,
+		cancel:    cancel,
 		subs:      make(map[uint64]subscriber),
+		wake:      make(chan struct{}, 1),
 	}
+	s.wg.Add(1)
+	go s.loop()
+	return s
 }
 
 func (s *Service) Subscribe(ctx context.Context, scope string) (<-chan Snapshot, func()) {
 	s.mu.Lock()
+	if s.closing || s.ctx.Err() != nil || ctx.Err() != nil {
+		s.mu.Unlock()
+		ch := make(chan Snapshot)
+		close(ch)
+		return ch, func() {}
+	}
 	s.nextSub++
 	id := s.nextSub
 	ch := make(chan Snapshot, 4)
 	s.subs[id] = subscriber{ch: ch, scope: ParseScope(scope)}
 	if s.last != nil {
-		// 新订阅者先拿最后一帧，页面刷新时能尽快显示数据，不必等下一个 tick。
 		ch <- FilterSnapshot(*s.last, scope)
 	}
-	if !s.running {
-		// 只有存在订阅者时才启动采集；最后一个订阅者离开时会停止。
-		s.startLocked()
-	}
+	s.wg.Add(1)
 	s.mu.Unlock()
+	s.notify()
 
+	var once sync.Once
 	unsub := func() {
-		s.mu.Lock()
-		if existing, ok := s.subs[id]; ok {
-			close(existing.ch)
-			delete(s.subs, id)
-		}
-		if len(s.subs) == 0 && s.running {
-			// 无订阅者时停止循环，降低后台空跑和 GC 压力。
-			close(s.stop)
-			s.running = false
-		}
-		s.mu.Unlock()
+		once.Do(func() {
+			s.mu.Lock()
+			if existing, ok := s.subs[id]; ok {
+				close(existing.ch)
+				delete(s.subs, id)
+			}
+			s.mu.Unlock()
+			s.notify()
+		})
 	}
 
 	go func() {
-		<-ctx.Done()
+		defer s.wg.Done()
+		select {
+		case <-ctx.Done():
+		case <-s.ctx.Done():
+		}
 		unsub()
 	}()
 
@@ -78,42 +100,59 @@ func (s *Service) Subscribe(ctx context.Context, scope string) (<-chan Snapshot,
 }
 
 func (s *Service) Close() {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closing = true
+		s.cancel()
+		s.mu.Unlock()
+	})
+	s.wg.Wait()
 	s.mu.Lock()
-	if s.running {
-		close(s.stop)
-		s.running = false
-	}
-	for id, ch := range s.subs {
-		close(ch.ch)
+	for id, sub := range s.subs {
+		close(sub.ch)
 		delete(s.subs, id)
 	}
 	s.mu.Unlock()
 }
 
-func (s *Service) startLocked() {
-	s.stop = make(chan struct{})
-	s.running = true
-	stop := s.stop
-	go s.loop(stop)
-}
-
-func (s *Service) loop(stop <-chan struct{}) {
-	s.publishOnce()
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-
+func (s *Service) loop() {
+	defer s.wg.Done()
+	var timer *time.Timer
 	for {
+		if !s.hasSubscribers() {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-s.wake:
+				continue
+			}
+		}
+
+		s.publishOnce()
+		if timer == nil {
+			timer = time.NewTimer(s.interval)
+		} else {
+			timer.Reset(s.interval)
+		}
 		select {
-		case <-ticker.C:
-			s.publishOnce()
-		case <-stop:
+		case <-s.ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
 			return
+		case <-s.wake:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
 		}
 	}
 }
 
 func (s *Service) publishOnce() {
-	// top 进程需要扫描 /proc/[pid]，比基础指标更重；只有弹窗详情需要时才采集。
 	includeTop := s.needsTop()
 	snapshot, err := s.collector.Collect(CollectOptions{IncludeTop: includeTop})
 	if err != nil {
@@ -124,7 +163,6 @@ func (s *Service) publishOnce() {
 	s.mu.Lock()
 	s.last = &snapshot
 	for _, sub := range s.subs {
-		// 每个订阅者按自己的 scope 收到裁剪后的数据，避免无用字段反复序列化/传输。
 		filtered := FilterSnapshot(snapshot, sub.scope.raw)
 		select {
 		case sub.ch <- filtered:
@@ -132,6 +170,12 @@ func (s *Service) publishOnce() {
 		}
 	}
 	s.mu.Unlock()
+}
+
+func (s *Service) hasSubscribers() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subs) > 0
 }
 
 func (s *Service) needsTop() bool {
@@ -143,6 +187,13 @@ func (s *Service) needsTop() bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) notify() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
 }
 
 func MarshalSnapshot(snapshot Snapshot) ([]byte, error) {

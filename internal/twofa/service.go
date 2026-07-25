@@ -23,9 +23,15 @@ type Service struct {
 	tempStore      *TempTokenStore
 	pendingSecrets sync.Map
 	pendingCancel  context.CancelFunc
+	pendingWG      sync.WaitGroup
+	stopOnce       sync.Once
 }
 
 func NewService(adminRepo *repo.AdminRepo, tempTokenLimits ...int) *Service {
+	return NewServiceWithContext(context.Background(), adminRepo, tempTokenLimits...)
+}
+
+func NewServiceWithContext(parent context.Context, adminRepo *repo.AdminRepo, tempTokenLimits ...int) *Service {
 	maxPerAccount, maxTotal := 3, 1000
 	if len(tempTokenLimits) > 0 {
 		maxPerAccount = tempTokenLimits[0]
@@ -33,13 +39,17 @@ func NewService(adminRepo *repo.AdminRepo, tempTokenLimits ...int) *Service {
 	if len(tempTokenLimits) > 1 {
 		maxTotal = tempTokenLimits[1]
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	s := &Service{
 		adminRepo:     adminRepo,
-		tempStore:     NewTempTokenStore(5*time.Minute, maxPerAccount, maxTotal),
+		tempStore:     NewTempTokenStoreWithContext(parent, 5*time.Minute, maxPerAccount, maxTotal),
 		pendingCancel: cancel,
 	}
-	go s.cleanupPending(ctx)
+	s.pendingWG.Add(1)
+	go func() {
+		defer s.pendingWG.Done()
+		s.cleanupPending(ctx)
+	}()
 	return s
 }
 
@@ -52,10 +62,11 @@ func (s *Service) GetTempStore() *TempTokenStore {
 }
 
 func (s *Service) Stop() {
-	s.tempStore.Stop()
-	if s.pendingCancel != nil {
+	s.stopOnce.Do(func() {
+		s.tempStore.Stop()
 		s.pendingCancel()
-	}
+	})
+	s.pendingWG.Wait()
 }
 
 func (s *Service) cleanupPending(ctx context.Context) {
@@ -230,9 +241,15 @@ type TempTokenStore struct {
 	accountCounts map[int]int
 	randReader    io.Reader
 	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	stopOnce      sync.Once
 }
 
 func NewTempTokenStore(ttl time.Duration, limits ...int) *TempTokenStore {
+	return NewTempTokenStoreWithContext(context.Background(), ttl, limits...)
+}
+
+func NewTempTokenStoreWithContext(parent context.Context, ttl time.Duration, limits ...int) *TempTokenStore {
 	maxPerAccount, maxTotal := 3, 1000
 	if len(limits) > 0 {
 		maxPerAccount = limits[0]
@@ -246,7 +263,7 @@ func NewTempTokenStore(ttl time.Duration, limits ...int) *TempTokenStore {
 	if maxTotal <= 0 {
 		maxTotal = 1000
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	store := &TempTokenStore{
 		tokens:        make(map[string]*TempTokenEntry),
 		ttl:           ttl,
@@ -257,7 +274,11 @@ func NewTempTokenStore(ttl time.Duration, limits ...int) *TempTokenStore {
 		randReader:    rand.Reader,
 		cancel:        cancel,
 	}
-	go store.cleanup(ctx)
+	store.wg.Add(1)
+	go func() {
+		defer store.wg.Done()
+		store.cleanup(ctx)
+	}()
 	return store
 }
 
@@ -275,9 +296,8 @@ func (s *TempTokenStore) ReloadLimits(maxPerAccount, maxTotal int) {
 }
 
 func (s *TempTokenStore) Stop() {
-	if s.cancel != nil {
-		s.cancel()
-	}
+	s.stopOnce.Do(s.cancel)
+	s.wg.Wait()
 }
 
 func (s *TempTokenStore) Create(adminID int, username, ip, userAgent string) (string, error) {

@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/accessanalysis"
@@ -33,6 +34,25 @@ type Client struct {
 	socketPath string       // Unix Socket 路径
 	token      string       // agent 认证 token
 	httpClient *http.Client // HTTP 客户端（使用 Unix Socket 传输）
+	closeOnce  sync.Once
+}
+
+// CloseIdleConnections closes pooled Unix socket connections. It is safe to call repeatedly.
+func (c *Client) CloseIdleConnections() {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		if c.httpClient != nil {
+			c.httpClient.CloseIdleConnections()
+		}
+	})
+}
+
+// Close implements lifecycle cleanup for the client transport.
+func (c *Client) Close() error {
+	c.CloseIdleConnections()
+	return nil
 }
 
 type HTTPError struct {

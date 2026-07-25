@@ -128,10 +128,11 @@ type APIConfig struct {
 
 	ShutdownTimeout string `yaml:"shutdown_timeout"`
 
-	SSEHeartbeat      string `yaml:"sse_heartbeat"`
-	SSEWriteTimeout   string `yaml:"sse_write_timeout"`
-	SSEMaxConnections int    `yaml:"sse_max_connections"`
-	AsyncResultTTL    string `yaml:"async_result_ttl"`
+	SSEHeartbeat      string         `yaml:"sse_heartbeat"`
+	SSEWriteTimeout   string         `yaml:"sse_write_timeout"`
+	SSEMaxConnections int            `yaml:"sse_max_connections"`
+	AsyncResultTTL    string         `yaml:"async_result_ttl"`
+	AsyncJobs         AsyncJobConfig `yaml:"async_jobs"`
 
 	SystemMetricsInterval string `yaml:"system_metrics_interval"`
 
@@ -156,6 +157,13 @@ type APIConfig struct {
 	BindSessionUA bool `yaml:"bind_session_ua"`
 
 	TLS TLSConfig `yaml:"tls"`
+}
+
+type AsyncJobConfig struct {
+	ACMEMaxConcurrent   int `yaml:"acme_max_concurrent"`
+	BackupMaxConcurrent int `yaml:"backup_max_concurrent"`
+	ManualQueueSize     int `yaml:"manual_queue_size"`
+	ManualWorkers       int `yaml:"manual_workers"`
 }
 
 type IngressConfig struct {
@@ -360,17 +368,23 @@ func defaultConfig() *Config {
 			MaxAge:   "720h",
 		},
 		API: APIConfig{
-			Listen:                "127.0.0.1:8888",
-			SessionDuration:       "24h",
-			ReadTimeout:           "15s",
-			ReadHeaderTimeout:     "5s",
-			WriteTimeout:          "30s",
-			IdleTimeout:           "60s",
-			ShutdownTimeout:       "10s",
-			SSEHeartbeat:          "15s",
-			SSEWriteTimeout:       "10s",
-			SSEMaxConnections:     64,
-			AsyncResultTTL:        "10m",
+			Listen:            "127.0.0.1:8888",
+			SessionDuration:   "24h",
+			ReadTimeout:       "15s",
+			ReadHeaderTimeout: "5s",
+			WriteTimeout:      "30s",
+			IdleTimeout:       "60s",
+			ShutdownTimeout:   "10s",
+			SSEHeartbeat:      "15s",
+			SSEWriteTimeout:   "10s",
+			SSEMaxConnections: 64,
+			AsyncResultTTL:    "10m",
+			AsyncJobs: AsyncJobConfig{
+				ACMEMaxConcurrent:   2,
+				BackupMaxConcurrent: 2,
+				ManualQueueSize:     32,
+				ManualWorkers:       2,
+			},
 			SystemMetricsInterval: "2s",
 			UploadTimeout:         "300s",
 			MaxUploadSize:         "100M",
@@ -574,6 +588,26 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("NXPANEL_API_ASYNC_RESULT_TTL"); v != "" {
 		cfg.API.AsyncResultTTL = v
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_ACME_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ACMEMaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_BACKUP_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.BackupMaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_MANUAL_QUEUE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ManualQueueSize = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_MANUAL_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ManualWorkers = n
+		}
 	}
 	if v := os.Getenv("NXPANEL_API_SYSTEM_METRICS_INTERVAL"); v != "" {
 		cfg.API.SystemMetricsInterval = v

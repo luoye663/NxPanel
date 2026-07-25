@@ -21,6 +21,9 @@ type sseResponse struct {
 
 func (s *Server) openSSEResponse(w http.ResponseWriter, r *http.Request) (*sseResponse, bool) {
 	select {
+	case <-s.Context().Done():
+		WriteError(w, r, http.StatusServiceUnavailable, "SERVER_SHUTTING_DOWN", "服务正在关闭", nil)
+		return nil, false
 	case s.sseSlots <- struct{}{}:
 	default:
 		w.Header().Set("Retry-After", "5")
@@ -152,6 +155,8 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, stream *sse.St
 				return
 			}
 		case <-r.Context().Done():
+			return
+		case <-s.Context().Done():
 			return
 		}
 	}

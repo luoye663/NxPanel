@@ -66,6 +66,21 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.API.Captcha.MaxConcurrent != 8 {
 		t.Fatalf("CAPTCHA 并发默认值期望 8，实际 %d", cfg.API.Captcha.MaxConcurrent)
 	}
+	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 2 || cfg.API.AsyncJobs.BackupMaxConcurrent != 2 || cfg.API.AsyncJobs.ManualQueueSize != 32 || cfg.API.AsyncJobs.ManualWorkers != 2 {
+		t.Fatalf("异步任务默认值不正确: %+v", cfg.API.AsyncJobs)
+	}
+}
+
+func TestAsyncJobEnvironmentOverrides(t *testing.T) {
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_ACME_MAX_CONCURRENT", "3")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_BACKUP_MAX_CONCURRENT", "4")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_MANUAL_QUEUE_SIZE", "12")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_MANUAL_WORKERS", "5")
+	cfg := defaultConfig()
+	applyEnvOverrides(cfg)
+	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 3 || cfg.API.AsyncJobs.BackupMaxConcurrent != 4 || cfg.API.AsyncJobs.ManualQueueSize != 12 || cfg.API.AsyncJobs.ManualWorkers != 5 {
+		t.Fatalf("异步任务环境变量覆盖失败: %+v", cfg.API.AsyncJobs)
+	}
 }
 
 // TestLoadConfig_FileNotExist 配置文件不存在时应该返回默认值

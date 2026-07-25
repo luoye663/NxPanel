@@ -50,6 +50,8 @@ func (s *Server) handleSystemMetricsStream(w http.ResponseWriter, r *http.Reques
 		case <-r.Context().Done():
 			slog.Debug("系统指标 SSE 客户端断开")
 			return
+		case <-s.Context().Done():
+			return
 		}
 	}
 }

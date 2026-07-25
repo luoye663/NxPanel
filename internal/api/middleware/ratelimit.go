@@ -19,24 +19,33 @@ type LoginRateLimiter struct {
 	mu          sync.Mutex
 	store       map[string]*failRecord
 	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	stopOnce    sync.Once
 }
 
 func NewLoginRateLimiter(maxFailures int, window time.Duration) *LoginRateLimiter {
-	ctx, cancel := context.WithCancel(context.Background())
+	return NewLoginRateLimiterWithContext(context.Background(), maxFailures, window)
+}
+
+func NewLoginRateLimiterWithContext(parent context.Context, maxFailures int, window time.Duration) *LoginRateLimiter {
+	ctx, cancel := context.WithCancel(parent)
 	limiter := &LoginRateLimiter{
 		maxFailures: maxFailures,
 		window:      window,
 		store:       make(map[string]*failRecord),
 		cancel:      cancel,
 	}
-	go limiter.cleanup(ctx)
+	limiter.wg.Add(1)
+	go func() {
+		defer limiter.wg.Done()
+		limiter.cleanup(ctx)
+	}()
 	return limiter
 }
 
 func (l *LoginRateLimiter) Stop() {
-	if l.cancel != nil {
-		l.cancel()
-	}
+	l.stopOnce.Do(l.cancel)
+	l.wg.Wait()
 }
 
 func (l *LoginRateLimiter) ReloadConfig(maxFailures int, window time.Duration) {

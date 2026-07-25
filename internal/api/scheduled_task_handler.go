@@ -112,6 +112,8 @@ func writeScheduledTaskError(w http.ResponseWriter, r *http.Request, err error) 
 			status = http.StatusConflict
 		case app.ErrForbidden:
 			status = http.StatusForbidden
+		case app.ErrBusy:
+			status = http.StatusServiceUnavailable
 		}
 		WriteError(w, r, status, appErr.Code, appErr.Message, appErr.Details)
 		return

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -75,7 +76,10 @@ type Server struct {
 	scheduledTaskEngine    *scheduledtask.Engine
 	upgradeSvc             *upgrade.Service
 	router                 *chi.Mux
-	cancelCleanup          context.CancelFunc
+	rootCtx                context.Context
+	rootCancel             context.CancelFunc
+	backgroundWG           sync.WaitGroup
+	closeOnce              sync.Once
 	sseSlots               chan struct{}
 	gateSecret             atomic.Value
 	loginPath              atomic.Value
@@ -85,6 +89,12 @@ type Server struct {
 
 func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
 	s := newServerBase(cfg, db)
+	complete := false
+	defer func() {
+		if !complete {
+			s.Close()
+		}
+	}()
 	r := newRepos(db)
 	if err := s.initScheduledTaskCenter(r.scheduledTask); err != nil {
 		return nil, err
@@ -97,6 +107,7 @@ func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
 	s.setupMiddleware()
 	s.setupRoutes()
 
+	complete = true
 	return s, nil
 }
 
@@ -104,31 +115,60 @@ func (s *Server) Handler() http.Handler {
 	return s.router
 }
 
-func (s *Server) Close() {
-	if s.cancelCleanup != nil {
-		s.cancelCleanup()
+func (s *Server) Context() context.Context {
+	if s.rootCtx == nil {
+		return context.Background()
 	}
-	if s.loginProtection != nil {
-		s.loginProtection.Stop()
-	}
-	if s.setupLimiter != nil {
-		s.setupLimiter.Stop()
-	}
-	if s.sensitiveActionLimiter != nil {
-		s.sensitiveActionLimiter.Stop()
-	}
-	if s.twofaSvc != nil {
-		s.twofaSvc.Stop()
-	}
-	if s.metricsSvc != nil {
-		s.metricsSvc.Close()
+	return s.rootCtx
+}
+
+func (s *Server) Cancel() {
+	if s.rootCancel != nil {
+		s.rootCancel()
 	}
 	if s.sseHub != nil {
 		s.sseHub.CloseAll()
 	}
-	if s.scheduledTaskEngine != nil {
-		s.scheduledTaskEngine.Stop()
-	}
+}
+
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		s.Cancel()
+		if s.scheduledTaskEngine != nil {
+			s.scheduledTaskEngine.Stop()
+		}
+		if s.scheduledTaskSvc != nil {
+			s.scheduledTaskSvc.Close()
+		}
+		if s.acmeSvc != nil {
+			s.acmeSvc.Close()
+		}
+		if s.siteBackupSvc != nil {
+			s.siteBackupSvc.Close()
+		}
+		if s.upgradeSvc != nil {
+			s.upgradeSvc.Close()
+		}
+		if s.metricsSvc != nil {
+			s.metricsSvc.Close()
+		}
+		if s.loginProtection != nil {
+			s.loginProtection.Stop()
+		}
+		if s.setupLimiter != nil {
+			s.setupLimiter.Stop()
+		}
+		if s.sensitiveActionLimiter != nil {
+			s.sensitiveActionLimiter.Stop()
+		}
+		if s.twofaSvc != nil {
+			s.twofaSvc.Stop()
+		}
+		s.backgroundWG.Wait()
+		if s.agentClient != nil {
+			_ = s.agentClient.Close()
+		}
+	})
 }
 
 func (s *Server) sseCleanup(ctx context.Context) {
@@ -148,6 +188,9 @@ func (s *Server) sseCleanup(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			s.sseHub.PruneClosedBefore(now.Add(-ttl))
+			if s.siteBackupSvc != nil {
+				s.siteBackupSvc.PruneTasksBefore(now.Add(-ttl))
+			}
 		}
 	}
 }

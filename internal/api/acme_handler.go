@@ -162,7 +162,7 @@ func (s *Server) handleACMEOrderForceObtain(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	newOrderID, err := s.acmeSvc.ForceObtain(orderID)
+	newOrderID, err := s.acmeSvc.ForceObtain(r.Context(), orderID)
 	if err != nil {
 		writeAppError(w, r, err)
 		return

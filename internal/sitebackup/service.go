@@ -55,6 +55,13 @@ type Service struct {
 	scheduledTaskSvc ScheduledTaskService
 	tasksMu          sync.RWMutex
 	tasks            map[string]*TaskResponse
+	rootCtx          context.Context
+	rootCancel       context.CancelFunc
+	jobSlots         chan struct{}
+	jobsMu           sync.Mutex
+	jobsClosing      bool
+	jobsWG           sync.WaitGroup
+	closeOnce        sync.Once
 }
 
 type BackupResponse struct {
@@ -83,15 +90,17 @@ type RestoreRequest struct {
 }
 
 type TaskResponse struct {
-	TaskID    string          `json:"task_id"`
-	StreamID  string          `json:"stream_id"`
-	Status    string          `json:"status"`
-	Action    string          `json:"action"`
-	Backup    *BackupResponse `json:"backup,omitempty"`
-	Message   string          `json:"message"`
-	Error     string          `json:"error,omitempty"`
-	CreatedAt string          `json:"created_at"`
-	UpdatedAt string          `json:"updated_at"`
+	TaskID      string          `json:"task_id"`
+	StreamID    string          `json:"stream_id"`
+	Status      string          `json:"status"`
+	Action      string          `json:"action"`
+	Backup      *BackupResponse `json:"backup,omitempty"`
+	Message     string          `json:"message"`
+	Error       string          `json:"error,omitempty"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   string          `json:"updated_at"`
+	CompletedAt string          `json:"completed_at,omitempty"`
+	completedAt time.Time
 }
 
 type ScheduleResponse struct {
@@ -107,19 +116,33 @@ type ScheduleResponse struct {
 }
 
 type SaveScheduleRequest struct {
-	Enabled        bool   `json:"enabled"`
-	BackupType     string `json:"backup_type"`
-	BackupDir      string `json:"backup_dir"`
-	RetentionCount int    `json:"retention_count"`
-	ScheduleType   string `json:"schedule_type"`
-	ScheduleTime   string `json:"schedule_time"`
-	Weekday        int    `json:"weekday"`
-	MonthDay       int    `json:"month_day"`
+	Enabled        bool    `json:"enabled"`
+	BackupType     string  `json:"backup_type"`
+	BackupDir      string  `json:"backup_dir"`
+	RetentionCount int     `json:"retention_count"`
+	ScheduleType   string  `json:"schedule_type"`
+	ScheduleTime   string  `json:"schedule_time"`
+	Weekday        int     `json:"weekday"`
+	MonthDay       int     `json:"month_day"`
 	LastRunAt      *string `json:"last_run_at"`
 }
 
-func NewService(siteRepo siteRepo, backupRepo *repo.SiteBackupRepo, scheduleRepo *repo.SiteBackupScheduleRepo, sslRepo sslRepo, opRepo opRepo, agent agentClient, panelDir string, hub *sse.Hub) *Service {
-	return &Service{siteRepo: siteRepo, backupRepo: backupRepo, scheduleRepo: scheduleRepo, sslRepo: sslRepo, opRepo: opRepo, agent: agent, panelDir: panelDir, hub: hub, tasks: make(map[string]*TaskResponse)}
+func NewService(rootCtx context.Context, maxConcurrent int, siteRepo siteRepo, backupRepo *repo.SiteBackupRepo, scheduleRepo *repo.SiteBackupScheduleRepo, sslRepo sslRepo, opRepo opRepo, agent agentClient, panelDir string, hub *sse.Hub) *Service {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 2
+	}
+	rootCtx, rootCancel := context.WithCancel(rootCtx)
+	return &Service{siteRepo: siteRepo, backupRepo: backupRepo, scheduleRepo: scheduleRepo, sslRepo: sslRepo, opRepo: opRepo, agent: agent, panelDir: panelDir, hub: hub, tasks: make(map[string]*TaskResponse), rootCtx: rootCtx, rootCancel: rootCancel, jobSlots: make(chan struct{}, maxConcurrent)}
+}
+
+func (svc *Service) Close() {
+	svc.closeOnce.Do(func() {
+		svc.jobsMu.Lock()
+		svc.jobsClosing = true
+		svc.rootCancel()
+		svc.jobsMu.Unlock()
+	})
+	svc.jobsWG.Wait()
 }
 
 func (svc *Service) SetTaskLogDir(dir string) {
@@ -145,9 +168,18 @@ func (svc *Service) StartCreate(siteID string, req *CreateRequest, requestID str
 	if _, err := svc.loadSite(siteID); err != nil {
 		return nil, err
 	}
+	if !svc.tryAdmit() {
+		return nil, app.ErrBusyMsg("站点备份任务已达并发上限，请稍后重试")
+	}
 	task := svc.newTask("backup.create")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer svc.releaseJob()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				svc.finishTask(task.TaskID, "failed", "备份创建失败", fmt.Sprintf("任务 panic: %v", recovered), nil)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(svc.rootCtx, 30*time.Minute)
 		defer cancel()
 		backup, err := svc.Create(ctx, siteID, req, requestID)
 		if err != nil {
@@ -216,9 +248,18 @@ func (svc *Service) StartRestore(siteID, backupID string, req *RestoreRequest, r
 	if _, err := svc.loadOwnedBackup(siteID, backupID); err != nil {
 		return nil, err
 	}
+	if !svc.tryAdmit() {
+		return nil, app.ErrBusyMsg("站点备份任务已达并发上限，请稍后重试")
+	}
 	task := svc.newTask("backup.restore")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer svc.releaseJob()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				svc.finishTask(task.TaskID, "failed", "备份恢复失败", fmt.Sprintf("任务 panic: %v", recovered), nil)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(svc.rootCtx, 30*time.Minute)
 		defer cancel()
 		if err := svc.Restore(ctx, siteID, backupID, req, requestID); err != nil {
 			svc.finishTask(task.TaskID, "failed", "备份恢复失败", err.Error(), nil)
@@ -258,12 +299,12 @@ func (svc *Service) Restore(ctx context.Context, siteID, backupID string, req *R
 	return nil
 }
 
-func (svc *Service) GetSchedule(siteID string) (*ScheduleResponse, error) {
+func (svc *Service) GetSchedule(ctx context.Context, siteID string) (*ScheduleResponse, error) {
 	if err := svc.ensureSite(siteID); err != nil {
 		return nil, err
 	}
 	if svc.scheduledTaskSvc != nil {
-		task, err := svc.scheduledTaskSvc.GetBySource(context.Background(), siteBackupSourceType, siteID)
+		task, err := svc.scheduledTaskSvc.GetBySource(ctx, siteBackupSourceType, siteID)
 		if err != nil {
 			return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 		}
@@ -281,7 +322,7 @@ func (svc *Service) GetSchedule(siteID string) (*ScheduleResponse, error) {
 	return scheduleToResponse(item), nil
 }
 
-func (svc *Service) SaveSchedule(siteID string, req *SaveScheduleRequest) (*ScheduleResponse, error) {
+func (svc *Service) SaveSchedule(ctx context.Context, siteID string, req *SaveScheduleRequest) (*ScheduleResponse, error) {
 	if err := svc.ensureSite(siteID); err != nil {
 		return nil, err
 	}
@@ -293,7 +334,7 @@ func (svc *Service) SaveSchedule(siteID string, req *SaveScheduleRequest) (*Sche
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if svc.scheduledTaskSvc != nil {
-		return svc.saveScheduleTask(context.Background(), item)
+		return svc.saveScheduleTask(ctx, item)
 	}
 	return scheduleToResponse(item), nil
 }
@@ -329,6 +370,10 @@ func (svc *Service) Delete(ctx context.Context, siteID, backupID, requestID stri
 }
 
 func (svc *Service) RunScheduled(ctx context.Context, siteID, backupType, backupDir string, retentionCount int, run scheduledtask.RunContext) error {
+	if !svc.tryAdmit() {
+		return app.ErrBusyMsg("站点备份任务已达并发上限")
+	}
+	defer svc.releaseJob()
 	if retentionCount <= 0 {
 		retentionCount = 7
 	}
@@ -393,6 +438,8 @@ func (svc *Service) finishTask(taskID, status, message, errText string, backup *
 		task.Error = errText
 		task.Backup = backup
 		task.UpdatedAt = now
+		task.CompletedAt = now
+		task.completedAt = time.Now().UTC()
 	}
 	svc.tasksMu.Unlock()
 	stream := svc.hub.CreateStream("site-backup:" + taskID)
@@ -400,6 +447,39 @@ func (svc *Service) finishTask(taskID, status, message, errText string, backup *
 		stream.PublishData(marshalTask(task))
 	}
 	stream.PublishDone("")
+}
+
+func (svc *Service) PruneTasksBefore(cutoff time.Time) int {
+	pruned := 0
+	svc.tasksMu.Lock()
+	for taskID, task := range svc.tasks {
+		if !task.completedAt.IsZero() && !task.completedAt.After(cutoff) {
+			delete(svc.tasks, taskID)
+			pruned++
+		}
+	}
+	svc.tasksMu.Unlock()
+	return pruned
+}
+
+func (svc *Service) tryAdmit() bool {
+	svc.jobsMu.Lock()
+	defer svc.jobsMu.Unlock()
+	if svc.jobsClosing || svc.rootCtx.Err() != nil {
+		return false
+	}
+	select {
+	case svc.jobSlots <- struct{}{}:
+		svc.jobsWG.Add(1)
+		return true
+	default:
+		return false
+	}
+}
+
+func (svc *Service) releaseJob() {
+	<-svc.jobSlots
+	svc.jobsWG.Done()
 }
 
 func (svc *Service) ensureSite(siteID string) error {

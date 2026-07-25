@@ -423,6 +423,8 @@ func appErrorToHTTPStatus(code string) int {
 		return http.StatusInternalServerError
 	case app.ErrAgentUnavailable:
 		return http.StatusServiceUnavailable
+	case app.ErrBusy:
+		return http.StatusServiceUnavailable
 	case app.ErrAgentDenied:
 		return http.StatusForbidden
 	default:

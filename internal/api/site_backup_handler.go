@@ -77,7 +77,7 @@ func (s *Server) handleSiteBackupTaskStream(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleSiteBackupScheduleGet(w http.ResponseWriter, r *http.Request) {
-	result, err := s.siteBackupSvc.GetSchedule(chi.URLParam(r, "site_id"))
+	result, err := s.siteBackupSvc.GetSchedule(r.Context(), chi.URLParam(r, "site_id"))
 	if err != nil {
 		writeAppError(w, r, err)
 		return
@@ -90,7 +90,7 @@ func (s *Server) handleSiteBackupScheduleSave(w http.ResponseWriter, r *http.Req
 	if !DecodeJSON(w, r, &req) {
 		return
 	}
-	result, err := s.siteBackupSvc.SaveSchedule(chi.URLParam(r, "site_id"), &req)
+	result, err := s.siteBackupSvc.SaveSchedule(r.Context(), chi.URLParam(r, "site_id"), &req)
 	if err != nil {
 		writeAppError(w, r, err)
 		return

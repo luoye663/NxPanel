@@ -24,24 +24,33 @@ type LoginProtection struct {
 	byAccount map[string]*failRecord
 	global    failRecord
 	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	stopOnce  sync.Once
 }
 
 func NewLoginProtection(config LoginProtectionConfig) *LoginProtection {
-	ctx, cancel := context.WithCancel(context.Background())
+	return NewLoginProtectionWithContext(context.Background(), config)
+}
+
+func NewLoginProtectionWithContext(parent context.Context, config LoginProtectionConfig) *LoginProtection {
+	ctx, cancel := context.WithCancel(parent)
 	p := &LoginProtection{
 		config:    normalizeLoginProtectionConfig(config),
 		byIP:      make(map[string]*failRecord),
 		byAccount: make(map[string]*failRecord),
 		cancel:    cancel,
 	}
-	go p.cleanup(ctx)
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.cleanup(ctx)
+	}()
 	return p
 }
 
 func (p *LoginProtection) Stop() {
-	if p.cancel != nil {
-		p.cancel()
-	}
+	p.stopOnce.Do(p.cancel)
+	p.wg.Wait()
 }
 
 func (p *LoginProtection) ReloadConfig(config LoginProtectionConfig) {

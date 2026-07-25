@@ -167,7 +167,8 @@ func TestServiceSetEnabledPopulatesNextRunWhenMissing(t *testing.T) {
 	repo := NewRepo(database)
 	registry := NewRegistry()
 	runner := NewRunner(repo, registry, "runner-test", 1)
-	svc := NewService(repo, registry, runner, nil)
+	svc := NewService(context.Background(), repo, registry, runner, nil, 4, 1)
+	t.Cleanup(svc.Close)
 	task := testTask("enable-populates-next-run", time.Now().UTC().Add(time.Hour))
 	task.Enabled = false
 	task.Status = TaskStatusDisabled
@@ -208,7 +209,8 @@ func TestServiceSetEnabledKeepsExistingNextRun(t *testing.T) {
 	repo := NewRepo(database)
 	registry := NewRegistry()
 	runner := NewRunner(repo, registry, "runner-test", 1)
-	svc := NewService(repo, registry, runner, nil)
+	svc := NewService(context.Background(), repo, registry, runner, nil, 4, 1)
+	t.Cleanup(svc.Close)
 	next := time.Now().UTC().Add(2 * time.Hour).Round(0)
 	task := testTask("enable-keeps-next-run", next)
 	task.Enabled = false

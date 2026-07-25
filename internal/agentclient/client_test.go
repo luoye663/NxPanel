@@ -10,12 +10,37 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/agent"
 	"github.com/luoye663/nxpanel/internal/app"
 )
+
+type closeTrackingTransport struct {
+	closes atomic.Int32
+}
+
+func (*closeTrackingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("unused")
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closes.Add(1)
+}
+
+func TestClientCloseIsIdempotent(t *testing.T) {
+	transport := &closeTrackingTransport{}
+	client := &Client{httpClient: &http.Client{Transport: transport}}
+	client.CloseIdleConnections()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.closes.Load(); got != 1 {
+		t.Fatalf("transport close count = %d, want 1", got)
+	}
+}
 
 // setupTestAgent 启动测试用的 agent 服务器
 // 返回 socket 路径、token 和 cleanup 函数

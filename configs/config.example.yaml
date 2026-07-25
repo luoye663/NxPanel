@@ -43,6 +43,12 @@ api:
   sse_write_timeout: "10s"
   sse_max_connections: 64
   async_result_ttl: "10m"
+  # 长任务并发准入，以及“立即执行”计划任务的固定工作队列
+  async_jobs:
+    acme_max_concurrent: 2
+    backup_max_concurrent: 2
+    manual_queue_size: 32
+    manual_workers: 2
   # 仪表盘系统指标 SSE 下发间隔，最低 1s
   system_metrics_interval: "3s"
   # 已认证上传路由独立超时和文件内容上限

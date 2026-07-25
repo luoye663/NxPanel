@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const runFinalizationTimeout = 5 * time.Second
+
 type Runner struct {
 	repo     *Repo
 	registry *Registry
@@ -56,7 +58,9 @@ func (r *Runner) run(ctx context.Context, taskID, trigger string) {
 			status = RunStatusFailed
 			errText = nextErr.Error()
 		}
-		if err := r.repo.FinishRun(context.Background(), *task, *run, status, errText, next, finishedAt); err != nil {
+		finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), runFinalizationTimeout)
+		defer cancelFinalize()
+		if err := r.repo.FinishRun(finalizeCtx, *task, *run, status, errText, next, finishedAt); err != nil {
 			slog.Warn("计划任务完成状态写入失败", "task_id", task.ID, "run_id", run.ID, "error", err)
 		}
 	}()
@@ -80,6 +84,8 @@ func (r *Runner) run(ctx context.Context, taskID, trigger string) {
 	status = RunStatusFailed
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		status = RunStatusTimeout
+	} else if errors.Is(runCtx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		status = RunStatusCancelled
 	}
 	errText = err.Error()
 }

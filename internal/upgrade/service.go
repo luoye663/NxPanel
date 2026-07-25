@@ -27,6 +27,10 @@ type Service struct {
 	mu              sync.RWMutex
 	status          *UpgradeStatus
 	lastManualCheck time.Time
+	wg              sync.WaitGroup
+	cancel          context.CancelFunc
+	startOnce       sync.Once
+	closeOnce       sync.Once
 }
 
 // manualCooldown 手动触发检查的最小间隔，避免频繁调用触发 GitHub API 限流。
@@ -71,12 +75,28 @@ func NewService(cfg app.UpgradeConfig) *Service {
 }
 
 func (s *Service) Start(ctx context.Context) {
-	if !s.enabled {
-		slog.Info("升级检测已禁用")
-		return
-	}
-	slog.Info("升级检测服务已启动", "interval", s.interval, "repo", s.repo)
-	go s.run(ctx)
+	s.startOnce.Do(func() {
+		if !s.enabled {
+			slog.Info("升级检测已禁用")
+			return
+		}
+		ctx, s.cancel = context.WithCancel(ctx)
+		slog.Info("升级检测服务已启动", "interval", s.interval, "repo", s.repo)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.run(ctx)
+		}()
+	})
+}
+
+func (s *Service) Close() {
+	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
+	s.wg.Wait()
 }
 
 func (s *Service) GetStatus() *UpgradeStatus {

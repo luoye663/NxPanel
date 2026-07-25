@@ -15,6 +15,7 @@ const (
 	ErrNginxReloadFailed = "NGINX_RELOAD_FAILED"
 	ErrAgentUnavailable  = "AGENT_UNAVAILABLE"
 	ErrAgentDenied       = "AGENT_DENIED"
+	ErrBusy              = "BUSY"
 	ErrInternalError     = "INTERNAL_ERROR"
 )
 
@@ -74,4 +75,8 @@ func ErrNginxReloadFailedMsg(stderr string) *AppError {
 
 func ErrAgentUnavailableMsg(msg string) *AppError {
 	return NewAppError(ErrAgentUnavailable, msg, nil)
+}
+
+func ErrBusyMsg(msg string) *AppError {
+	return NewAppError(ErrBusy, msg, nil)
 }

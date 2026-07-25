@@ -105,6 +105,7 @@ func main() {
 		slog.Error("创建 API 服务器失败", "error", err)
 		os.Exit(1)
 	}
+	defer server.Close()
 
 	httpServer := newAPIHTTPServer(cfg, server.Handler())
 
@@ -115,6 +116,7 @@ func main() {
 		certPath, keyPath, err = app.EnsureAPICertificate(&cfg.API.TLS, cfg.DataDir)
 		if err != nil {
 			slog.Error("TLS 证书准备失败", "error", err)
+			server.Close()
 			os.Exit(1)
 		}
 		httpServer.TLSConfig = app.NewAPITLSConfig()
@@ -129,11 +131,17 @@ func main() {
 	}
 
 	// 优雅关闭：监听系统信号
+	shutdownStarted := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigCh)
 		sig := <-sigCh
+		close(shutdownStarted)
 		slog.Info("收到关闭信号，开始优雅关闭", "signal", sig.String())
+		server.Cancel()
 
 		shutdownTimeout := app.ParseDurationOrDefault(cfg.API.ShutdownTimeout, 10*time.Second)
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -147,6 +155,7 @@ func main() {
 	listener, err := net.Listen("tcp", cfg.API.Listen)
 	if err != nil {
 		slog.Error("监听 API 地址失败", "error", err)
+		server.Close()
 		os.Exit(1)
 	}
 	limitedListener := ingress.LimitListener(listener, cfg.API.Ingress.MaxConnections, cfg.API.Ingress.MaxConnectionsPerIP)
@@ -156,14 +165,21 @@ func main() {
 		slog.Info("API 服务已启动 (HTTPS)", "addr", cfg.API.Listen)
 		if err := httpServer.ServeTLS(limitedListener, certPath, keyPath); err != nil && err != http.ErrServerClosed {
 			slog.Error("API 服务异常退出", "error", err)
+			server.Close()
 			os.Exit(1)
 		}
 	} else {
 		slog.Info("API 服务已启动", "addr", cfg.API.Listen)
 		if err := httpServer.Serve(limitedListener); err != nil && err != http.ErrServerClosed {
 			slog.Error("API 服务异常退出", "error", err)
+			server.Close()
 			os.Exit(1)
 		}
+	}
+	select {
+	case <-shutdownStarted:
+		<-shutdownDone
+	default:
 	}
 
 	slog.Info("nxpanel-api 已停止")
