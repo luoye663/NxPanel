@@ -9,14 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/luoye663/nxpanel/internal/api/middleware"
+	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/web"
 )
 
 func (s *Server) setupRoutes() {
+	uploadDeadline := middleware.UploadReadDeadline(app.ParseDurationOrDefault(s.cfg.API.UploadTimeout, 300*time.Second))
 	s.router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		if !s.PublicHealthEnabled() {
 			http.NotFound(w, r)
@@ -248,7 +251,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/files/extract", s.handleGlobalFilesExtract)
 			r.Get("/files/download", s.handleGlobalFilesDownload)
 			r.Get("/files/archive", s.handleGlobalFilesArchive)
-			r.Post("/files/upload", s.handleGlobalFilesUpload)
+			r.With(uploadDeadline).Post("/files/upload", s.handleGlobalFilesUpload)
 
 			// Files — 站点文件管理
 			r.Get("/sites/{site_id}/files", s.handleFilesList)
@@ -264,7 +267,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/sites/{site_id}/files/extract", s.handleFilesExtract)
 			r.Get("/sites/{site_id}/files/download", s.handleFilesDownload)
 			r.Get("/sites/{site_id}/files/archive", s.handleFilesArchive)
-			r.Post("/sites/{site_id}/files/upload", s.handleFilesUpload)
+			r.With(uploadDeadline).Post("/sites/{site_id}/files/upload", s.handleFilesUpload)
 		})
 	})
 

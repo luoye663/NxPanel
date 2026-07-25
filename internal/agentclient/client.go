@@ -18,8 +18,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,6 +33,15 @@ type Client struct {
 	socketPath string       // Unix Socket 路径
 	token      string       // agent 认证 token
 	httpClient *http.Client // HTTP 客户端（使用 Unix Socket 传输）
+}
+
+type HTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("agent returned HTTP %d: %s", e.StatusCode, e.Message)
 }
 
 // New 创建 agent 客户端
@@ -715,6 +726,61 @@ func (c *Client) FilesUpload(ctx context.Context, path, contentBase64 string) er
 	}
 	if !resp.OK {
 		return fmt.Errorf("上传文件失败: %s", resp.Error)
+	}
+	return nil
+}
+
+// FilesUploadStream streams file content to the Agent as multipart data.
+func (c *Client) FilesUploadStream(ctx context.Context, path string, content io.Reader, timeout time.Duration) error {
+	pipeReader, pipeWriter := io.Pipe()
+	multipartWriter := multipart.NewWriter(pipeWriter)
+	go func() {
+		var err error
+		defer func() { _ = pipeWriter.CloseWithError(err) }()
+		if err = multipartWriter.WriteField("path", path); err != nil {
+			return
+		}
+		var part io.Writer
+		part, err = multipartWriter.CreateFormFile("file", filepath.Base(path))
+		if err != nil {
+			return
+		}
+		if _, err = io.Copy(part, content); err != nil {
+			return
+		}
+		err = multipartWriter.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/internal/v1/files/upload", pipeReader)
+	if err != nil {
+		_ = pipeReader.Close()
+		return fmt.Errorf("创建流式上传请求失败: %w", err)
+	}
+	defer pipeReader.Close()
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	req.Header.Set("X-NxPanel-Agent-Token", c.token)
+	client := &http.Client{Transport: c.httpClient.Transport, Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		_ = pipeReader.CloseWithError(err)
+		return fmt.Errorf("流式上传请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		var agentResp AgentResponse
+		message := string(body)
+		if json.Unmarshal(body, &agentResp) == nil && agentResp.Error != "" {
+			message = agentResp.Error
+		}
+		return &HTTPError{StatusCode: resp.StatusCode, Message: message}
+	}
+	var result AgentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("解析流式上传响应失败: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("上传文件失败: %s", result.Error)
 	}
 	return nil
 }

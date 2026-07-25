@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/user"
@@ -18,6 +20,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/luoye663/nxpanel/internal/app"
+	"github.com/luoye663/nxpanel/internal/upload"
 )
 
 // ============================================================
@@ -652,21 +657,26 @@ func (s *Server) handleFilesArchive(w http.ResponseWriter, r *http.Request) {
 // ============================================================
 
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
-	var req FilesUploadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAgentError(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
+	maxBytes := app.ParseSizeOrDefault(s.cfg.API.MaxUploadSize, 100*1024*1024)
+	if maxBytes <= 0 {
+		maxBytes = 100 * 1024 * 1024
+	}
+	file, err := upload.Parse(r, maxBytes)
+	if err != nil {
+		if errors.Is(err, upload.ErrTooLarge) {
+			writeAgentError(w, http.StatusRequestEntityTooLarge, "上传文件超过大小限制")
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded) || isNetworkTimeout(err) {
+			writeAgentError(w, http.StatusRequestTimeout, "上传读取超时")
+		} else {
+			writeAgentError(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
+		}
 		return
 	}
+	defer file.Close()
 
-	path, err := s.policy.Validate(req.Path)
+	path, err := s.policy.Validate(file.Path)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "路径不在白名单内: "+err.Error())
-		return
-	}
-
-	content, err := base64.StdEncoding.DecodeString(req.ContentBase64)
-	if err != nil {
-		writeAgentError(w, http.StatusBadRequest, "base64 解码失败: "+err.Error())
 		return
 	}
 
@@ -676,15 +686,20 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := writeFileAtomic(path, content, 0644); err != nil {
+	if err := writeFileAtomicFromReader(r.Context(), path, file.File, 0644); err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "写入文件失败: "+err.Error())
 		return
 	}
 
 	s.applyWebOwner(path)
 
-	slog.Info("文件已上传", "path", path, "size", len(content))
-	writeAgentOK(w, map[string]any{"success": true})
+	slog.Info("文件已上传", "path", path, "size", file.Size)
+	writeAgentOK(w, map[string]any{"success": true, "size": file.Size})
+}
+
+func isNetworkTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // ============================================================

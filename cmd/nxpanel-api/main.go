@@ -19,6 +19,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/api"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db"
+	"github.com/luoye663/nxpanel/internal/ingress"
 	"github.com/luoye663/nxpanel/internal/nginx"
 )
 
@@ -105,21 +106,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 配置 HTTP 服务器
-	// ReadTimeout 使用 upload_timeout 和 ReadTimeout 中的较大值
-	// 因为上传路由需要更长的读超时来接收大文件请求体
-	readTimeout := app.ParseDurationOrDefault(cfg.API.ReadTimeout, 15*time.Second)
-	uploadTimeout := app.ParseDurationOrDefault(cfg.API.UploadTimeout, 300*time.Second)
-	if uploadTimeout > readTimeout {
-		readTimeout = uploadTimeout
-	}
-	httpServer := &http.Server{
-		Addr:         cfg.API.Listen,
-		Handler:      server.Handler(),
-		ReadTimeout:  readTimeout,
-		WriteTimeout: app.ParseDurationOrDefault(cfg.API.WriteTimeout, 30*time.Second),
-		IdleTimeout:  app.ParseDurationOrDefault(cfg.API.IdleTimeout, 60*time.Second),
-	}
+	httpServer := newAPIHTTPServer(cfg, server.Handler())
 
 	var certPath, keyPath string
 
@@ -157,16 +144,23 @@ func main() {
 		}
 	}()
 
+	listener, err := net.Listen("tcp", cfg.API.Listen)
+	if err != nil {
+		slog.Error("监听 API 地址失败", "error", err)
+		os.Exit(1)
+	}
+	limitedListener := ingress.LimitListener(listener, cfg.API.Ingress.MaxConnections, cfg.API.Ingress.MaxConnectionsPerIP)
+
 	// 启动服务
 	if cfg.API.TLS.Enabled {
 		slog.Info("API 服务已启动 (HTTPS)", "addr", cfg.API.Listen)
-		if err := httpServer.ListenAndServeTLS(certPath, keyPath); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ServeTLS(limitedListener, certPath, keyPath); err != nil && err != http.ErrServerClosed {
 			slog.Error("API 服务异常退出", "error", err)
 			os.Exit(1)
 		}
 	} else {
 		slog.Info("API 服务已启动", "addr", cfg.API.Listen)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(limitedListener); err != nil && err != http.ErrServerClosed {
 			slog.Error("API 服务异常退出", "error", err)
 			os.Exit(1)
 		}
@@ -174,6 +168,17 @@ func main() {
 
 	slog.Info("nxpanel-api 已停止")
 	fmt.Println("nxpanel-api 已停止")
+}
+
+func newAPIHTTPServer(cfg *app.Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              cfg.API.Listen,
+		Handler:           handler,
+		ReadHeaderTimeout: app.ParseDurationOrDefault(cfg.API.ReadHeaderTimeout, 5*time.Second),
+		ReadTimeout:       app.ParseDurationOrDefault(cfg.API.ReadTimeout, 15*time.Second),
+		WriteTimeout:      app.ParseDurationOrDefault(cfg.API.WriteTimeout, 30*time.Second),
+		IdleTimeout:       app.ParseDurationOrDefault(cfg.API.IdleTimeout, 60*time.Second),
+	}
 }
 
 func panelAccessURL(listen string, tlsEnabled bool, loginPath string) string {

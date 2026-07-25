@@ -18,12 +18,10 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/luoye663/nxpanel/internal/api/middleware"
 	"github.com/luoye663/nxpanel/internal/app"
@@ -321,69 +319,19 @@ func (s *Server) handleGlobalFilesArchive(w http.ResponseWriter, r *http.Request
 // Or Body (multipart): path + file
 // 使用 api.upload_timeout 配置覆盖默认超时，支持大文件上传
 func (s *Server) handleGlobalFilesUpload(w http.ResponseWriter, r *http.Request) {
-	uploadTimeout := app.ParseDurationOrDefault(s.cfg.API.UploadTimeout, 300*time.Second)
-	ctx, cancel := context.WithTimeout(r.Context(), uploadTimeout)
-	defer cancel()
-
-	contentType := r.Header.Get("Content-Type")
-
-	if strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseMultipartForm(100 << 20); err != nil {
-			WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "解析上传表单失败: "+err.Error(), nil)
-			return
-		}
-		targetPath := r.FormValue("path")
-		if targetPath == "" {
-			WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "path 字段不能为空", nil)
-			return
-		}
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "读取上传文件失败: "+err.Error(), nil)
-			return
-		}
-		defer file.Close()
-
-		if strings.HasSuffix(targetPath, "/") {
-			targetPath = targetPath + header.Filename
-		}
-
-		data, err := io.ReadAll(file)
-		if err != nil {
-			WriteError(w, r, http.StatusInternalServerError, app.ErrInternalError, "读取文件内容失败: "+err.Error(), nil)
-			return
-		}
-
-		contentBase64 := base64.StdEncoding.EncodeToString(data)
-		if err := s.agentClient.FilesUploadWithTimeout(ctx, targetPath, contentBase64, uploadTimeout); err != nil {
+	file, targetPath, ok := s.receiveUpload(w, r)
+	if !ok {
+		return
+	}
+	defer file.Close()
+	if err := s.streamUploadToAgent(r, targetPath, file); err != nil {
+		if !writeUploadAgentError(w, r, err) {
 			WriteError(w, r, http.StatusInternalServerError, app.ErrInternalError, err.Error(), nil)
-			return
 		}
-		s.recordGlobalFileOperation(r.Context(), "file.upload", targetPath)
-
-		WriteOK(w, r, map[string]any{"success": true, "path": targetPath, "size": len(data)})
 		return
 	}
-
-	var body struct {
-		Path          string `json:"path"`
-		ContentBase64 string `json:"content_base64"`
-	}
-	if !DecodeJSON(w, r, &body) {
-		return
-	}
-	if body.Path == "" {
-		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "path 不能为空", nil)
-		return
-	}
-
-	if err := s.agentClient.FilesUploadWithTimeout(ctx, body.Path, body.ContentBase64, uploadTimeout); err != nil {
-		WriteError(w, r, http.StatusInternalServerError, app.ErrInternalError, err.Error(), nil)
-		return
-	}
-	s.recordGlobalFileOperation(r.Context(), "file.upload", body.Path)
-
-	WriteOK(w, r, map[string]any{"success": true})
+	s.recordGlobalFileOperation(r.Context(), "file.upload", targetPath)
+	WriteOK(w, r, map[string]any{"success": true, "path": targetPath, "size": file.Size})
 }
 
 // ============================================================

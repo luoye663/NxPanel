@@ -211,6 +211,11 @@ func (s *Server) sessionCleanup(ctx context.Context) {
 func (s *Server) setupMiddleware() {
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.TrustedRealIP(s.cfg.API.TrustedProxies))
+	s.router.Use(middleware.RequestRateLimit(middleware.NewRequestTokenBucket(
+		s.cfg.API.Ingress.RequestRate,
+		s.cfg.API.Ingress.RequestBurst,
+		s.cfg.API.Ingress.MaxTrackedIPs,
+	)))
 	s.router.Use(middleware.SecurityHeaders)
 	s.router.Use(middleware.MaxBodySizeExcept(2*1024*1024, "/api/v1/files/upload", "/files/upload"))
 	s.router.Use(middleware.Recoverer)

@@ -120,6 +120,8 @@ type APIConfig struct {
 
 	ReadTimeout string `yaml:"read_timeout"`
 
+	ReadHeaderTimeout string `yaml:"read_header_timeout"`
+
 	WriteTimeout string `yaml:"write_timeout"`
 
 	IdleTimeout string `yaml:"idle_timeout"`
@@ -131,6 +133,10 @@ type APIConfig struct {
 	SystemMetricsInterval string `yaml:"system_metrics_interval"`
 
 	UploadTimeout string `yaml:"upload_timeout"`
+
+	MaxUploadSize string `yaml:"max_upload_size"`
+
+	Ingress IngressConfig `yaml:"ingress"`
 
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 
@@ -147,6 +153,14 @@ type APIConfig struct {
 	BindSessionUA bool `yaml:"bind_session_ua"`
 
 	TLS TLSConfig `yaml:"tls"`
+}
+
+type IngressConfig struct {
+	RequestRate         float64 `yaml:"request_rate"`
+	RequestBurst        int     `yaml:"request_burst"`
+	MaxTrackedIPs       int     `yaml:"max_tracked_ips"`
+	MaxConnections      int     `yaml:"max_connections"`
+	MaxConnectionsPerIP int     `yaml:"max_connections_per_ip"`
 }
 
 type RateLimitConfig struct {
@@ -346,12 +360,21 @@ func defaultConfig() *Config {
 			Listen:                "127.0.0.1:8888",
 			SessionDuration:       "24h",
 			ReadTimeout:           "15s",
+			ReadHeaderTimeout:     "5s",
 			WriteTimeout:          "30s",
 			IdleTimeout:           "60s",
 			ShutdownTimeout:       "10s",
 			SSEHeartbeat:          "15s",
 			SystemMetricsInterval: "2s",
 			UploadTimeout:         "300s",
+			MaxUploadSize:         "100M",
+			Ingress: IngressConfig{
+				RequestRate:         10,
+				RequestBurst:        40,
+				MaxTrackedIPs:       4096,
+				MaxConnections:      256,
+				MaxConnectionsPerIP: 20,
+			},
 			RateLimit: RateLimitConfig{
 				MaxFailures:        5,
 				AccountMaxFailures: 10,
@@ -520,6 +543,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_API_READ_TIMEOUT"); v != "" {
 		cfg.API.ReadTimeout = v
 	}
+	if v := os.Getenv("NXPANEL_API_READ_HEADER_TIMEOUT"); v != "" {
+		cfg.API.ReadHeaderTimeout = v
+	}
 	if v := os.Getenv("NXPANEL_API_WRITE_TIMEOUT"); v != "" {
 		cfg.API.WriteTimeout = v
 	}
@@ -537,6 +563,34 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("NXPANEL_API_UPLOAD_TIMEOUT"); v != "" {
 		cfg.API.UploadTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_API_MAX_UPLOAD_SIZE"); v != "" {
+		cfg.API.MaxUploadSize = v
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_REQUEST_RATE"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.API.Ingress.RequestRate = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_REQUEST_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.RequestBurst = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_MAX_TRACKED_IPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.MaxTrackedIPs = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_MAX_CONNECTIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.MaxConnections = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_MAX_CONNECTIONS_PER_IP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.MaxConnectionsPerIP = n
+		}
 	}
 	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_MAX_FAILURES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

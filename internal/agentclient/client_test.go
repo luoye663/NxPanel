@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,23 @@ func TestClient_HealthInvalidToken(t *testing.T) {
 	_, err := client.Health(ctx)
 	if err == nil {
 		t.Error("错误 token 应返回错误")
+	}
+}
+
+func TestClient_FilesUploadStream(t *testing.T) {
+	allowedDir := t.TempDir()
+	socketPath, token := setupTestAgent(t, allowedDir)
+	client := NewWithDefaults(socketPath, token)
+	target := filepath.Join(allowedDir, "streamed.txt")
+	if err := client.FilesUploadStream(context.Background(), target, strings.NewReader("streamed content"), 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "streamed content" {
+		t.Fatalf("content = %q", content)
 	}
 }
 

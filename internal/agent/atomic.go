@@ -15,6 +15,8 @@
 package agent
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -72,5 +74,42 @@ func writeFileAtomic(path string, content []byte, perm os.FileMode) error {
 		_ = d.Close()
 	}
 
+	return nil
+}
+
+func writeFileAtomicFromReader(ctx context.Context, path string, src io.Reader, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".nxpanel-upload-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := copyWithContext(ctx, tmp, src); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
 }
