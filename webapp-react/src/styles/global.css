@@ -488,6 +488,11 @@ a {
   line-height: 1.55;
 }
 
+.upstreamHelpIcon {
+  flex: 0 0 20px;
+  vertical-align: middle;
+}
+
 .upstreamToolbar,
 .upstreamHeaderActions,
 .proxyToolbar {

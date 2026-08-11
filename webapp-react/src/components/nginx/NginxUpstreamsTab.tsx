@@ -23,14 +23,19 @@ const algorithmLabels: Record<NginxUpstream['algorithm'], string> = {
   hash: 'Hash',
 }
 
-export function NginxUpstreamsTab() {
+interface UpstreamManagerContentProps {
+  active?: boolean
+  embedded?: boolean
+}
+
+export function UpstreamManagerContent({ active = true, embedded = false }: UpstreamManagerContentProps) {
   const queryClient = useQueryClient()
   const [opened, modal] = useDisclosure(false)
   const [editing, setEditing] = useState<NginxUpstream | null>(null)
   const [search, setSearch] = useState('')
   const [algorithm, setAlgorithm] = useState<string | null>(null)
-  const listQuery = useQuery({ queryKey: upstreamKeys.all, queryFn: listUpstreams })
-  const statusQuery = useQuery({ queryKey: upstreamKeys.status, queryFn: getUpstreamStatus })
+  const listQuery = useQuery({ queryKey: upstreamKeys.all, queryFn: listUpstreams, enabled: active })
+  const statusQuery = useQuery({ queryKey: upstreamKeys.status, queryFn: getUpstreamStatus, enabled: active })
   const saveMutation = useMutation({
     mutationFn: (values: NginxUpstreamSaveRequest) => editing ? updateUpstream(editing.id, values) : createUpstream(values),
   })
@@ -107,18 +112,16 @@ export function NginxUpstreamsTab() {
     })
   }
 
-  return (
-    <SectionCard
-      title="上游管理"
-      actions={(
-        <Group gap="xs" className="upstreamHeaderActions">
-          <Badge color={statusQuery.isLoading ? 'gray' : statusQuery.data?.synced ? 'green' : 'yellow'} variant="light">
-            {statusQuery.isLoading ? '状态加载中' : statusQuery.data?.synced ? '已同步' : '待同步'}
-          </Badge>
-          {!statusQuery.isLoading && !statusQuery.data?.synced ? <Button size="xs" variant="light" leftSection={<IconUpload size={15} />} loading={syncMutation.isPending} onClick={handleSync}>重新同步</Button> : null}
-        </Group>
-      )}
-    >
+  const statusActions = (
+    <Group gap="xs" className="upstreamHeaderActions">
+      <Badge color={statusQuery.isLoading ? 'gray' : statusQuery.data?.synced ? 'green' : 'yellow'} variant="light">
+        {statusQuery.isLoading ? '状态加载中' : statusQuery.data?.synced ? '已同步' : '待同步'}
+      </Badge>
+      {!statusQuery.isLoading && !statusQuery.data?.synced ? <Button size="xs" variant="light" leftSection={<IconUpload size={15} />} loading={syncMutation.isPending} onClick={handleSync}>重新同步</Button> : null}
+    </Group>
+  )
+  const managerBody = (
+    <>
       <Stack gap="md">
         {listQuery.isError ? <ErrorAlert error={listQuery.error} title="加载上游组失败" /> : null}
         {statusQuery.isError ? <ErrorAlert error={statusQuery.error} title="加载同步状态失败" /> : null}
@@ -147,6 +150,25 @@ export function NginxUpstreamsTab() {
         />
       </Stack>
       <UpstreamEditorModal opened={opened} upstream={editing} saving={saveMutation.isPending} onClose={modal.close} onSave={handleSave} />
+    </>
+  )
+
+  if (embedded) {
+    return (
+      <Stack gap="md">
+        <Group justify="flex-end">{statusActions}</Group>
+        {managerBody}
+      </Stack>
+    )
+  }
+
+  return (
+    <SectionCard title="上游管理" actions={statusActions}>
+      {managerBody}
     </SectionCard>
   )
+}
+
+export function NginxUpstreamsTab() {
+  return <UpstreamManagerContent />
 }

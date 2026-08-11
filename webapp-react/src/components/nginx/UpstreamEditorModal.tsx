@@ -1,4 +1,4 @@
-import { Alert, Button, Divider, Group, Modal, NumberInput, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core'
+import { Alert, Button, Divider, Group, Modal, NumberInput, Select, Stack, Switch, TextInput, Textarea } from '@mantine/core'
 import { useForm } from '@mantine/form'
 import { useMediaQuery } from '@mantine/hooks'
 import { IconCheck, IconDeviceFloppy } from '@tabler/icons-react'
@@ -7,6 +7,7 @@ import type { NginxUpstream, NginxUpstreamSaveRequest, NginxUpstreamServerReques
 import { validateUpstream } from '@/api/upstreams'
 import { showErrorModal } from '@/utils/errorModal'
 import { MembersEditor, emptyUpstreamMember } from './MembersEditor'
+import { UpstreamHelpLabel } from './UpstreamHelpLabel'
 
 interface UpstreamEditorModalProps {
   opened: boolean
@@ -148,12 +149,21 @@ export function UpstreamEditorModal({ opened, upstream, saving, onClose, onSave 
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title={upstream ? '编辑上游组' : '新建上游组'} size="xl" fullScreen={mobile} closeOnClickOutside={false} centered>
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={<UpstreamHelpLabel label={upstream ? '编辑上游组' : '新建上游组'} help="上游组集中定义一组后端成员，可被多个站点反向代理引用。保存时会校验配置并同步到 Nginx。" />}
+      size="xl"
+      fullScreen={mobile}
+      closeOnClickOutside={false}
+      centered
+    >
       <form onSubmit={form.onSubmit(handleSubmit)}>
         <Stack gap="md">
+          <Divider label={<UpstreamHelpLabel label="基础配置" help="配置上游组名称和请求分配策略。配置名创建后不可修改，以避免已引用代理失效。" />} labelPosition="left" />
           <div className="upstreamBasicGrid">
-            <TextInput label="配置名" placeholder="backend_api" disabled={Boolean(upstream)} {...form.getInputProps('name')} />
-            <Select label="负载均衡策略" data={algorithmOptions} allowDeselect={false} {...form.getInputProps('algorithm')} onChange={(value) => {
+            <TextInput label={<UpstreamHelpLabel label="配置名" help="Nginx upstream 块的唯一名称。需以字母或下划线开头，只能包含字母、数字和下划线。" />} placeholder="backend_api" disabled={Boolean(upstream)} {...form.getInputProps('name')} />
+            <Select label={<UpstreamHelpLabel label="负载均衡策略" help="轮询按顺序分配请求；最少连接优先选择活跃连接较少的成员；IP Hash 保持同一客户端落到固定成员；自定义 Hash 按指定变量分配。" />} data={algorithmOptions} allowDeselect={false} {...form.getInputProps('algorithm')} onChange={(value) => {
               const algorithm = (value || 'round_robin') as NginxUpstreamSaveRequest['algorithm']
               form.setFieldValue('algorithm', algorithm)
               if (algorithm !== 'hash') {
@@ -164,18 +174,18 @@ export function UpstreamEditorModal({ opened, upstream, saving, onClose, onSave 
           </div>
           {form.values.algorithm === 'hash' ? (
             <Group grow align="flex-start" className="upstreamResponsiveGroup">
-              <TextInput label="Hash Key" placeholder="$request_uri" {...form.getInputProps('hash_key')} />
-              <Switch mt={28} label="consistent" {...form.getInputProps('consistent', { type: 'checkbox' })} />
+              <TextInput label={<UpstreamHelpLabel label="Hash Key" help="用于计算成员映射的 Nginx 变量或字符串，例如 $request_uri。仅自定义 Hash 策略使用。" />} placeholder="$request_uri" {...form.getInputProps('hash_key')} />
+              <Switch mt={28} label={<UpstreamHelpLabel label="consistent" help="启用一致性哈希。成员变化时仅少量键会重新映射，适合缓存或需要稳定路由的后端。" />} {...form.getInputProps('consistent', { type: 'checkbox' })} />
             </Group>
           ) : null}
           {comboError ? <Alert color="red">{comboError}</Alert> : null}
 
-          <Divider label="成员配置" labelPosition="left" />
+          <Divider label={<UpstreamHelpLabel label="成员配置" help="定义实际接收请求的后端地址及其权重、健康失败参数和运行状态。" />} labelPosition="left" />
           <MembersEditor members={form.values.servers} errors={serverErrors} onChange={(servers) => { form.setFieldValue('servers', servers); setPreview(null) }} />
 
-          <Divider label="Keepalive" labelPosition="left" />
+          <Divider label={<UpstreamHelpLabel label="Keepalive" help="复用 Nginx 工作进程与上游之间的空闲连接，减少频繁建连开销。连接数设为 0 时关闭。" />} labelPosition="left" />
           <div className="upstreamKeepaliveGrid">
-            <NumberInput label="连接数" min={0} max={10000} allowDecimal={false} {...form.getInputProps('keepalive')} onChange={(value) => {
+            <NumberInput label={<UpstreamHelpLabel label="连接数" help="每个 Nginx 工作进程为该上游保留的最大空闲连接数。0 表示不启用连接复用。" />} min={0} max={10000} allowDecimal={false} {...form.getInputProps('keepalive')} onChange={(value) => {
               const keepalive = Number(value) || 0
               form.setFieldValue('keepalive', keepalive)
               if (keepalive === 0) {
@@ -183,15 +193,15 @@ export function UpstreamEditorModal({ opened, upstream, saving, onClose, onSave 
                 form.setFieldValue('keepalive_timeout_seconds', 0)
               }
             }} />
-            <NumberInput label="单连接请求数" min={0} max={1000000} allowDecimal={false} disabled={form.values.keepalive === 0} {...form.getInputProps('keepalive_requests')} />
-            <NumberInput label="连接超时（秒）" min={0} max={3600} allowDecimal={false} disabled={form.values.keepalive === 0} {...form.getInputProps('keepalive_timeout_seconds')} />
+            <NumberInput label={<UpstreamHelpLabel label="单连接请求数" help="一个 Keepalive 连接最多处理的请求数，达到后关闭连接。0 表示不额外输出该限制指令。" />} min={0} max={1000000} allowDecimal={false} disabled={form.values.keepalive === 0} {...form.getInputProps('keepalive_requests')} />
+            <NumberInput label={<UpstreamHelpLabel label="连接超时（秒）" help="空闲 Keepalive 连接在关闭前可保持的时间。0 表示不额外输出该超时指令。" />} min={0} max={3600} allowDecimal={false} disabled={form.values.keepalive === 0} {...form.getInputProps('keepalive_timeout_seconds')} />
           </div>
 
-          <Divider label="高级指令" labelPosition="left" />
-          <Textarea className="upstreamDirectiveEditor" autosize minRows={5} maxRows={12} placeholder={'zone backend 64k;\nqueue 100 timeout=30s;'} {...form.getInputProps('advanced_directives')} />
+          <Divider label={<UpstreamHelpLabel label="高级指令" help="追加受限的 upstream 上下文指令。服务端会拒绝 server、负载算法、include、花括号和不完整语句。" />} labelPosition="left" />
+          <Textarea label={<UpstreamHelpLabel label="指令内容" help="每行填写一条以分号结尾的受支持指令，例如 zone 或 queue。最终内容仍会经过服务端词法校验和 nginx -t。" />} className="upstreamDirectiveEditor" autosize minRows={5} maxRows={12} placeholder={'zone backend 64k;\nqueue 100 timeout=30s;'} {...form.getInputProps('advanced_directives')} />
           {preview ? (
             <Stack gap={6}>
-              <Text size="sm" fw={500}>后端渲染预览</Text>
+              <UpstreamHelpLabel label="后端渲染预览" help="服务端根据当前表单生成的完整 upstream 配置块。预览不会写入文件或重载 Nginx。" />
               <Textarea className="upstreamDirectiveEditor" readOnly autosize minRows={8} maxRows={16} value={preview.rendered_block} />
             </Stack>
           ) : null}

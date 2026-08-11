@@ -1,11 +1,10 @@
-import { ActionIcon, Alert, Badge, Button, Divider, Group, Modal, NumberInput, Radio, SegmentedControl, Select, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Divider, Group, Loader, Modal, NumberInput, Radio, SegmentedControl, Select, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core'
 import { useForm } from '@mantine/form'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { IconEdit, IconExternalLink, IconPlus, IconRefresh, IconTrash } from '@tabler/icons-react'
+import { IconEdit, IconPlus, IconRefresh, IconServer, IconTrash } from '@tabler/icons-react'
 import type { MRT_ColumnDef } from 'mantine-react-table'
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { lazy, Suspense, useState } from 'react'
 import { ApiError } from '@/api/client'
 import { createProxy, deleteProxy, listProxies, syncProxy, updateProxy } from '@/api/proxy'
 import type { CreateProxyRequest, NginxUpstream, SiteDetail, SiteProxy } from '@/api/types'
@@ -22,6 +21,8 @@ import { notifySuccess } from '@/utils/notify'
 
 interface SiteProxyTabProps { site: SiteDetail }
 type ProxyFormValues = CreateProxyRequest & { target_mode: 'direct' | 'managed' }
+
+const UpstreamManagerModal = lazy(() => import('@/components/nginx/UpstreamManagerModal'))
 
 const defaultProxyForm: ProxyFormValues = {
   name: '', enabled: true, location_path: '/', target_mode: 'direct', upstream_url: 'http://127.0.0.1:3000',
@@ -97,6 +98,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
   const queryClient = useQueryClient()
   const [opened, handlers] = useDisclosure(false)
   const [accountManagerOpened, accountManagerHandlers] = useDisclosure(false)
+  const [upstreamManagerOpened, upstreamManagerHandlers] = useDisclosure(false)
   const [editingProxy, setEditingProxy] = useState<SiteProxy | null>(null)
   const proxyQueryKey = ['site-detail', site.id, 'proxy'] as const
   const proxyQuery = useQuery({ queryKey: proxyQueryKey, queryFn: () => listProxies(site.id) })
@@ -216,7 +218,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
         {upstreamQuery.isError ? <ErrorAlert error={upstreamQuery.error} title="加载上游组失败" /> : null}
         <DataTable
           columns={columns} data={proxyQuery.data || []} loading={proxyQuery.isLoading || proxyQuery.isFetching} emptyText="暂未添加反向代理" plain
-          toolbarActions={<Group gap="xs" className="proxyToolbar"><Tooltip label="从已保存状态重新生成配置"><ActionIcon aria-label="重新同步反向代理配置" variant="default" size="lg" loading={syncMutation.isPending} onClick={handleSync}><IconRefresh size={17} /></ActionIcon></Tooltip><Button leftSection={<IconPlus size={16} />} onClick={openCreate}>添加反向代理</Button></Group>}
+          toolbarActions={<Group gap="xs" className="proxyToolbar"><Tooltip label="从已保存状态重新生成配置"><ActionIcon aria-label="重新同步反向代理配置" variant="default" size="lg" loading={syncMutation.isPending} onClick={handleSync}><IconRefresh size={17} /></ActionIcon></Tooltip><Button variant="default" leftSection={<IconServer size={16} />} onClick={upstreamManagerHandlers.open}>上游组</Button><Button leftSection={<IconPlus size={16} />} onClick={openCreate}>添加反向代理</Button></Group>}
           renderRowActions={({ row }) => <Group gap={4} wrap="nowrap"><Tooltip label="修改"><ActionIcon aria-label={`修改反向代理 ${row.original.name}`} variant="subtle" onClick={() => openEdit(row.original)}><IconEdit size={16} /></ActionIcon></Tooltip><Tooltip label="删除"><ActionIcon aria-label={`删除反向代理 ${row.original.name}`} color="red" variant="subtle" loading={deleteMutation.isPending} onClick={() => handleDelete(row.original)}><IconTrash size={16} /></ActionIcon></Tooltip></Group>}
         />
 
@@ -234,7 +236,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
                 <Stack gap="sm">
                   <Group align="flex-end" wrap="nowrap" className="managedUpstreamPicker">
                     <Select searchable label="上游组" placeholder="选择上游组" data={(upstreamQuery.data || []).map((item) => ({ value: item.id, label: `${item.name} · ${item.algorithm} · ${availableMembers(item)} 个可用成员` }))} {...form.getInputProps('upstream_id')} style={{ flex: 1 }} />
-                     <Tooltip label="管理上游组"><ActionIcon component={Link} to="/nginx?tab=upstreams" variant="default" size="lg" aria-label="管理上游组"><IconExternalLink size={17} /></ActionIcon></Tooltip>
+                      <Tooltip label="管理上游组"><ActionIcon type="button" variant="default" size="lg" aria-label="管理上游组" onClick={upstreamManagerHandlers.open}><IconServer size={17} /></ActionIcon></Tooltip>
                   </Group>
                   <SegmentedControl value={form.values.upstream_scheme} onChange={(value) => form.setFieldValue('upstream_scheme', value as 'http' | 'https')} data={[{ value: 'http', label: 'HTTP' }, { value: 'https', label: 'HTTPS' }]} />
                    {form.values.upstream_scheme === 'https' ? <Stack gap="sm"><TextInput label="SNI Server Name" placeholder="backend.example.com" {...form.getInputProps('proxy_ssl_server_name')} /><Switch label="验证上游证书" checked={form.values.proxy_ssl_verify !== false} onChange={(event) => { const checked = event.currentTarget.checked; form.setFieldValue('proxy_ssl_verify', checked); if (!checked) { form.setFieldValue('proxy_ssl_trusted_certificate', ''); form.setFieldValue('proxy_ssl_verify_depth', 0) } else if (form.values.proxy_ssl_verify_depth === 0) form.setFieldValue('proxy_ssl_verify_depth', 3) }} />{form.values.proxy_ssl_verify !== false ? <Group grow align="flex-start" className="proxyResponsiveGroup"><TextInput label="CA 证书绝对路径" placeholder="/etc/ssl/certs/ca-certificates.crt" {...form.getInputProps('proxy_ssl_trusted_certificate')} /><NumberInput label="验证深度" min={1} max={100} allowDecimal={false} {...form.getInputProps('proxy_ssl_verify_depth')} /></Group> : null}</Stack> : null}
@@ -252,6 +254,11 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
           </form>
         </Modal>
         <AuthAccountManager siteId={site.id} opened={accountManagerOpened} onClose={accountManagerHandlers.close} />
+        {upstreamManagerOpened ? (
+          <Suspense fallback={<Modal opened onClose={upstreamManagerHandlers.close} title="上游组管理" size="xl" fullScreen={mobile} centered><Group justify="center" py="xl"><Loader size="sm" /><Text size="sm" c="dimmed">正在加载上游管理...</Text></Group></Modal>}>
+            <UpstreamManagerModal opened={upstreamManagerOpened} onClose={upstreamManagerHandlers.close} />
+          </Suspense>
+        ) : null}
       </Stack>
     </SectionCard>
   )
