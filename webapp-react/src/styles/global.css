@@ -448,6 +448,52 @@ a {
   border-radius: 12px;
 }
 
+.nginxMobileTabSelect {
+  margin-bottom: 4px;
+}
+
+.nginxDesktopTabsHidden {
+  display: none;
+}
+
+.upstreamMemberBlock {
+  padding: 12px;
+  border: 1px solid var(--nx-border);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.018);
+}
+
+.upstreamMemberGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(108px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.upstreamBasicGrid,
+.upstreamKeepaliveGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.upstreamKeepaliveGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.upstreamDirectiveEditor textarea {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+  line-height: 1.55;
+}
+
+.upstreamToolbar,
+.upstreamHeaderActions,
+.proxyToolbar {
+  flex-wrap: wrap;
+}
+
 .monoEllipsis {
   display: inline-block;
   overflow: hidden;
@@ -1152,5 +1198,35 @@ a {
 
   .cpuDetailGrid {
     grid-template-columns: 1fr;
+  }
+
+  .upstreamToolbar,
+  .upstreamHeaderActions,
+  .upstreamModalActions,
+  .upstreamModalSubmit,
+  .upstreamResponsiveGroup,
+  .proxyResponsiveGroup,
+  .proxyModalActions {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .upstreamToolbar > *,
+  .upstreamModalActions button,
+  .upstreamModalSubmit button,
+  .proxyModalActions button {
+    width: 100% !important;
+  }
+
+  .upstreamMemberGrid,
+  .upstreamBasicGrid,
+  .upstreamKeepaliveGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .managedUpstreamPicker {
+    align-items: stretch;
+    flex-wrap: wrap;
   }
 }

@@ -24,3 +24,7 @@ export function updateProxy(
 export function deleteProxy(siteId: string, proxyId: string): Promise<{ operation_id: string }> {
   return del(`/sites/${siteId}/proxy/${proxyId}`)
 }
+
+export function syncProxy(siteId: string): Promise<{ operation_id: string }> {
+  return post(`/sites/${siteId}/proxy/sync`)
+}
