@@ -218,7 +218,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
         {upstreamQuery.isError ? <ErrorAlert error={upstreamQuery.error} title="加载上游组失败" /> : null}
         <DataTable
           columns={columns} data={proxyQuery.data || []} loading={proxyQuery.isLoading || proxyQuery.isFetching} emptyText="暂未添加反向代理" plain
-          toolbarActions={<Group gap="xs" className="proxyToolbar"><Tooltip label="从已保存状态重新生成配置"><ActionIcon aria-label="重新同步反向代理配置" variant="default" size="lg" loading={syncMutation.isPending} onClick={handleSync}><IconRefresh size={17} /></ActionIcon></Tooltip><Button variant="default" leftSection={<IconServer size={16} />} onClick={upstreamManagerHandlers.open}>上游组</Button><Button leftSection={<IconPlus size={16} />} onClick={openCreate}>添加反向代理</Button></Group>}
+          toolbarActions={<Group gap="xs" className="proxyToolbar"><Tooltip label="从已保存状态重新生成配置"><ActionIcon aria-label="重新同步反向代理配置" variant="default" size="lg" loading={syncMutation.isPending} onClick={handleSync}><IconRefresh size={17} /></ActionIcon></Tooltip> <Button leftSection={<IconPlus size={16} />} onClick={openCreate}>添加反向代理</Button> <Button variant="default" leftSection={<IconServer size={16} />} onClick={upstreamManagerHandlers.open}>上游组</Button></Group>}
           renderRowActions={({ row }) => <Group gap={4} wrap="nowrap"><Tooltip label="修改"><ActionIcon aria-label={`修改反向代理 ${row.original.name}`} variant="subtle" onClick={() => openEdit(row.original)}><IconEdit size={16} /></ActionIcon></Tooltip><Tooltip label="删除"><ActionIcon aria-label={`删除反向代理 ${row.original.name}`} color="red" variant="subtle" loading={deleteMutation.isPending} onClick={() => handleDelete(row.original)}><IconTrash size={16} /></ActionIcon></Tooltip></Group>}
         />
 
