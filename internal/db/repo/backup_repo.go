@@ -4,6 +4,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -21,17 +22,35 @@ func NewBackupRepo(db *sql.DB) *BackupRepo {
 
 // Create 创建备份记录
 func (r *BackupRepo) Create(b *Backup) error {
-	_, err := r.db.Exec(
-		`INSERT INTO backups (
+	return r.CreateMany(context.Background(), []*Backup{b})
+}
+
+// CreateMany records all backups atomically so an operation never has a partial backup set.
+func (r *BackupRepo) CreateMany(ctx context.Context, backups []*Backup) error {
+	if len(backups) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("创建备份事务失败: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, b := range backups {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO backups (
 			id, operation_id, file_path, backup_path,
 			original_sha256, backup_sha256, file_existed, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.ID, b.OperationID, b.FilePath, b.BackupPath,
-		b.OriginalSHA256, b.BackupSHA256, boolToInt(b.FileExisted),
-		time.Now().UTC().Format(time.RFC3339),
-	)
-	if err != nil {
-		return fmt.Errorf("创建备份记录失败: %w", err)
+			b.ID, b.OperationID, b.FilePath, b.BackupPath,
+			b.OriginalSHA256, b.BackupSHA256, boolToInt(b.FileExisted),
+			now,
+		); err != nil {
+			return fmt.Errorf("创建备份记录失败: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交备份事务失败: %w", err)
 	}
 	return nil
 }

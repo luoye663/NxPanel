@@ -73,22 +73,28 @@ type DocumentData struct {
 
 // ProxyData 反向代理渲染参数
 type ProxyData struct {
-	ID               string
-	Name             string
-	Enabled          bool
-	LocationPath     string // 如 /, /api
-	UpstreamURL      string // 如 http://127.0.0.1:3000
-	HostHeader       string // 如 $host
-	WebSocketEnabled bool
-	ConnectTimeout   int // 秒
-	SendTimeout      int // 秒
-	ReadTimeout      int // 秒
-	CacheEnabled     bool
-	CacheType        string // "nginx" or "file"
-	CacheTime        int    // 分钟
-	CachePath        string // 文件缓存路径
-	AuthEnabled      bool
-	AuthHtpasswdPath string
+	ID                         string
+	Name                       string
+	Enabled                    bool
+	LocationPath               string // 如 /, /api
+	UpstreamURL                string // 如 http://127.0.0.1:3000
+	ManagedUpstream            bool
+	UpstreamScheme             string
+	ProxySSLServerName         string
+	ProxySSLVerify             bool
+	ProxySSLTrustedCertificate string
+	ProxySSLVerifyDepth        int
+	HostHeader                 string // 如 $host
+	WebSocketEnabled           bool
+	ConnectTimeout             int // 秒
+	SendTimeout                int // 秒
+	ReadTimeout                int // 秒
+	CacheEnabled               bool
+	CacheType                  string // "nginx" or "file"
+	CacheTime                  int    // 分钟
+	CachePath                  string // 文件缓存路径
+	AuthEnabled                bool
+	AuthHtpasswdPath           string
 }
 
 // SSLData SSL 渲染参数

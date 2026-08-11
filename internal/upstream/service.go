@@ -210,6 +210,9 @@ func (s *Service) Delete(ctx context.Context, id, requestID string) (*WriteResul
 		return nil, err
 	}
 	if err := s.store.Delete(ctx, id); err != nil {
+		if isForeignKeyConstraint(err) {
+			return nil, s.deleteConflict(ctx, opID, id)
+		}
 		return nil, s.desiredPersistenceError(opID, err)
 	}
 	if err := s.applyCurrent(ctx, opID); err != nil {
@@ -219,6 +222,19 @@ func (s *Service) Delete(ctx context.Context, id, requestID string) (*WriteResul
 		return nil, err
 	}
 	return &WriteResult{OperationID: opID}, nil
+}
+
+func (s *Service) deleteConflict(ctx context.Context, operationID, id string) error {
+	refs, _ := s.store.CountReferences(ctx, id)
+	cause := fmt.Errorf("upstream is still referenced")
+	if terminalErr := s.operations.UpdateError(operationID, "failed", app.ErrConflict, cause.Error(), ""); terminalErr != nil {
+		return operationTerminalError(operationID, cause, terminalErr, false, "not_attempted", false)
+	}
+	return app.NewAppError(app.ErrConflict, cause.Error(), map[string]any{"operation_id": operationID, "reference_count": refs})
+}
+
+func isForeignKeyConstraint(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "foreign key constraint")
 }
 
 func (s *Service) Sync(ctx context.Context, requestID string) (*SyncResult, error) {
@@ -377,7 +393,8 @@ func toDTO(item *repo.NginxUpstream) *Upstream {
 		Consistent: item.Consistent, Keepalive: item.Keepalive,
 		KeepaliveRequests: item.KeepaliveRequests, KeepaliveTimeoutSeconds: item.KeepaliveTimeoutSeconds,
 		AdvancedDirectives: item.AdvancedDirectives, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
-		Servers: make([]Server, 0, len(item.Servers)),
+		ReferenceCount: item.ReferenceCount,
+		Servers:        make([]Server, 0, len(item.Servers)),
 	}
 	for _, server := range item.Servers {
 		result.Servers = append(result.Servers, Server{

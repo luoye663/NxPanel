@@ -129,6 +129,7 @@ func TestRender_ProxyBasic(t *testing.T) {
 
 	assertNotContains(t, got, "proxy_set_header Upgrade $http_upgrade;")
 	assertNotContains(t, got, "proxy_set_header Connection \"upgrade\";")
+	assertContains(t, got, "proxy_set_header Connection \"\";")
 	assertNotContains(t, got, "mode=template")
 }
 
@@ -166,6 +167,38 @@ func TestRender_ProxyWithWebSocket(t *testing.T) {
 	}
 
 	assertContains(t, got, "access_log off;")
+	assertContains(t, got, "proxy_set_header Connection \"upgrade\";")
+	assertNotContains(t, got, "proxy_set_header Connection \"\";")
+}
+
+func TestBuildMainLocationManagedHTTPSVerifyOnAndOff(t *testing.T) {
+	on := BuildMainLocation(&RenderData{Proxies: []*ProxyData{{
+		Enabled: true, LocationPath: "/", UpstreamURL: "https://secure_backend", ManagedUpstream: true,
+		UpstreamScheme: "https", ProxySSLServerName: "origin.example.com", ProxySSLVerify: true,
+		ProxySSLTrustedCertificate: "/etc/ssl/certs/origin-ca.pem", ProxySSLVerifyDepth: 4,
+		HostHeader: "$host", ConnectTimeout: 60, SendTimeout: 60, ReadTimeout: 60,
+	}}})
+	assertContains(t, on, "proxy_ssl_server_name on;")
+	assertContains(t, on, "proxy_ssl_name origin.example.com;")
+	assertContains(t, on, "proxy_ssl_verify on;")
+	assertContains(t, on, "proxy_ssl_trusted_certificate /etc/ssl/certs/origin-ca.pem;")
+	assertContains(t, on, "proxy_ssl_verify_depth 4;")
+
+	off := BuildMainLocation(&RenderData{Proxies: []*ProxyData{{
+		Enabled: true, LocationPath: "/", UpstreamURL: "https://secure_backend", ManagedUpstream: true,
+		UpstreamScheme: "https", ProxySSLServerName: "192.0.2.10", ProxySSLVerify: false,
+		HostHeader: "$host", ConnectTimeout: 60, SendTimeout: 60, ReadTimeout: 60,
+	}}})
+	assertContains(t, off, "proxy_ssl_verify off;")
+	assertNotContains(t, off, "proxy_ssl_trusted_certificate")
+	assertNotContains(t, off, "proxy_ssl_verify_depth")
+
+	direct := BuildMainLocation(&RenderData{Proxies: []*ProxyData{{
+		Enabled: true, LocationPath: "/", UpstreamURL: "https://direct.example.com", UpstreamScheme: "https",
+		HostHeader: "$host", ConnectTimeout: 60, SendTimeout: 60, ReadTimeout: 60,
+	}}})
+	assertNotContains(t, direct, "proxy_ssl_server_name")
+	assertNotContains(t, direct, "proxy_ssl_verify")
 }
 
 func TestRender_ProxyDisabledFallsBackToStatic(t *testing.T) {

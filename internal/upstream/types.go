@@ -46,6 +46,7 @@ type Upstream struct {
 	Servers                 []Server `json:"servers"`
 	CreatedAt               string   `json:"created_at"`
 	UpdatedAt               string   `json:"updated_at"`
+	ReferenceCount          int      `json:"reference_count"`
 }
 
 type WriteResult struct {

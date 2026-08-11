@@ -84,7 +84,7 @@ func TestUpstreamCreateAndListResponses(t *testing.T) {
 	listReq := authenticatedUpstreamRequest(t, server, http.MethodGet, "/nginx/upstreams", "", false)
 	listRecorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(listRecorder, listReq)
-	if listRecorder.Code != http.StatusOK || !strings.Contains(listRecorder.Body.String(), "api_backend") {
+	if listRecorder.Code != http.StatusOK || !strings.Contains(listRecorder.Body.String(), "api_backend") || !strings.Contains(listRecorder.Body.String(), `"reference_count":0`) {
 		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
 	}
 }

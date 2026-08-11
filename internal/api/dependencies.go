@@ -184,7 +184,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 		s.db, r.site, r.proxy, r.ssl, r.rewrite,
 		s.opRepo, s.agentClient, s.cfg,
 	)
-	s.proxySvc = proxy.NewService(r.site, r.proxy, r.authAccount, s.opRepo, s.agentClient, s.cfg)
+	s.proxySvc = proxy.NewService(r.site, r.proxy, r.upstream, r.authAccount, s.opRepo, s.backupRepo, s.agentClient, s.cfg)
 	sslAgent := &sslAgentAdapter{client: s.agentClient}
 	s.sslSvc = ssl.NewService(r.site, r.ssl, r.certificate, s.opRepo, sslAgent, s.cfg)
 	s.rewriteSvc = rewrite.NewService(r.site, r.rewrite, s.opRepo, s.agentClient, r.rewriteTemplate)

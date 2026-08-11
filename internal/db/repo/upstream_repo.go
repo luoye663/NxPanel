@@ -31,7 +31,7 @@ func (r *UpstreamRepo) queryAggregates(ctx context.Context, where string, args [
 	rows, err := r.db.QueryContext(ctx, `SELECT
 		u.id, u.name, u.algorithm, u.hash_key, u.consistent, u.keepalive,
 		u.keepalive_requests, u.keepalive_timeout_seconds, u.advanced_directives,
-		u.created_at, u.updated_at,
+		u.created_at, u.updated_at, (SELECT COUNT(*) FROM site_proxy p WHERE p.upstream_id = u.id),
 		s.id, s.upstream_id, s.address, s.weight, s.max_fails,
 		s.fail_timeout_seconds, s.backup, s.down, s.sort_order, s.created_at, s.updated_at
 		FROM nginx_upstreams u
@@ -53,7 +53,7 @@ func (r *UpstreamRepo) queryAggregates(ctx context.Context, where string, args [
 		if err := rows.Scan(
 			&u.ID, &u.Name, &u.Algorithm, &u.HashKey, &consistent, &u.Keepalive,
 			&u.KeepaliveRequests, &u.KeepaliveTimeoutSeconds, &u.AdvancedDirectives,
-			&u.CreatedAt, &u.UpdatedAt,
+			&u.CreatedAt, &u.UpdatedAt, &u.ReferenceCount,
 			&serverID, &upstreamID, &address, &weight, &maxFails, &failTimeout,
 			&backup, &down, &sortOrder, &serverCreatedAt, &serverUpdatedAt,
 		); err != nil {
@@ -147,8 +147,13 @@ func (r *UpstreamRepo) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// CountReferences is the phase-2 extension point. Phase 1 has no referencing schema.
-func (r *UpstreamRepo) CountReferences(context.Context, string) (int, error) { return 0, nil }
+func (r *UpstreamRepo) CountReferences(ctx context.Context, id string) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM site_proxy WHERE upstream_id = ?`, id).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count upstream references: %w", err)
+	}
+	return count, nil
+}
 
 func (r *UpstreamRepo) GetAppliedState(ctx context.Context) (*NginxUpstreamAppliedState, error) {
 	state := &NginxUpstreamAppliedState{}

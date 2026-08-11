@@ -5,6 +5,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -728,6 +729,29 @@ func TestBackupRepo_CreateAndList(t *testing.T) {
 	}
 	if backups[0].FilePath != "/opt/panel/nginx/sites-available/test.conf" {
 		t.Errorf("FilePath 不匹配: %s", backups[0].FilePath)
+	}
+}
+
+func TestBackupRepoCreateManyIsAtomic(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := NewOperationRepo(database).Create(&Operation{
+		ID: "op_bak_many", Action: "site.update", TargetType: "site", Status: "success", Actor: "admin", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewBackupRepo(database)
+	err := store.CreateMany(context.Background(), []*Backup{
+		{ID: "duplicate", OperationID: "op_bak_many", FilePath: "/a", BackupPath: "/backup/a"},
+		{ID: "duplicate", OperationID: "op_bak_many", FilePath: "/b", BackupPath: "/backup/b"},
+	})
+	if err == nil {
+		t.Fatal("duplicate backup IDs should fail")
+	}
+	items, err := store.ListByOperationID("op_bak_many")
+	if err != nil || len(items) != 0 {
+		t.Fatalf("partial backup set persisted: %#v err=%v", items, err)
 	}
 }
 

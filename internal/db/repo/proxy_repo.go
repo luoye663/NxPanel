@@ -22,6 +22,9 @@ func NewProxyRepo(db *sql.DB) *ProxyRepo {
 // Create 创建反向代理配置
 func (r *ProxyRepo) Create(p *SiteProxy) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	if p.UpstreamScheme == "" {
+		p.UpstreamScheme = "http"
+	}
 	if p.CreatedAt == "" {
 		p.CreatedAt = now
 	}
@@ -33,12 +36,14 @@ func (r *ProxyRepo) Create(p *SiteProxy) error {
 
 	_, err := r.db.Exec(
 		`INSERT INTO site_proxy (
-			id, site_id, name, enabled, location_path, upstream_url, host_header,
+			id, site_id, name, enabled, location_path, upstream_url, upstream_id, upstream_scheme,
+			proxy_ssl_server_name, proxy_ssl_verify, proxy_ssl_trusted_certificate, proxy_ssl_verify_depth, host_header,
 			websocket_enabled, connect_timeout, send_timeout, read_timeout,
 			cache_enabled, cache_type, cache_time, auth_enabled, auth_htpasswd_path,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.SiteID, p.Name, enabledInt, p.LocationPath, p.UpstreamURL, p.HostHeader,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.SiteID, p.Name, enabledInt, p.LocationPath, p.UpstreamURL, p.UpstreamID, p.UpstreamScheme,
+		p.ProxySSLServerName, boolToInt(p.ProxySSLVerify), p.ProxySSLTrustedCertificate, p.ProxySSLVerifyDepth, p.HostHeader,
 		wsInt, p.ConnectTimeout, p.SendTimeout, p.ReadTimeout,
 		cacheEnabledInt, p.CacheType, p.CacheTime, boolToInt(p.AuthEnabled), p.AuthHtpasswdPath,
 		p.CreatedAt, p.UpdatedAt,
@@ -52,17 +57,20 @@ func (r *ProxyRepo) Create(p *SiteProxy) error {
 // GetByID 根据 id 获取反向代理配置
 func (r *ProxyRepo) GetByID(id string) (*SiteProxy, error) {
 	p := &SiteProxy{}
-	var enabledInt, wsInt, cacheEnabledInt, authEnabledInt int
+	var enabledInt, sslVerifyInt, wsInt, cacheEnabledInt, authEnabledInt int
+	var upstreamID sql.NullString
 
 	err := r.db.QueryRow(
-		`SELECT id, site_id, name, enabled, location_path, upstream_url, host_header,
+		`SELECT id, site_id, name, enabled, location_path, upstream_url, upstream_id, upstream_scheme,
+			proxy_ssl_server_name, proxy_ssl_verify, proxy_ssl_trusted_certificate, proxy_ssl_verify_depth, host_header,
 			websocket_enabled, connect_timeout, send_timeout, read_timeout,
 			cache_enabled, cache_type, cache_time, auth_enabled, auth_htpasswd_path,
 			created_at, updated_at
 		FROM site_proxy WHERE id = ?`,
 		id,
 	).Scan(
-		&p.ID, &p.SiteID, &p.Name, &enabledInt, &p.LocationPath, &p.UpstreamURL, &p.HostHeader,
+		&p.ID, &p.SiteID, &p.Name, &enabledInt, &p.LocationPath, &p.UpstreamURL, &upstreamID, &p.UpstreamScheme,
+		&p.ProxySSLServerName, &sslVerifyInt, &p.ProxySSLTrustedCertificate, &p.ProxySSLVerifyDepth, &p.HostHeader,
 		&wsInt, &p.ConnectTimeout, &p.SendTimeout, &p.ReadTimeout,
 		&cacheEnabledInt, &p.CacheType, &p.CacheTime, &authEnabledInt, &p.AuthHtpasswdPath,
 		&p.CreatedAt, &p.UpdatedAt,
@@ -75,6 +83,10 @@ func (r *ProxyRepo) GetByID(id string) (*SiteProxy, error) {
 	}
 
 	p.Enabled = enabledInt == 1
+	if upstreamID.Valid {
+		p.UpstreamID = &upstreamID.String
+	}
+	p.ProxySSLVerify = sslVerifyInt == 1
 	p.WebSocketEnabled = wsInt == 1
 	p.CacheEnabled = cacheEnabledInt == 1
 	p.AuthEnabled = authEnabledInt == 1
@@ -84,7 +96,8 @@ func (r *ProxyRepo) GetByID(id string) (*SiteProxy, error) {
 // ListBySiteID 列出站点的所有反向代理配置
 func (r *ProxyRepo) ListBySiteID(siteID string) ([]*SiteProxy, error) {
 	rows, err := r.db.Query(
-		`SELECT id, site_id, name, enabled, location_path, upstream_url, host_header,
+		`SELECT id, site_id, name, enabled, location_path, upstream_url, upstream_id, upstream_scheme,
+			proxy_ssl_server_name, proxy_ssl_verify, proxy_ssl_trusted_certificate, proxy_ssl_verify_depth, host_header,
 			websocket_enabled, connect_timeout, send_timeout, read_timeout,
 			cache_enabled, cache_type, cache_time, auth_enabled, auth_htpasswd_path,
 			created_at, updated_at
@@ -99,9 +112,11 @@ func (r *ProxyRepo) ListBySiteID(siteID string) ([]*SiteProxy, error) {
 	var proxies []*SiteProxy
 	for rows.Next() {
 		p := &SiteProxy{}
-		var enabledInt, wsInt, cacheEnabledInt, authEnabledInt int
+		var enabledInt, sslVerifyInt, wsInt, cacheEnabledInt, authEnabledInt int
+		var upstreamID sql.NullString
 		if err := rows.Scan(
-			&p.ID, &p.SiteID, &p.Name, &enabledInt, &p.LocationPath, &p.UpstreamURL, &p.HostHeader,
+			&p.ID, &p.SiteID, &p.Name, &enabledInt, &p.LocationPath, &p.UpstreamURL, &upstreamID, &p.UpstreamScheme,
+			&p.ProxySSLServerName, &sslVerifyInt, &p.ProxySSLTrustedCertificate, &p.ProxySSLVerifyDepth, &p.HostHeader,
 			&wsInt, &p.ConnectTimeout, &p.SendTimeout, &p.ReadTimeout,
 			&cacheEnabledInt, &p.CacheType, &p.CacheTime, &authEnabledInt, &p.AuthHtpasswdPath,
 			&p.CreatedAt, &p.UpdatedAt,
@@ -109,6 +124,10 @@ func (r *ProxyRepo) ListBySiteID(siteID string) ([]*SiteProxy, error) {
 			return nil, fmt.Errorf("扫描反代配置行失败: %w", err)
 		}
 		p.Enabled = enabledInt == 1
+		if upstreamID.Valid {
+			p.UpstreamID = &upstreamID.String
+		}
+		p.ProxySSLVerify = sslVerifyInt == 1
 		p.WebSocketEnabled = wsInt == 1
 		p.CacheEnabled = cacheEnabledInt == 1
 		p.AuthEnabled = authEnabledInt == 1
@@ -128,12 +147,14 @@ func (r *ProxyRepo) Update(p *SiteProxy) error {
 
 	_, err := r.db.Exec(
 		`UPDATE site_proxy SET
-			name = ?, enabled = ?, location_path = ?, upstream_url = ?, host_header = ?,
+			name = ?, enabled = ?, location_path = ?, upstream_url = ?, upstream_id = ?, upstream_scheme = ?,
+			proxy_ssl_server_name = ?, proxy_ssl_verify = ?, proxy_ssl_trusted_certificate = ?, proxy_ssl_verify_depth = ?, host_header = ?,
 			websocket_enabled = ?, connect_timeout = ?, send_timeout = ?, read_timeout = ?,
 			cache_enabled = ?, cache_type = ?, cache_time = ?, auth_enabled = ?, auth_htpasswd_path = ?,
 			updated_at = ?
 		WHERE id = ?`,
-		p.Name, enabledInt, p.LocationPath, p.UpstreamURL, p.HostHeader,
+		p.Name, enabledInt, p.LocationPath, p.UpstreamURL, p.UpstreamID, p.UpstreamScheme,
+		p.ProxySSLServerName, boolToInt(p.ProxySSLVerify), p.ProxySSLTrustedCertificate, p.ProxySSLVerifyDepth, p.HostHeader,
 		wsInt, p.ConnectTimeout, p.SendTimeout, p.ReadTimeout,
 		cacheEnabledInt, p.CacheType, p.CacheTime, boolToInt(p.AuthEnabled), p.AuthHtpasswdPath,
 		p.UpdatedAt,

@@ -99,6 +99,7 @@ func (s *Server) setupRoutes() {
 			// Proxy
 			r.Get("/sites/{site_id}/proxy", s.handleProxyList)
 			r.Post("/sites/{site_id}/proxy", s.handleProxyCreate)
+			r.Post("/sites/{site_id}/proxy/sync", s.handleProxySync)
 			r.Get("/sites/{site_id}/proxy/{proxy_id}", s.handleProxyGet)
 			r.Put("/sites/{site_id}/proxy/{proxy_id}", s.handleProxyUpdate)
 			r.Delete("/sites/{site_id}/proxy/{proxy_id}", s.handleProxyDelete)

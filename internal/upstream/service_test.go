@@ -85,6 +85,85 @@ func TestServiceCreateAppliesAuditsAndRecordsState(t *testing.T) {
 	}
 }
 
+func TestServiceDeleteRejectsReferencedUpstream(t *testing.T) {
+	agent := &fakeAgent{}
+	service, store, database := setupService(t, agent)
+	created, err := service.Create(context.Background(), requestForService("referenced"), "req-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO sites
+		(id, primary_domain, domains_json, status, root_path, access_log_path, error_log_path, config_path, enabled_path, rewrite_path)
+		VALUES ('site_ref', 'ref.example.com', '["ref.example.com"]', 'enabled', '/www/ref', '/logs/ref.access', '/logs/ref.error', '/nginx/ref.conf', '/nginx/enabled/ref.conf', '/nginx/rewrite/ref.conf')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO site_proxy
+		(id, site_id, name, upstream_url, upstream_id, upstream_scheme)
+		VALUES ('proxy_ref', 'site_ref', 'ref', ?, ?, 'http')`, "http://referenced", created.Upstream.ID); err != nil {
+		t.Fatal(err)
+	}
+	beforeRequests := len(agent.requests)
+	if _, err := service.Delete(context.Background(), created.Upstream.ID, "req-delete"); appErrorCodeForUpstreamTest(err) != app.ErrConflict {
+		t.Fatalf("delete error=%v", err)
+	}
+	if len(agent.requests) != beforeRequests {
+		t.Fatal("delete protection should not apply upstream configuration")
+	}
+	item, err := store.GetByID(context.Background(), created.Upstream.ID)
+	if err != nil || item == nil || item.ReferenceCount != 1 {
+		t.Fatalf("upstream=%#v err=%v", item, err)
+	}
+}
+
+type upstreamFKRaceStore struct {
+	*repo.UpstreamRepo
+	countCalls int
+}
+
+func (s *upstreamFKRaceStore) CountReferences(ctx context.Context, id string) (int, error) {
+	s.countCalls++
+	if s.countCalls == 1 {
+		return 0, nil
+	}
+	return 1, nil
+}
+
+func (*upstreamFKRaceStore) Delete(context.Context, string) error {
+	return errors.New("constraint failed: FOREIGN KEY constraint failed (787)")
+}
+
+func TestServiceDeleteMapsForeignKeyRaceToConflict(t *testing.T) {
+	agent := &fakeAgent{}
+	service, store, database := setupService(t, agent)
+	created, err := service.Create(context.Background(), requestForService("race_ref"), "req-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.store = &upstreamFKRaceStore{UpstreamRepo: store}
+	beforeRequests := len(agent.requests)
+	if _, err := service.Delete(context.Background(), created.Upstream.ID, "req-delete-race"); appErrorCodeForUpstreamTest(err) != app.ErrConflict {
+		t.Fatalf("delete race error=%v", err)
+	}
+	if len(agent.requests) != beforeRequests {
+		t.Fatal("FK race must not apply upstream configuration")
+	}
+	operations, _, err := repo.NewOperationRepo(database).List(1, 10, "nginx_upstream", created.Upstream.ID)
+	failed := false
+	for _, operation := range operations {
+		failed = failed || operation.Status == "failed"
+	}
+	if err != nil || len(operations) < 2 || !failed {
+		t.Fatalf("operations=%#v err=%v", operations, err)
+	}
+}
+
+func appErrorCodeForUpstreamTest(err error) string {
+	if appErr, ok := err.(*app.AppError); ok {
+		return appErr.Code
+	}
+	return ""
+}
+
 func TestServiceAgentFailureKeepsDesiredCreateUpdateDelete(t *testing.T) {
 	agent := &fakeAgent{err: errors.New("ambiguous agent failure")}
 	service, store, database := setupService(t, agent)
