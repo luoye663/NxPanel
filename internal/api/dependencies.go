@@ -32,6 +32,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/systemmetrics"
 	"github.com/luoye663/nxpanel/internal/twofa"
 	"github.com/luoye663/nxpanel/internal/upgrade"
+	"github.com/luoye663/nxpanel/internal/upstream"
 )
 
 type repos struct {
@@ -53,6 +54,7 @@ type repos struct {
 	loginAudit      *repo.LoginAuditRepo
 	accessAnalysis  *accessanalysis.Repo
 	scheduledTask   *scheduledtask.Repo
+	upstream        *repo.UpstreamRepo
 }
 
 func newServerBase(cfg *app.Config, db *sql.DB) *Server {
@@ -143,6 +145,7 @@ func newRepos(db *sql.DB) repos {
 		loginAudit:      repo.NewLoginAuditRepo(db),
 		accessAnalysis:  accessanalysis.NewRepo(db),
 		scheduledTask:   scheduledtask.NewRepo(db),
+		upstream:        repo.NewUpstreamRepo(db),
 	}
 }
 
@@ -212,6 +215,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 		return fmt.Errorf("迁移访问分析计划任务失败: %w", err)
 	}
 	s.nginxconfSvc = nginxconf.NewService(s.agentClient, &nginxConfigRefresher{cfg: s.cfg}, s.opRepo)
+	s.upstreamSvc = upstream.NewService(r.upstream, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.siteBackupSvc = sitebackup.NewService(s.rootCtx, s.cfg.API.AsyncJobs.BackupMaxConcurrent, r.site, r.siteBackup, r.backupSchedule, r.ssl, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir, s.sseHub)
 	s.siteBackupSvc.SetTaskLogDir(s.cfg.TaskLogDir())
 	if err := s.siteBackupSvc.AttachScheduledTasks(s.scheduledTaskSvc); err != nil {

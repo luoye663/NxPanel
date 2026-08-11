@@ -77,6 +77,14 @@ func (s *Server) setupRoutes() {
 			r.Put("/nginx/conf", s.handleNginxConfSave)
 			r.Get("/nginx/parameters", s.handleNginxParametersGet)
 			r.Put("/nginx/parameters", s.handleNginxParametersSave)
+			r.Get("/nginx/upstreams", s.handleUpstreamList)
+			r.Post("/nginx/upstreams", s.handleUpstreamCreate)
+			r.Post("/nginx/upstreams/validate", s.handleUpstreamValidate)
+			r.Post("/nginx/upstreams/sync", s.handleUpstreamSync)
+			r.Get("/nginx/upstreams/status", s.handleUpstreamStatus)
+			r.Get("/nginx/upstreams/{upstream_id}", s.handleUpstreamGet)
+			r.Put("/nginx/upstreams/{upstream_id}", s.handleUpstreamUpdate)
+			r.Delete("/nginx/upstreams/{upstream_id}", s.handleUpstreamDelete)
 
 			// Sites
 			r.Get("/sites", s.handleSiteList)

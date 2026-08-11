@@ -169,6 +169,9 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"site_auth_rule_accounts",
 		"site_proxy_auth_accounts",
 		"rewrite_templates",
+		"nginx_upstreams",
+		"nginx_upstream_servers",
+		"nginx_upstream_applied_state",
 	}
 
 	for _, table := range expectedTables {
@@ -214,6 +217,7 @@ func TestMigrationCreatesIndexes(t *testing.T) {
 		"idx_scheduled_task_runs_terminal_finished",
 		"idx_scheduled_task_runs_terminal_task_created",
 		"idx_rewrite_templates_enabled_sort",
+		"idx_nginx_upstream_servers_order",
 	}
 
 	for _, idx := range expectedIndexes {

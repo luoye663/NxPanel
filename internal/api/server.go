@@ -39,6 +39,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/systemmetrics"
 	"github.com/luoye663/nxpanel/internal/twofa"
 	"github.com/luoye663/nxpanel/internal/upgrade"
+	"github.com/luoye663/nxpanel/internal/upstream"
 )
 
 type Server struct {
@@ -75,6 +76,7 @@ type Server struct {
 	scheduledTaskSvc       *scheduledtask.Service
 	scheduledTaskEngine    *scheduledtask.Engine
 	upgradeSvc             *upgrade.Service
+	upstreamSvc            *upstream.Service
 	router                 *chi.Mux
 	rootCtx                context.Context
 	rootCancel             context.CancelFunc

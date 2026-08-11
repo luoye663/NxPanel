@@ -51,12 +51,15 @@ func (r *OperationRepo) UpdateStatus(id, status string) error {
 
 func (r *OperationRepo) UpdateStatusContext(ctx context.Context, id, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		"UPDATE operations SET status = ?, finished_at = ? WHERE id = ?",
 		status, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("更新操作状态失败 id=%s: %w", id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("更新操作状态失败 id=%s: operation 不存在", id)
 	}
 	return nil
 }
@@ -68,13 +71,16 @@ func (r *OperationRepo) UpdateError(id, status, errorCode, errorMessage, stderr 
 
 func (r *OperationRepo) UpdateErrorContext(ctx context.Context, id, status, errorCode, errorMessage, stderr string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.ExecContext(ctx,
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE operations SET status = ?, error_code = ?, error_message = ?, stderr = ?, finished_at = ?
 		WHERE id = ?`,
 		status, errorCode, errorMessage, stderr, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("更新操作错误信息失败 id=%s: %w", id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("更新操作错误信息失败 id=%s: operation 不存在", id)
 	}
 	return nil
 }
@@ -157,7 +163,7 @@ func (r *OperationRepo) List(page, pageSize int, targetType, targetID string) ([
 }
 
 func (r *OperationRepo) DeleteAll() error {
-	_, err := r.db.Exec("DELETE FROM operations")
+	_, err := r.db.Exec("DELETE FROM operations WHERE status <> 'pending'")
 	if err != nil {
 		return fmt.Errorf("清空操作记录失败: %w", err)
 	}

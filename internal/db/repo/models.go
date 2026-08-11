@@ -105,6 +105,42 @@ type SiteProxy struct {
 	UpdatedAt        string
 }
 
+// NginxUpstream and NginxUpstreamServer form one global upstream aggregate.
+type NginxUpstream struct {
+	ID                      string
+	Name                    string
+	Algorithm               string
+	HashKey                 string
+	Consistent              bool
+	Keepalive               int
+	KeepaliveRequests       int
+	KeepaliveTimeoutSeconds int
+	AdvancedDirectives      string
+	CreatedAt               string
+	UpdatedAt               string
+	Servers                 []*NginxUpstreamServer
+}
+
+type NginxUpstreamServer struct {
+	ID                 string
+	UpstreamID         string
+	Address            string
+	Weight             int
+	MaxFails           int
+	FailTimeoutSeconds int
+	Backup             bool
+	Down               bool
+	SortOrder          int
+	CreatedAt          string
+	UpdatedAt          string
+}
+
+type NginxUpstreamAppliedState struct {
+	AppliedHash string
+	AppliedPath string
+	AppliedAt   *string
+}
+
 // AuthAccount 对应 auth_accounts 表的一行。
 type AuthAccount struct {
 	ID           string
