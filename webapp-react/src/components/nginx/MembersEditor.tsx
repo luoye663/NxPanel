@@ -57,7 +57,7 @@ export function MembersEditor({ members, errors, onChange }: MembersEditorProps)
             />
             <NumberInput label={<UpstreamHelpLabel label="权重" help="成员获得请求的相对比例。权重越高，通常分配到的请求越多。" />} min={1} max={256} value={member.weight} onChange={(value) => update(index, { weight: Number(value) || 1 })} />
             <NumberInput label={<UpstreamHelpLabel label="失败次数" help="在失败超时时间内达到该失败次数后，Nginx 会暂时将成员视为不可用。0 表示关闭失败计数。" />} min={0} max={100} value={member.max_fails} onChange={(value) => update(index, { max_fails: Number(value) || 0 })} />
-            <NumberInput label={<UpstreamHelpLabel label="失败超时（秒）" help="统计失败次数的时间窗口，也是成员被判定不可用后的暂停时长。" />} min={1} max={3600} value={member.fail_timeout_seconds} onChange={(value) => update(index, { fail_timeout_seconds: Number(value) || 1 })} />
+            <NumberInput label={<UpstreamHelpLabel label="失败超时" help="单位（秒）统计失败次数的时间窗口，也是成员被判定不可用后的暂停时长。" />} min={1} max={3600} value={member.fail_timeout_seconds} onChange={(value) => update(index, { fail_timeout_seconds: Number(value) || 1 })} />
             <NumberInput label={<UpstreamHelpLabel label="排序值" help="控制成员在生成配置中的顺序，数值较小的成员排在前面；拖动上移或下移会自动重排。" />} min={-100000} max={100000} value={member.sort_order} onChange={(value) => update(index, { sort_order: Number(value) || 0 })} />
           </div>
           <Group mt="sm" justify="space-between" wrap="wrap">
