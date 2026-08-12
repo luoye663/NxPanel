@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/app"
@@ -74,6 +76,88 @@ func (svc *Service) AttachScheduledTasks(taskSvc ScheduledTaskService) error {
 		return nil
 	}
 	return taskSvc.Register(NewNginxLogRotationTaskHandler(svc))
+}
+
+const brandingKVKey = "branding"
+
+func defaultBrandingSettings() *BrandingSettings {
+	return &BrandingSettings{
+		SiteName: DefaultSiteName,
+		Subtitle: DefaultBrandSubtitle,
+	}
+}
+
+func (svc *Service) GetBranding() (*BrandingSettings, error) {
+	value, err := svc.settingsRepo.Get(brandingKVKey)
+	if err != nil {
+		return nil, err
+	}
+	if value == "" {
+		return defaultBrandingSettings(), nil
+	}
+
+	var branding BrandingSettings
+	if err := json.Unmarshal([]byte(value), &branding); err != nil {
+		slog.Warn("解析 branding 设置失败，使用默认值", "error", err)
+		return defaultBrandingSettings(), nil
+	}
+	branding.SiteName = strings.TrimSpace(branding.SiteName)
+	branding.Subtitle = strings.TrimSpace(branding.Subtitle)
+	if err := validateBranding(&branding); err != nil {
+		slog.Warn("branding 设置无效，使用默认值", "error", err)
+		return defaultBrandingSettings(), nil
+	}
+	return &branding, nil
+}
+
+func (svc *Service) UpdateBranding(req *UpdateBrandingRequest, requestID string) (*BrandingSettings, error) {
+	branding := &BrandingSettings{
+		SiteName: strings.TrimSpace(req.SiteName),
+		Subtitle: strings.TrimSpace(req.Subtitle),
+	}
+	if err := validateBranding(branding); err != nil {
+		return nil, app.ErrValidationFailedMsg(err.Error(), nil)
+	}
+
+	data, err := json.Marshal(branding)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, "编码面板品牌设置失败", nil)
+	}
+	if err := svc.settingsRepo.Set(brandingKVKey, string(data)); err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, "保存面板品牌设置失败: "+err.Error(), nil)
+	}
+
+	if svc.opRepo != nil {
+		opID := app.NewOperationID()
+		if err := svc.opRepo.Create(&repo.Operation{
+			ID: opID, Action: "settings.update_branding", TargetType: "settings", TargetID: brandingKVKey,
+			Status: "pending", RequestID: requestID, Actor: "admin", Message: "更新面板品牌设置",
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}); err == nil {
+			_ = svc.opRepo.UpdateStatus(opID, "success")
+		}
+	}
+	return branding, nil
+}
+
+func validateBranding(branding *BrandingSettings) error {
+	if branding.SiteName == "" {
+		return fmt.Errorf("网站名称不能为空")
+	}
+	if utf8.RuneCountInString(branding.SiteName) > SiteNameMaxRunes {
+		return fmt.Errorf("网站名称不能超过 %d 个字符", SiteNameMaxRunes)
+	}
+	if utf8.RuneCountInString(branding.Subtitle) > BrandSubtitleMaxRunes {
+		return fmt.Errorf("副标题不能超过 %d 个字符", BrandSubtitleMaxRunes)
+	}
+	if containsControlCharacter(branding.SiteName) || containsControlCharacter(branding.Subtitle) {
+		return fmt.Errorf("网站名称和副标题不能包含控制字符")
+	}
+	return nil
+}
+
+func containsControlCharacter(value string) bool {
+	return strings.ContainsFunc(value, unicode.IsControl)
 }
 
 // ============================================================

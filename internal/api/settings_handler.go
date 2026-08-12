@@ -7,6 +7,28 @@ import (
 	"github.com/luoye663/nxpanel/internal/settings"
 )
 
+func (s *Server) handleBrandingGet(w http.ResponseWriter, r *http.Request) {
+	branding, err := s.settingsSvc.GetBranding()
+	if err != nil {
+		WriteError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
+	WriteOK(w, r, branding)
+}
+
+func (s *Server) handleBrandingUpdate(w http.ResponseWriter, r *http.Request) {
+	var req settings.UpdateBrandingRequest
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.settingsSvc.UpdateBranding(&req, middleware.GetRequestID(r.Context()))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+
 func (s *Server) handleSettingsDefaultPagesGet(w http.ResponseWriter, r *http.Request) {
 	pages, err := s.settingsSvc.GetDefaultPages()
 	if err != nil {

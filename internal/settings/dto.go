@@ -1,5 +1,22 @@
 package settings
 
+const (
+	DefaultSiteName       = "NxPanel"
+	DefaultBrandSubtitle  = "开源 Nginx 网站管理面板"
+	SiteNameMaxRunes      = 80
+	BrandSubtitleMaxRunes = 160
+)
+
+type BrandingSettings struct {
+	SiteName string `json:"site_name"`
+	Subtitle string `json:"subtitle"`
+}
+
+type UpdateBrandingRequest struct {
+	SiteName string `json:"site_name"`
+	Subtitle string `json:"subtitle"`
+}
+
 type DefaultPagesSettings struct {
 	NewSitePage      string `json:"new_site_page"`
 	Page404          string `json:"page_404"`

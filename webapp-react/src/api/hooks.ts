@@ -3,11 +3,12 @@ import { getAuthMe } from './auth'
 import { getLoginAudit, type LoginAuditQueryParams } from './logs'
 import { getNginxConf, getNginxParameters } from './nginx'
 import { getOperations, type OperationsQueryParams } from './operations'
-import { getSecuritySettings } from './settings'
+import { getBranding, getSecuritySettings } from './settings'
 import { getSites, type SitesQueryParams } from './sites'
 import { getSystemOverview, getUpgradeStatus, triggerUpgradeCheck } from './system'
 
 export const queryKeys = {
+  branding: ['settings', 'branding'] as const,
   authMe: ['auth', 'me'] as const,
   systemOverview: ['system', 'overview'] as const,
   upgradeStatus: ['system', 'upgrade'] as const,
@@ -17,6 +18,13 @@ export const queryKeys = {
   nginxParameters: ['nginx', 'parameters'] as const,
   nginxConf: ['nginx', 'conf'] as const,
   securitySettings: ['settings', 'security'] as const,
+}
+
+export function useBrandingQuery() {
+  return useQuery({
+    queryKey: queryKeys.branding,
+    queryFn: getBranding,
+  })
 }
 
 export function useAuthMe() {

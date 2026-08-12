@@ -509,6 +509,11 @@ export interface TaskLogTypeList {
 }
 
 // === Settings — 高级配置 ===
+export interface BrandingSettings {
+  site_name: string
+  subtitle: string
+}
+
 export interface DefaultPagesSettings {
   new_site_page: string
   page_404: string

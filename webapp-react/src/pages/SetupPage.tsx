@@ -115,7 +115,7 @@ export function SetupPage() {
         <Stepper.Step label="验证码 (CAPTCHA)" description="可选，可跳过">
           <Stack gap="md" mt="md">
             <Alert color="blue" variant="light">
-              配置验证码可在登录失败达到阈值后要求人机验证，降低暴力破解风险。也可以之后在安全设置中配置。
+              配置验证码可在登录失败达到阈值后要求人机验证，降低暴力破解风险。也可以之后在面板设置的安全配置中修改。
             </Alert>
             <Select
               size="md"

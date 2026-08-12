@@ -44,6 +44,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/auth/me", s.handleMe)
 		r.Get("/auth/captcha-config", s.handleCaptchaConfig)
 		r.Post("/auth/logout", s.handleLogout)
+		r.Get("/settings/branding", s.handleBrandingGet)
 
 		// 以下路由需要认证
 		r.Group(func(r chi.Router) {
@@ -209,6 +210,7 @@ func (s *Server) setupRoutes() {
 			r.Delete("/acme/emails/{email}", s.handleACMEEmailDelete)
 
 			// Settings
+			r.Put("/settings/branding", s.handleBrandingUpdate)
 			r.Get("/settings/default-pages", s.handleSettingsDefaultPagesGet)
 			r.Put("/settings/default-pages", s.handleSettingsDefaultPagesUpdate)
 			r.Get("/settings/default-site", s.handleSettingsDefaultSiteGet)

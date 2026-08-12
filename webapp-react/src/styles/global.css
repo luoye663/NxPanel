@@ -53,6 +53,7 @@ a {
 
 .brandMark {
   display: inline-flex;
+  flex: 0 0 36px;
   width: 36px;
   height: 36px;
   align-items: center;
@@ -61,6 +62,14 @@ a {
   background: #1c7ed6;
   color: #ffffff;
   font-weight: 700;
+}
+
+.brandCopy {
+  min-width: 0;
+}
+
+.brandText {
+  overflow-wrap: anywhere;
 }
 
 .mainNavLink .mantine-NavLink-label {
