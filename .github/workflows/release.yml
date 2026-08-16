@@ -1,24 +1,172 @@
 name: Release
+run-name: Release ${{ inputs.version }}
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (vX.Y.Z)
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish release
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+      target_sha: ${{ steps.inputs.outputs.target_sha }}
+      build_time: ${{ steps.inputs.outputs.build_time }}
+
+    steps:
+      - name: Validate release inputs
+        id: inputs
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Releases must be started from main." >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected version in vX.Y.Z format." >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful CI for target commit
+        uses: actions/github-script@v9
+        env:
+          TARGET_SHA: ${{ steps.inputs.outputs.target_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const targetSha = process.env.TARGET_SHA;
+            const { data } = await github.request(
+              "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
+              {
+                owner,
+                repo,
+                workflow_id: "ci.yml",
+                head_sha: targetSha,
+                event: "push",
+                per_page: 100,
+              },
+            );
+
+            const runs = data.workflow_runs
+              .filter((run) => run.head_branch === "main" && run.head_sha === targetSha)
+              .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+            const run = runs[0];
+            if (!run) {
+              throw new Error(`No main push CI run found for ${targetSha}`);
+            }
+            if (run.status !== "completed" || run.conclusion !== "success") {
+              throw new Error(
+                `CI is ${run.status}/${run.conclusion ?? "pending"}: ${run.html_url}`,
+              );
+            }
+
+      - name: Check version conflicts
+        uses: actions/github-script@v9
+        env:
+          TARGET_SHA: ${{ steps.inputs.outputs.target_sha }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const targetSha = process.env.TARGET_SHA;
+            const version = process.env.VERSION;
+
+            let ref;
+            try {
+              const response = await github.request(
+                "GET /repos/{owner}/{repo}/git/ref/{ref}",
+                { owner, repo, ref: `tags/${version}` },
+              );
+              ref = response.data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            if (ref) {
+              let object = ref.object;
+              for (let depth = 0; object.type === "tag" && depth < 10; depth += 1) {
+                const response = await github.request(
+                  "GET /repos/{owner}/{repo}/git/tags/{tag_sha}",
+                  { owner, repo, tag_sha: object.sha },
+                );
+                object = response.data.object;
+              }
+              if (object.type !== "commit") {
+                throw new Error(`${version} does not resolve to a commit`);
+              }
+              if (object.sha !== targetSha) {
+                throw new Error(`${version} points to ${object.sha}, not ${targetSha}`);
+              }
+            }
+
+            const releases = [];
+            for (let page = 1; ; page += 1) {
+              const { data } = await github.request(
+                "GET /repos/{owner}/{repo}/releases",
+                { owner, repo, per_page: 100, page },
+              );
+              releases.push(...data);
+              if (data.length < 100) break;
+            }
+
+            const matches = releases.filter((release) => release.tag_name === version);
+            if (matches.length > 1) {
+              throw new Error(`Multiple releases exist for ${version}`);
+            }
+            const release = matches[0];
+            if (release && !release.draft) {
+              throw new Error(`${version} is already published: ${release.html_url}`);
+            }
+            if (release && release.target_commitish !== targetSha) {
+              throw new Error(
+                `Draft ${version} targets ${release.target_commitish}, not ${targetSha}`,
+              );
+            }
+
+      - name: Validate Docker Hub credentials
+        if: ${{ vars.ENABLE_DOCKERHUB_PUSH == 'true' }}
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "ENABLE_DOCKERHUB_PUSH=true requires Docker Hub credentials." >&2
+            exit 1
+          fi
+
+  binary:
+    name: Build release package
+    needs: validate
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout target commit
+        uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.target_sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -42,27 +190,40 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: webapp-react
 
-      - name: Run backend tests
-        run: make test
-
-      - name: Run backend vet
-        run: make vet
-
-      - name: Run frontend type check
-        run: pnpm type-check
-        working-directory: webapp-react
-
       - name: Build release package
-        run: make release
+        env:
+          BUILD_TIME: ${{ needs.validate.outputs.build_time }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: make release VERSION="$VERSION" BUILD_TIME="$BUILD_TIME"
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            release/nxpanel-linux-amd64.tar.gz
-          generate_release_notes: true
+          name: nxpanel-release
+          path: release/nxpanel-linux-amd64.tar.gz
+          if-no-files-found: error
 
-      # ── Docker 镜像构建与推送（独享模式，nginx + openresty 双变体）──
+  images:
+    name: Build ${{ matrix.variant }} image
+    if: ${{ vars.ENABLE_GHCR_PUSH == 'true' || vars.ENABLE_DOCKERHUB_PUSH == 'true' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - nginx
+          - openresty
+
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate.outputs.target_sha }}
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -70,37 +231,121 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
         if: ${{ vars.ENABLE_GHCR_PUSH == 'true' }}
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate Docker Hub credentials
-        if: ${{ vars.ENABLE_DOCKERHUB_PUSH == 'true' }}
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
-            echo "ENABLE_DOCKERHUB_PUSH=true requires DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets."
-            exit 1
-          fi
-
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
         if: ${{ vars.ENABLE_DOCKERHUB_PUSH == 'true' }}
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & push GHCR multi-arch images
-        if: ${{ vars.ENABLE_GHCR_PUSH == 'true' }}
-        run: make docker-push-ghcr-multiarch VERSION=${{ github.ref_name }}
-
-      - name: Build & push Docker Hub multi-arch images
-        if: ${{ vars.ENABLE_DOCKERHUB_PUSH == 'true' }}
+      - name: Prepare image metadata
+        id: metadata
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-        run: make docker-push-dockerhub-multiarch VERSION=${{ github.ref_name }}
+          BUILD_TIME: ${{ needs.validate.outputs.build_time }}
+          ENABLE_DOCKERHUB_PUSH: ${{ vars.ENABLE_DOCKERHUB_PUSH }}
+          ENABLE_GHCR_PUSH: ${{ vars.ENABLE_GHCR_PUSH }}
+          TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
+          VARIANT: ${{ matrix.variant }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'tags<<EOF'
+            if [[ "$ENABLE_GHCR_PUSH" == "true" ]]; then
+              echo "ghcr.io/luoye663/nxpanel:${VARIANT}-${VERSION}"
+              echo "ghcr.io/luoye663/nxpanel:${VARIANT}-latest"
+            fi
+            if [[ "$ENABLE_DOCKERHUB_PUSH" == "true" ]]; then
+              echo "docker.io/luoye663/nxpanel:${VARIANT}-${VERSION}"
+              echo "docker.io/luoye663/nxpanel:${VARIANT}-latest"
+            fi
+            echo 'EOF'
+            echo 'labels<<EOF'
+            echo "org.opencontainers.image.created=$BUILD_TIME"
+            echo "org.opencontainers.image.revision=$TARGET_SHA"
+            echo "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+            echo "org.opencontainers.image.version=$VERSION"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.variant }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - validate
+      - binary
+      - images
+    if: ${{ always() && needs.validate.result == 'success' && needs.binary.result == 'success' && (needs.images.result == 'success' || needs.images.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release package
+        uses: actions/download-artifact@v4
+        with:
+          name: nxpanel-release
+          path: release
+
+      - name: Create or update draft release
+        id: draft
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.validate.outputs.version }}
+          target_commitish: ${{ needs.validate.outputs.target_sha }}
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/nxpanel-linux-amd64.tar.gz
+
+      - name: Publish draft release
+        uses: actions/github-script@v9
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const releaseId = Number(process.env.RELEASE_ID);
+            const targetSha = process.env.TARGET_SHA;
+            const version = process.env.VERSION;
+            if (!Number.isSafeInteger(releaseId)) {
+              throw new Error(`Invalid draft release ID: ${process.env.RELEASE_ID}`);
+            }
+
+            const { data: release } = await github.request(
+              "GET /repos/{owner}/{repo}/releases/{release_id}",
+              { owner, repo, release_id: releaseId },
+            );
+            if (!release.draft) {
+              throw new Error(`Release ${releaseId} is not a draft`);
+            }
+            if (release.tag_name !== version || release.target_commitish !== targetSha) {
+              throw new Error(`Draft release ${releaseId} no longer matches this build`);
+            }
+
+            await github.request(
+              "PATCH /repos/{owner}/{repo}/releases/{release_id}",
+              { owner, repo, release_id: releaseId, draft: false },
+            );

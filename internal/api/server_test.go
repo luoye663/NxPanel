@@ -16,6 +16,7 @@ import (
 
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db"
+	"github.com/luoye663/nxpanel/internal/db/repo"
 )
 
 // newTestDB 创建测试用的内存 SQLite 数据库并执行迁移
@@ -46,6 +47,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("创建测试服务器失败: %v", err)
 	}
+	t.Cleanup(server.Close)
 	return server
 }
 
@@ -65,7 +67,33 @@ func newTestServerWithAgent(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("创建测试服务器失败: %v", err)
 	}
+	t.Cleanup(server.Close)
 	return server
+}
+
+func TestNewServerRecoversStaleAccessAnalysisJobsBeforeEngineStart(t *testing.T) {
+	database := newTestDB(t)
+	site := &repo.Site{ID: "site_stale", PrimaryDomain: "stale.example.com", DomainsJSON: `[]`, Status: "enabled", HTTPPort: 80, HTTPSPort: 443, RootPath: "/www/stale", AccessLogPath: "/tmp/stale.access.log", ErrorLogPath: "/tmp/stale.error.log", ConfigPath: "/tmp/stale.conf", EnabledPath: "/tmp/stale.conf", RewritePath: "/tmp/stale.rewrite.conf"}
+	if err := repo.NewSiteRepo(database).Create(site); err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := database.Exec(`INSERT INTO access_analysis_jobs (id, site_id, trigger, range_start, range_end, status, created_at) VALUES ('stale_startup_job', ?, 'scheduler', '2026-07-26T00:00:00Z', '2026-07-27T00:00:00Z', 'running', ?)`, site.ID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &app.Config{LogLevel: "info", API: app.APIConfig{Listen: "127.0.0.1:0", LoginPath: "/nx-testgate"}, Agent: app.AgentConfig{SocketPath: "/tmp/test.sock"}, Nginx: app.NginxConfig{ConfPath: "/etc/nginx/nginx.conf"}}
+	server, err := NewServer(cfg, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+	var status, finished string
+	if err := database.QueryRow(`SELECT status, COALESCE(finished_at, '') FROM access_analysis_jobs WHERE id = 'stale_startup_job'`).Scan(&status, &finished); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || finished == "" {
+		t.Fatalf("status=%q finished=%q", status, finished)
+	}
 }
 
 func startTestAgentServer(t *testing.T, socketPath string) {
@@ -172,5 +200,37 @@ func TestHiddenGateFixedAPIPathsReturn404(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("固定路径 %s 应返回 404，实际 %d", path, rec.Code)
 		}
+	}
+}
+
+func TestServerCloseIsIdempotentAndCancelsRoot(t *testing.T) {
+	server := newTestServer(t)
+	server.Close()
+	server.Close()
+	select {
+	case <-server.Context().Done():
+	default:
+		t.Fatal("Server.Close did not cancel root context")
+	}
+}
+
+func TestMaintenanceLoopRunsImmediatelyAndStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		maintenanceLoop(ctx, time.Hour, func(context.Context) { called <- struct{}{} })
+		close(done)
+	}()
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not run immediately")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance did not stop after cancellation")
 	}
 }

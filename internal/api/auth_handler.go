@@ -4,13 +4,21 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luoye663/nxpanel/internal/api/middleware"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/auth"
 	"github.com/luoye663/nxpanel/internal/captcha"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+)
+
+const (
+	loginUsernameMaxBytes = 256
+	loginPasswordMaxBytes = 1024
+	loginCaptchaMaxBytes  = 8192
 )
 
 type loginRequest struct {
@@ -63,31 +71,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := getIP(r)
 	ua := r.UserAgent()
 
-	if s.limiter != nil && !s.limiter.Check(ip) {
-		WriteError(w, r, http.StatusTooManyRequests, "TOO_MANY_REQUESTS",
-			"登录失败次数过多，请稍后再试", nil)
-		return
-	}
-
 	var req loginRequest
 	if !DecodeJSON(w, r, &req) {
 		return
 	}
 
-	if req.Username == "" || req.Password == "" {
+	if req.Username == "" || req.Password == "" || len(req.Username) > loginUsernameMaxBytes ||
+		len(req.Password) > loginPasswordMaxBytes || len(req.CaptchaToken) > loginCaptchaMaxBytes {
+		boundedUsername := truncateLoginUsername(req.Username)
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, boundedUsername)
+		}
+		s.auditLogin(boundedUsername, ip, ua, false, "请求字段无效", false, false)
 		WriteError(w, r, http.StatusUnprocessableEntity, app.ErrValidationFailed,
-			"用户名和密码不能为空", nil)
+			"认证失败", nil)
+		return
+	}
+	if s.loginProtection != nil && !s.loginProtection.Check(ip, req.Username) {
+		writeLoginLimited(w, r)
 		return
 	}
 
 	captchaVerified := false
 	if s.captchaSvc != nil && s.captchaSvc.Enabled() {
 		failCount := 0
-		if s.limiter != nil {
-			failCount = s.limiter.FailCount(ip)
+		if s.loginProtection != nil {
+			failCount = s.loginProtection.FailureCount(ip, "")
 		}
 		if s.captchaSvc.ShouldTrigger(failCount) {
-			if err := s.captchaSvc.VerifyToken(req.CaptchaToken, ip); err != nil {
+			if err := s.captchaSvc.VerifyToken(r.Context(), req.CaptchaToken, ip); err != nil {
 				slog.Warn("CAPTCHA 验证失败",
 					"request_id", middleware.GetRequestID(r.Context()),
 					"username", req.Username,
@@ -96,8 +108,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 					"reason", err.Error(),
 				)
 				s.auditLogin(req.Username, ip, ua, false, "CAPTCHA验证失败", false, false)
+				if s.loginProtection != nil {
+					s.loginProtection.RecordFailure(ip, req.Username)
+				}
 				WriteError(w, r, http.StatusBadRequest, "CAPTCHA_FAILED",
-					"CAPTCHA验证失败", nil)
+					"认证失败", nil)
 				return
 			}
 			captchaVerified = true
@@ -106,21 +121,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.authSvc.Login(req.Username, req.Password, ua, ip)
 	if err != nil {
-		if s.limiter != nil && errors.Is(err, auth.ErrInvalidCredentials) {
-			s.limiter.RecordFail(ip)
+		if s.loginProtection != nil && errors.Is(err, auth.ErrInvalidCredentials) {
+			s.loginProtection.RecordFailure(ip, req.Username)
 		}
 		s.auditLogin(req.Username, ip, ua, false, "用户名或密码错误", captchaVerified, false)
 		handleAuthError(w, r, err)
 		return
 	}
 
-	if s.limiter != nil {
-		s.limiter.Reset(ip)
-	}
-
 	if result.TOTPEnabled && s.twofaSvc != nil {
 		// temp_token 绑定当前 IP 与 User-Agent，只允许原登录上下文继续完成 2FA。
-		tempToken := s.twofaSvc.GetTempStore().Create(result.AdminID, result.Username, ip, ua)
+		tempToken, tokenErr := s.twofaSvc.GetTempStore().Create(result.AdminID, result.Username, ip, ua)
+		if tokenErr != nil {
+			slog.Error("创建 2FA 临时令牌失败", "request_id", middleware.GetRequestID(r.Context()), "error", tokenErr)
+			WriteError(w, r, http.StatusServiceUnavailable, app.ErrInternalError, "认证暂时不可用", nil)
+			return
+		}
 		s.auditLogin(req.Username, ip, ua, false, "password_ok_waiting_2fa", captchaVerified, false)
 		WriteOK(w, r, loginResponse{
 			Username:    result.Username,
@@ -130,6 +146,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.loginProtection != nil {
+		s.loginProtection.RecordSuccess(ip, result.Username)
+	}
 	s.setSessionCookies(w, r, result.SessionID, result.CSRFToken)
 	s.auditLogin(req.Username, ip, ua, true, "", captchaVerified, false)
 	WriteOK(w, r, loginResponse{
@@ -142,27 +161,47 @@ func (s *Server) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 	ip := getIP(r)
 	ua := r.UserAgent()
+	if s.loginProtection != nil && !s.loginProtection.Check(ip, "") {
+		writeLoginLimited(w, r)
+		return
+	}
 
 	var req login2FARequest
 	if !DecodeJSON(w, r, &req) {
 		return
 	}
 	if req.TempToken == "" || req.Code == "" {
-		WriteError(w, r, http.StatusUnprocessableEntity, app.ErrValidationFailed,
-			"临时令牌和验证码不能为空", nil)
+		failedEntry := s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
+		account := ""
+		if failedEntry != nil {
+			account = failedEntry.Username
+		}
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
+		}
+		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized, "认证失败", nil)
 		return
 	}
 
 	entry, valid := s.twofaSvc.GetTempStore().ValidateContext(req.TempToken, ip, ua)
 	if !valid {
-		s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
-		if s.limiter != nil {
-			s.limiter.RecordFail(ip)
+		failedEntry := s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
+		account := ""
+		if failedEntry != nil {
+			account = failedEntry.Username
+		}
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
 		}
 		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized,
-			"临时令牌无效或已过期", nil)
+			"认证失败", nil)
 		return
 	}
+	if s.loginProtection != nil && !s.loginProtection.Check(ip, entry.Username) {
+		writeLoginLimited(w, r)
+		return
+	}
+	account := entry.Username
 
 	admin, err := s.authSvc.GetAdminInfo()
 	if err != nil || admin == nil {
@@ -173,25 +212,22 @@ func (s *Server) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.twofaSvc.VerifyAndConsumeCode(admin, req.Code); err != nil {
 		s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
-		if s.limiter != nil {
-			s.limiter.RecordFail(ip)
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
 		}
 		s.auditLogin(entry.Username, ip, ua, false, "验证码错误", false, true)
-		handleAuthError(w, r, err)
+		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized, "认证失败", nil)
 		return
 	}
 	entry, valid = s.twofaSvc.GetTempStore().Consume(req.TempToken, ip, ua)
 	if !valid {
 		s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
-		if s.limiter != nil {
-			s.limiter.RecordFail(ip)
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
 		}
 		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized,
-			"临时令牌无效或已过期", nil)
+			"认证失败", nil)
 		return
-	}
-	if s.limiter != nil {
-		s.limiter.Reset(ip)
 	}
 
 	sessionID, csrfToken, serr := s.authSvc.CreateSession(ua, ip)
@@ -199,6 +235,9 @@ func (s *Server) handleLogin2FA(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusInternalServerError, app.ErrInternalError,
 			"创建会话失败", nil)
 		return
+	}
+	if s.loginProtection != nil {
+		s.loginProtection.RecordSuccess(ip, account)
 	}
 
 	s.setSessionCookies(w, r, sessionID, csrfToken)
@@ -213,51 +252,68 @@ func (s *Server) handleLoginRecover(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 	ip := getIP(r)
 	ua := r.UserAgent()
+	if s.loginProtection != nil && !s.loginProtection.Check(ip, "") {
+		writeLoginLimited(w, r)
+		return
+	}
 
 	var req loginRecoverRequest
 	if !DecodeJSON(w, r, &req) {
 		return
 	}
 	if req.TempToken == "" || req.RecoveryCode == "" {
-		WriteError(w, r, http.StatusUnprocessableEntity, app.ErrValidationFailed,
-			"临时令牌和恢复码不能为空", nil)
+		failedEntry := s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
+		account := ""
+		if failedEntry != nil {
+			account = failedEntry.Username
+		}
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
+		}
+		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized, "认证失败", nil)
 		return
 	}
 
 	entry, valid := s.twofaSvc.GetTempStore().ValidateContext(req.TempToken, ip, ua)
 	if !valid {
-		s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
-		if s.limiter != nil {
-			s.limiter.RecordFail(ip)
+		failedEntry := s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
+		account := ""
+		if failedEntry != nil {
+			account = failedEntry.Username
+		}
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
 		}
 		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized,
-			"临时令牌无效或已过期", nil)
+			"认证失败", nil)
 		return
 	}
+	if s.loginProtection != nil && !s.loginProtection.Check(ip, entry.Username) {
+		writeLoginLimited(w, r)
+		return
+	}
+	account := entry.Username
 
 	ok, err := s.twofaSvc.VerifyRecoveryCode(entry.AdminID, req.RecoveryCode)
 	if err != nil || !ok {
 		s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
-		if s.limiter != nil {
-			s.limiter.RecordFail(ip)
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
 		}
 		s.auditLogin(entry.Username, ip, ua, false, "恢复码错误", false, true)
 		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized,
-			"恢复码错误或已使用", nil)
+			"认证失败", nil)
 		return
 	}
 	entry, valid = s.twofaSvc.GetTempStore().Consume(req.TempToken, ip, ua)
 	if !valid {
 		s.twofaSvc.GetTempStore().RecordFailure(req.TempToken)
-		if s.limiter != nil {
-			s.limiter.RecordFail(ip)
+		if s.loginProtection != nil {
+			s.loginProtection.RecordFailure(ip, account)
 		}
 		WriteError(w, r, http.StatusUnauthorized, app.ErrUnauthorized,
-			"临时令牌无效或已过期", nil)
+			"认证失败", nil)
 		return
-	}
-	if s.limiter != nil {
-		s.limiter.Reset(ip)
 	}
 
 	sessionID, csrfToken, serr := s.authSvc.CreateSession(ua, ip)
@@ -266,6 +322,9 @@ func (s *Server) handleLoginRecover(w http.ResponseWriter, r *http.Request) {
 			"创建会话失败", nil)
 		return
 	}
+	if s.loginProtection != nil {
+		s.loginProtection.RecordSuccess(ip, account)
+	}
 
 	s.setSessionCookies(w, r, sessionID, csrfToken)
 	s.auditLogin(entry.Username, ip, ua, true, "", false, true)
@@ -273,6 +332,18 @@ func (s *Server) handleLoginRecover(w http.ResponseWriter, r *http.Request) {
 		Username:    entry.Username,
 		Requires2FA: false,
 	})
+}
+
+func truncateLoginUsername(value string) string {
+	value = strings.ToValidUTF8(value, "")
+	if len(value) <= loginUsernameMaxBytes {
+		return value
+	}
+	value = value[:loginUsernameMaxBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (s *Server) CreateSession(ua, ip string) (string, string, error) {
@@ -378,8 +449,8 @@ func (s *Server) handleCaptchaConfig(w http.ResponseWriter, r *http.Request) {
 
 	ip := getIP(r)
 	failCount := 0
-	if s.limiter != nil {
-		failCount = s.limiter.FailCount(ip)
+	if s.loginProtection != nil {
+		failCount = s.loginProtection.FailureCount(ip, "")
 	}
 	if !s.captchaSvc.ShouldTrigger(failCount) {
 		WriteOK(w, r, captchaConfigResponse{Required: false})
@@ -389,7 +460,7 @@ func (s *Server) handleCaptchaConfig(w http.ResponseWriter, r *http.Request) {
 	WriteOK(w, r, captchaConfigResponse{
 		Required: true,
 		Provider: s.captchaProviderName(),
-		SiteKey:  s.cfg.API.Captcha.SiteKey,
+		SiteKey:  s.captchaSiteKey(),
 	})
 }
 
@@ -397,10 +468,23 @@ func (s *Server) captchaProviderName() string {
 	if s == nil || s.captchaSvc == nil || !s.captchaSvc.Enabled() {
 		return string(captcha.ProviderNone)
 	}
-	if s.cfg != nil && s.cfg.API.Captcha.Provider != "" {
-		return s.cfg.API.Captcha.Provider
+	provider, _, enabled := s.captchaSvc.PublicConfig()
+	if !enabled {
+		return string(captcha.ProviderNone)
 	}
-	return string(captcha.ProviderNone)
+	return provider
+}
+
+func (s *Server) captchaSiteKey() string {
+	if s == nil || s.captchaSvc == nil {
+		return ""
+	}
+	_, siteKey, _ := s.captchaSvc.PublicConfig()
+	return siteKey
+}
+
+func writeLoginLimited(w http.ResponseWriter, r *http.Request) {
+	WriteError(w, r, http.StatusTooManyRequests, "TOO_MANY_REQUESTS", "登录失败次数过多，请稍后再试", nil)
 }
 
 func isHTTPS(r *http.Request) bool {

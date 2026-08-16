@@ -18,12 +18,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/accessanalysis"
+)
+
+const (
+	accessAnalysisHardInputBytes   = int64(64 * 1024 * 1024)
+	accessAnalysisMaxResponseBytes = int64(128 * 1024 * 1024)
+	accessAnalysisResponseBase     = int64(1024 * 1024)
+	agentErrorBodyMaxBytes         = int64(64 * 1024)
 )
 
 // Client 是 agent 的 HTTP 客户端
@@ -31,6 +41,34 @@ type Client struct {
 	socketPath string       // Unix Socket 路径
 	token      string       // agent 认证 token
 	httpClient *http.Client // HTTP 客户端（使用 Unix Socket 传输）
+	closeOnce  sync.Once
+}
+
+// CloseIdleConnections closes pooled Unix socket connections. It is safe to call repeatedly.
+func (c *Client) CloseIdleConnections() {
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() {
+		if c.httpClient != nil {
+			c.httpClient.CloseIdleConnections()
+		}
+	})
+}
+
+// Close implements lifecycle cleanup for the client transport.
+func (c *Client) Close() error {
+	c.CloseIdleConnections()
+	return nil
+}
+
+type HTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("agent returned HTTP %d: %s", e.StatusCode, e.Message)
 }
 
 // New 创建 agent 客户端
@@ -279,22 +317,106 @@ func (c *Client) LogTail(ctx context.Context, req *LogTailRequest) (*LogTailResp
 // AccessAnalysisScan 调用 agent 流式扫描 access log，并只返回聚合结果。
 // POST /internal/v1/logs/access-analysis/scan
 func (c *Client) AccessAnalysisScan(ctx context.Context, req *accessanalysis.AgentScanRequest) (*accessanalysis.AgentScanResponse, error) {
-	var resp AgentResponse
-	if err := c.postJSON(ctx, "/internal/v1/logs/access-analysis/scan", req, &resp); err != nil {
+	result, err := c.postAccessAnalysisScan(ctx, req)
+	if err != nil {
 		return nil, fmt.Errorf("访问分析扫描请求失败: %w", err)
 	}
-	if !resp.OK {
-		return nil, fmt.Errorf("访问分析扫描失败: %s", resp.Error)
-	}
-	data, err := json.Marshal(resp.Data)
+	return result, nil
+}
+
+func (c *Client) postAccessAnalysisScan(ctx context.Context, in *accessanalysis.AgentScanRequest) (*accessanalysis.AgentScanResponse, error) {
+	body, err := json.Marshal(in)
 	if err != nil {
-		return nil, fmt.Errorf("解析访问分析扫描响应失败: %w", err)
+		return nil, fmt.Errorf("序列化请求体失败: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/internal/v1/logs/access-analysis/scan", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-NxPanel-Agent-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, boundedAgentHTTPError(resp.StatusCode, resp.Body)
+	}
+
+	limit := accessAnalysisResponseLimit(in)
+	limited := &io.LimitedReader{R: resp.Body, N: limit + 1}
+	var envelope struct {
+		OK    bool            `json:"ok"`
+		Data  json.RawMessage `json:"data"`
+		Error string          `json:"error"`
+	}
+	decoder := json.NewDecoder(limited)
+	if err := decoder.Decode(&envelope); err != nil {
+		if limited.N == 0 {
+			return nil, fmt.Errorf("agent 响应超过 %d 字节限制", limit)
+		}
+		return nil, fmt.Errorf("解析访问分析响应 envelope 失败: %w", err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		if limited.N == 0 {
+			return nil, fmt.Errorf("agent 响应超过 %d 字节限制", limit)
+		}
+		return nil, err
+	}
+	if limited.N == 0 {
+		return nil, fmt.Errorf("agent 响应超过 %d 字节限制", limit)
+	}
+	if !envelope.OK {
+		return nil, fmt.Errorf("访问分析扫描失败: %s", accessanalysis.TruncateUTF8(envelope.Error, int(agentErrorBodyMaxBytes)))
 	}
 	var result accessanalysis.AgentScanResponse
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := json.Unmarshal(envelope.Data, &result); err != nil {
 		return nil, fmt.Errorf("解析访问分析扫描响应失败: %w", err)
 	}
 	return &result, nil
+}
+
+func accessAnalysisResponseLimit(req *accessanalysis.AgentScanRequest) int64 {
+	inputBytes := accessAnalysisHardInputBytes
+	if req != nil && req.MaxBytes > 0 && req.MaxBytes < inputBytes {
+		inputBytes = req.MaxBytes
+	}
+	limit := accessAnalysisResponseBase + inputBytes*4
+	if limit > accessAnalysisMaxResponseBytes {
+		return accessAnalysisMaxResponseBytes
+	}
+	return limit
+}
+
+func boundedAgentHTTPError(statusCode int, body io.Reader) error {
+	data, _ := io.ReadAll(io.LimitReader(body, agentErrorBodyMaxBytes+1))
+	truncated := int64(len(data)) > agentErrorBodyMaxBytes
+	if truncated {
+		data = data[:agentErrorBodyMaxBytes]
+	}
+	var envelope struct {
+		Error string `json:"error"`
+	}
+	message := string(data)
+	if json.Unmarshal(data, &envelope) == nil && envelope.Error != "" {
+		message = envelope.Error
+	}
+	message = accessanalysis.TruncateUTF8(message, int(agentErrorBodyMaxBytes))
+	if truncated {
+		message += " (truncated)"
+	}
+	return fmt.Errorf("agent 返回 HTTP %d: %s", statusCode, message)
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("解析访问分析响应尾部失败: %w", err)
+	}
+	return fmt.Errorf("访问分析响应包含多个 JSON 值")
 }
 
 // AccessAnalysisFormatDetect 调用 agent 读取少量日志样本并检测格式。
@@ -715,6 +837,61 @@ func (c *Client) FilesUpload(ctx context.Context, path, contentBase64 string) er
 	}
 	if !resp.OK {
 		return fmt.Errorf("上传文件失败: %s", resp.Error)
+	}
+	return nil
+}
+
+// FilesUploadStream streams file content to the Agent as multipart data.
+func (c *Client) FilesUploadStream(ctx context.Context, path string, content io.Reader, timeout time.Duration) error {
+	pipeReader, pipeWriter := io.Pipe()
+	multipartWriter := multipart.NewWriter(pipeWriter)
+	go func() {
+		var err error
+		defer func() { _ = pipeWriter.CloseWithError(err) }()
+		if err = multipartWriter.WriteField("path", path); err != nil {
+			return
+		}
+		var part io.Writer
+		part, err = multipartWriter.CreateFormFile("file", filepath.Base(path))
+		if err != nil {
+			return
+		}
+		if _, err = io.Copy(part, content); err != nil {
+			return
+		}
+		err = multipartWriter.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/internal/v1/files/upload", pipeReader)
+	if err != nil {
+		_ = pipeReader.Close()
+		return fmt.Errorf("创建流式上传请求失败: %w", err)
+	}
+	defer pipeReader.Close()
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	req.Header.Set("X-NxPanel-Agent-Token", c.token)
+	client := &http.Client{Transport: c.httpClient.Transport, Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		_ = pipeReader.CloseWithError(err)
+		return fmt.Errorf("流式上传请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		var agentResp AgentResponse
+		message := string(body)
+		if json.Unmarshal(body, &agentResp) == nil && agentResp.Error != "" {
+			message = agentResp.Error
+		}
+		return &HTTPError{StatusCode: resp.StatusCode, Message: message}
+	}
+	var result AgentResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("解析流式上传响应失败: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("上传文件失败: %s", result.Error)
 	}
 	return nil
 }

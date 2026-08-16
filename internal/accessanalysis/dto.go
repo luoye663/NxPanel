@@ -22,12 +22,13 @@ type ScanRequest struct {
 }
 
 type ScanResponse struct {
-	JobID        string `json:"job_id"`
-	Status       string `json:"status"`
-	ScannedLines int64  `json:"scanned_lines"`
-	SkippedLines int64  `json:"skipped_lines"`
-	Truncated    bool   `json:"truncated"`
-	DurationMS   int64  `json:"duration_ms"`
+	JobID        string          `json:"job_id"`
+	Status       string          `json:"status"`
+	ScannedLines int64           `json:"scanned_lines"`
+	SkippedLines int64           `json:"skipped_lines"`
+	Truncated    bool            `json:"truncated"`
+	DurationMS   int64           `json:"duration_ms"`
+	Truncation   TruncationStats `json:"truncation"`
 }
 
 type Settings struct {
@@ -205,17 +206,30 @@ type AgentScanRequest struct {
 	Cursor         Cursor `json:"cursor"`
 	IncludeRotated bool   `json:"include_rotated"`
 	NormalizeQuery bool   `json:"normalize_query"`
+	CollectEntries bool   `json:"collect_entries"`
+	MaxEntries     int    `json:"max_entries"`
 }
 
 type AgentScanResponse struct {
-	Cursor        Cursor        `json:"cursor"`
-	ScannedLines  int64         `json:"scanned_lines"`
-	SkippedLines  int64         `json:"skipped_lines"`
-	Truncated     bool          `json:"truncated"`
-	Hourly        []HourlyPoint `json:"hourly"`
-	Paths         []PathStat    `json:"paths"`
-	IPs           []IPStat      `json:"ips"`
-	EntriesSample []Entry       `json:"entries_sample"`
-	Anomalies     []Anomaly     `json:"anomalies"`
-	ParseErrors   []string      `json:"parse_errors"`
+	Cursor        Cursor          `json:"cursor"`
+	ScannedLines  int64           `json:"scanned_lines"`
+	SkippedLines  int64           `json:"skipped_lines"`
+	Truncated     bool            `json:"truncated"`
+	Hourly        []HourlyPoint   `json:"hourly"`
+	Paths         []PathStat      `json:"paths"`
+	IPs           []IPStat        `json:"ips"`
+	EntriesSample []Entry         `json:"entries_sample"`
+	Anomalies     []Anomaly       `json:"anomalies"`
+	ParseErrors   []string        `json:"parse_errors"`
+	Truncation    TruncationStats `json:"truncation"`
+}
+
+type TruncationStats struct {
+	Truncated           bool  `json:"truncated"`
+	PathsDropped        int64 `json:"paths_dropped"`
+	IPsDropped          int64 `json:"ips_dropped"`
+	HourlyDropped       int64 `json:"hourly_dropped"`
+	AnomaliesDropped    int64 `json:"anomalies_dropped"`
+	EntriesDropped      int64 `json:"entries_dropped"`
+	UniqueValuesDropped int64 `json:"unique_values_dropped"`
 }

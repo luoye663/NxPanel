@@ -1,5 +1,22 @@
 package settings
 
+const (
+	DefaultSiteName       = "NxPanel"
+	DefaultBrandSubtitle  = "开源 Nginx 网站管理面板"
+	SiteNameMaxRunes      = 80
+	BrandSubtitleMaxRunes = 160
+)
+
+type BrandingSettings struct {
+	SiteName string `json:"site_name"`
+	Subtitle string `json:"subtitle"`
+}
+
+type UpdateBrandingRequest struct {
+	SiteName string `json:"site_name"`
+	Subtitle string `json:"subtitle"`
+}
+
 type DefaultPagesSettings struct {
 	NewSitePage      string `json:"new_site_page"`
 	Page404          string `json:"page_404"`
@@ -56,39 +73,49 @@ type UpdateLogRotateRequest struct {
 }
 
 type SecuritySettings struct {
-	LoginPath              string   `json:"login_path"`
-	PublicHealth           bool     `json:"public_health"`
-	RateLimitMaxFailures   int      `json:"rate_limit_max_failures"`
-	RateLimitWindow        string   `json:"rate_limit_window"`
-	MaxSessions            int      `json:"max_sessions"`
-	BindSessionIP          bool     `json:"bind_session_ip"`
-	BindSessionUA          bool     `json:"bind_session_ua"`
-	TrustedProxies         []string `json:"trusted_proxies"`
-	CaptchaProvider        string   `json:"captcha_provider"`
-	CaptchaSiteKey         string   `json:"captcha_site_key"`
-	CaptchaSecretKeyMasked string   `json:"captcha_secret_key_masked"`
-	CaptchaTriggerAfter    int      `json:"captcha_trigger_after_failures"`
-	TLSEnabled             bool     `json:"tls_enabled"`
-	TLSCert                string   `json:"tls_cert"`
-	TLSKey                 string   `json:"tls_key"`
-	TLSCertValidity        string   `json:"tls_cert_validity"`
+	LoginPath                   string   `json:"login_path"`
+	PublicHealth                bool     `json:"public_health"`
+	RateLimitMaxFailures        int      `json:"rate_limit_max_failures"`
+	RateLimitAccountMaxFailures int      `json:"rate_limit_account_max_failures"`
+	RateLimitGlobalMaxFailures  int      `json:"rate_limit_global_max_failures"`
+	RateLimitWindow             string   `json:"rate_limit_window"`
+	MaxSessions                 int      `json:"max_sessions"`
+	BindSessionIP               bool     `json:"bind_session_ip"`
+	BindSessionUA               bool     `json:"bind_session_ua"`
+	TrustedProxies              []string `json:"trusted_proxies"`
+	CaptchaProvider             string   `json:"captcha_provider"`
+	CaptchaSiteKey              string   `json:"captcha_site_key"`
+	CaptchaSecretKeyMasked      string   `json:"captcha_secret_key_masked"`
+	CaptchaTriggerAfter         int      `json:"captcha_trigger_after_failures"`
+	CaptchaMaxConcurrent        int      `json:"captcha_max_concurrent_verifications"`
+	TwoFATempTokenMaxPerAccount int      `json:"twofa_temp_token_max_per_account"`
+	TwoFATempTokenMaxTotal      int      `json:"twofa_temp_token_max_total"`
+	TLSEnabled                  bool     `json:"tls_enabled"`
+	TLSCert                     string   `json:"tls_cert"`
+	TLSKey                      string   `json:"tls_key"`
+	TLSCertValidity             string   `json:"tls_cert_validity"`
 }
 
 type UpdateSecuritySettingsRequest struct {
-	LoginPath            *string   `json:"login_path"`
-	PublicHealth         *bool     `json:"public_health"`
-	RateLimitMaxFailures *int      `json:"rate_limit_max_failures"`
-	RateLimitWindow      *string   `json:"rate_limit_window"`
-	MaxSessions          *int      `json:"max_sessions"`
-	BindSessionIP        *bool     `json:"bind_session_ip"`
-	BindSessionUA        *bool     `json:"bind_session_ua"`
-	TrustedProxies       *[]string `json:"trusted_proxies"`
-	CaptchaProvider      *string   `json:"captcha_provider"`
-	CaptchaSiteKey       *string   `json:"captcha_site_key"`
-	CaptchaSecretKey     *string   `json:"captcha_secret_key"`
-	CaptchaTriggerAfter  *int      `json:"captcha_trigger_after_failures"`
-	TLSEnabled           *bool     `json:"tls_enabled"`
-	TLSCert              *string   `json:"tls_cert"`
-	TLSKey               *string   `json:"tls_key"`
-	TLSCertValidity      *string   `json:"tls_cert_validity"`
+	LoginPath                   *string   `json:"login_path"`
+	PublicHealth                *bool     `json:"public_health"`
+	RateLimitMaxFailures        *int      `json:"rate_limit_max_failures"`
+	RateLimitAccountMaxFailures *int      `json:"rate_limit_account_max_failures"`
+	RateLimitGlobalMaxFailures  *int      `json:"rate_limit_global_max_failures"`
+	RateLimitWindow             *string   `json:"rate_limit_window"`
+	MaxSessions                 *int      `json:"max_sessions"`
+	BindSessionIP               *bool     `json:"bind_session_ip"`
+	BindSessionUA               *bool     `json:"bind_session_ua"`
+	TrustedProxies              *[]string `json:"trusted_proxies"`
+	CaptchaProvider             *string   `json:"captcha_provider"`
+	CaptchaSiteKey              *string   `json:"captcha_site_key"`
+	CaptchaSecretKey            *string   `json:"captcha_secret_key"`
+	CaptchaTriggerAfter         *int      `json:"captcha_trigger_after_failures"`
+	CaptchaMaxConcurrent        *int      `json:"captcha_max_concurrent_verifications"`
+	TwoFATempTokenMaxPerAccount *int      `json:"twofa_temp_token_max_per_account"`
+	TwoFATempTokenMaxTotal      *int      `json:"twofa_temp_token_max_total"`
+	TLSEnabled                  *bool     `json:"tls_enabled"`
+	TLSCert                     *string   `json:"tls_cert"`
+	TLSKey                      *string   `json:"tls_key"`
+	TLSCertValidity             *string   `json:"tls_cert_validity"`
 }

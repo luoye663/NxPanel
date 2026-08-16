@@ -165,9 +165,7 @@ func main() {
 		slog.Warn("未配置 agent.socket_group，非 root 进程可能无法连接 socket")
 	}
 
-	httpServer := &http.Server{
-		Handler: agentServer.Handler(),
-	}
+	httpServer := newAgentHTTPServer(cfg, agentServer.Handler())
 
 	// 优雅关闭
 	go func() {
@@ -192,4 +190,13 @@ func main() {
 	_ = os.Remove(cfg.Agent.SocketPath)
 	slog.Info("nxpanel-agent 已停止")
 	fmt.Println("nxpanel-agent 已停止")
+}
+
+func newAgentHTTPServer(cfg *app.Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       app.ParseDurationOrDefault(cfg.API.UploadTimeout, 300*time.Second),
+		IdleTimeout:       60 * time.Second,
+	}
 }

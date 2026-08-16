@@ -66,7 +66,7 @@ func (h *AccessAnalysisTaskHandler) DefaultParams() json.RawMessage {
 }
 
 func (h *AccessAnalysisTaskHandler) ValidateParams(raw json.RawMessage) (json.RawMessage, error) {
-	params, err := h.service.decodeAccessAnalysisParams(raw)
+	params, err := h.service.decodeAccessAnalysisParams(h.service.rootCtx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (h *AccessAnalysisTaskHandler) ValidateParams(raw json.RawMessage) (json.Ra
 }
 
 func (h *AccessAnalysisTaskHandler) Run(ctx context.Context, task scheduledtask.Task, run scheduledtask.RunContext) error {
-	params, err := h.service.decodeAccessAnalysisParams(task.ParamsJSON)
+	params, err := h.service.decodeAccessAnalysisParams(ctx, task.ParamsJSON)
 	if err != nil {
 		return err
 	}
@@ -93,12 +93,12 @@ func (s *Service) MigrateSettingsToTasks(ctx context.Context) error {
 	if s.scheduledTaskSvc == nil {
 		return nil
 	}
-	settings, err := s.repo.EnabledSettings()
+	settings, err := s.repo.EnabledSettings(ctx)
 	if err != nil {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	for _, item := range settings {
-		req, err := s.settingsToTaskRequest(&item)
+		req, err := s.settingsToTaskRequest(ctx, &item)
 		if err != nil {
 			return err
 		}
@@ -122,11 +122,11 @@ func (s *Service) RunScheduledScan(ctx context.Context, params AccessAnalysisPar
 	return nil
 }
 
-func (s *Service) settingsToTaskRequest(settings *Settings) (scheduledtask.CreateTaskRequest, error) {
+func (s *Service) settingsToTaskRequest(ctx context.Context, settings *Settings) (scheduledtask.CreateTaskRequest, error) {
 	if settings == nil {
 		return scheduledtask.CreateTaskRequest{}, app.ErrBadRequestMsg("访问分析设置不能为空")
 	}
-	site, err := s.requireSite(settings.SiteID)
+	site, err := s.requireSiteContext(ctx, settings.SiteID)
 	if err != nil {
 		return scheduledtask.CreateTaskRequest{}, err
 	}
@@ -152,7 +152,7 @@ func (s *Service) syncSettingsTask(ctx context.Context, settings *Settings) erro
 	if s.scheduledTaskSvc == nil {
 		return nil
 	}
-	req, err := s.settingsToTaskRequest(settings)
+	req, err := s.settingsToTaskRequest(ctx, settings)
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func (s *Service) applyTaskScheduleToSettings(ctx context.Context, settings *Set
 	return settings, nil
 }
 
-func (s *Service) decodeAccessAnalysisParams(raw json.RawMessage) (AccessAnalysisParams, error) {
+func (s *Service) decodeAccessAnalysisParams(ctx context.Context, raw json.RawMessage) (AccessAnalysisParams, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		raw = []byte(`{}`)
 	}
@@ -205,7 +205,7 @@ func (s *Service) decodeAccessAnalysisParams(raw json.RawMessage) (AccessAnalysi
 	} else if params.From == "" || params.To == "" {
 		return AccessAnalysisParams{}, fmt.Errorf("自定义扫描范围需要填写开始日期和结束日期")
 	}
-	if _, err := s.requireSite(params.SiteID); err != nil {
+	if _, err := s.requireSiteContext(ctx, params.SiteID); err != nil {
 		return AccessAnalysisParams{}, err
 	}
 	return params, nil

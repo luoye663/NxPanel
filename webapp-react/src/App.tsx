@@ -7,6 +7,7 @@ import { RouterProvider } from 'react-router-dom'
 import 'dayjs/locale/zh-cn'
 import { queryClient } from '@/api/queryClient'
 import { AuthProvider } from '@/auth/AuthProvider'
+import { BrandingProvider } from '@/branding/BrandingProvider'
 import { router } from '@/router'
 import { theme } from '@/theme'
 
@@ -16,10 +17,12 @@ export default function App() {
       <DatesProvider settings={{ locale: 'zh-cn' }}>
         <ModalsProvider>
           <QueryClientProvider client={queryClient}>
-            {/* Provider 顺序固定：UI 外壳先挂载，路由页面才能安全使用通知、确认和 Query。 */}
-            <AuthProvider>
-              <RouterProvider router={router} />
-            </AuthProvider>
+            <BrandingProvider>
+              {/* Provider 顺序固定：UI 外壳先挂载，路由页面才能安全使用通知、确认和 Query。 */}
+              <AuthProvider>
+                <RouterProvider router={router} />
+              </AuthProvider>
+            </BrandingProvider>
             <Notifications position="top-right" />
           </QueryClientProvider>
         </ModalsProvider>

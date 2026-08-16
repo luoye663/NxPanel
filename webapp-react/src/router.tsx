@@ -13,7 +13,7 @@ const DashboardPage = lazy(() => import('@/pages/DashboardPage').then((module) =
 const LogsPage = lazy(() => import('@/pages/LogsPage').then((module) => ({ default: module.LogsPage })))
 const SitesPage = lazy(() => import('@/pages/SitesPage').then((module) => ({ default: module.SitesPage })))
 const NginxPage = lazy(() => import('@/pages/NginxPage').then((module) => ({ default: module.NginxPage })))
-const SecuritySettingsPage = lazy(() => import('@/pages/SecuritySettingsPage').then((module) => ({ default: module.SecuritySettingsPage })))
+const PanelSettingsPage = lazy(() => import('@/pages/PanelSettingsPage').then((module) => ({ default: module.PanelSettingsPage })))
 const FileManagerPage = lazy(() => import('@/pages/FileManagerPage').then((module) => ({ default: module.FileManagerPage })))
 const SiteAccessAnalysisPage = lazy(() => import('@/pages/SiteAccessAnalysisPage').then((module) => ({ default: module.SiteAccessAnalysisPage })))
 const SiteBackupPage = lazy(() => import('@/pages/SiteBackupPage').then((module) => ({ default: module.SiteBackupPage })))
@@ -73,8 +73,8 @@ export const router = createBrowserRouter([
         element: withPageSuspense(<LogsPage />),
       },
       {
-        path: '/security-settings',
-        element: withPageSuspense(<SecuritySettingsPage />),
+        path: '/panel-settings',
+        element: withPageSuspense(<PanelSettingsPage />),
       },
       {
         path: '/twofa-setup',

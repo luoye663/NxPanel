@@ -4,6 +4,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -21,7 +22,11 @@ func NewOperationRepo(db *sql.DB) *OperationRepo {
 
 // Create 创建操作记录（状态默认 pending）
 func (r *OperationRepo) Create(o *Operation) error {
-	_, err := r.db.Exec(
+	return r.CreateContext(context.Background(), o)
+}
+
+func (r *OperationRepo) CreateContext(ctx context.Context, o *Operation) error {
+	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO operations (
 			id, action, target_type, target_id, status,
 			request_id, actor, ip, user_agent,
@@ -41,27 +46,41 @@ func (r *OperationRepo) Create(o *Operation) error {
 
 // UpdateStatus 更新操作状态
 func (r *OperationRepo) UpdateStatus(id, status string) error {
+	return r.UpdateStatusContext(context.Background(), id, status)
+}
+
+func (r *OperationRepo) UpdateStatusContext(ctx context.Context, id, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.Exec(
+	result, err := r.db.ExecContext(ctx,
 		"UPDATE operations SET status = ?, finished_at = ? WHERE id = ?",
 		status, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("更新操作状态失败 id=%s: %w", id, err)
 	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("更新操作状态失败 id=%s: operation 不存在", id)
+	}
 	return nil
 }
 
 // UpdateError 更新操作错误信息
 func (r *OperationRepo) UpdateError(id, status, errorCode, errorMessage, stderr string) error {
+	return r.UpdateErrorContext(context.Background(), id, status, errorCode, errorMessage, stderr)
+}
+
+func (r *OperationRepo) UpdateErrorContext(ctx context.Context, id, status, errorCode, errorMessage, stderr string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := r.db.Exec(
+	result, err := r.db.ExecContext(ctx,
 		`UPDATE operations SET status = ?, error_code = ?, error_message = ?, stderr = ?, finished_at = ?
 		WHERE id = ?`,
 		status, errorCode, errorMessage, stderr, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("更新操作错误信息失败 id=%s: %w", id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("更新操作错误信息失败 id=%s: operation 不存在", id)
 	}
 	return nil
 }
@@ -144,7 +163,7 @@ func (r *OperationRepo) List(page, pageSize int, targetType, targetID string) ([
 }
 
 func (r *OperationRepo) DeleteAll() error {
-	_, err := r.db.Exec("DELETE FROM operations")
+	_, err := r.db.Exec("DELETE FROM operations WHERE status <> 'pending'")
 	if err != nil {
 		return fmt.Errorf("清空操作记录失败: %w", err)
 	}

@@ -5,6 +5,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -659,6 +660,34 @@ func TestOperationRepo_List(t *testing.T) {
 	}
 }
 
+func TestOperationRepo_DeleteAllPreservesPending(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+
+	repo := NewOperationRepo(database)
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, operation := range []*Operation{
+		{ID: "op_pending", Action: "nginx.upstream.sync", TargetType: "nginx_upstream", Status: "pending", Actor: "admin", CreatedAt: now},
+		{ID: "op_success", Action: "site.create", TargetType: "site", Status: "success", Actor: "admin", CreatedAt: now},
+		{ID: "op_failed", Action: "site.update", TargetType: "site", Status: "failed", Actor: "admin", CreatedAt: now},
+	} {
+		if err := repo.Create(operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.DeleteAll(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := repo.GetByID("op_pending"); err != nil || pending == nil {
+		t.Fatalf("pending operation must be preserved: %#v err=%v", pending, err)
+	}
+	for _, id := range []string{"op_success", "op_failed"} {
+		if operation, err := repo.GetByID(id); err != nil || operation != nil {
+			t.Fatalf("terminal operation %s was not deleted: %#v err=%v", id, operation, err)
+		}
+	}
+}
+
 // ============================================================
 // Backup Repository 测试
 // ============================================================
@@ -700,6 +729,29 @@ func TestBackupRepo_CreateAndList(t *testing.T) {
 	}
 	if backups[0].FilePath != "/opt/panel/nginx/sites-available/test.conf" {
 		t.Errorf("FilePath 不匹配: %s", backups[0].FilePath)
+	}
+}
+
+func TestBackupRepoCreateManyIsAtomic(t *testing.T) {
+	database := setupTestDB(t)
+	defer database.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := NewOperationRepo(database).Create(&Operation{
+		ID: "op_bak_many", Action: "site.update", TargetType: "site", Status: "success", Actor: "admin", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewBackupRepo(database)
+	err := store.CreateMany(context.Background(), []*Backup{
+		{ID: "duplicate", OperationID: "op_bak_many", FilePath: "/a", BackupPath: "/backup/a"},
+		{ID: "duplicate", OperationID: "op_bak_many", FilePath: "/b", BackupPath: "/backup/b"},
+	})
+	if err == nil {
+		t.Fatal("duplicate backup IDs should fail")
+	}
+	items, err := store.ListByOperationID("op_bak_many")
+	if err != nil || len(items) != 0 {
+		t.Fatalf("partial backup set persisted: %#v err=%v", items, err)
 	}
 }
 

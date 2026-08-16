@@ -4,17 +4,85 @@ package agentclient
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luoye663/nxpanel/internal/accessanalysis"
 	"github.com/luoye663/nxpanel/internal/agent"
 	"github.com/luoye663/nxpanel/internal/app"
 )
+
+type closeTrackingTransport struct {
+	closes atomic.Int32
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func (*closeTrackingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("unused")
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closes.Add(1)
+}
+
+func TestClientCloseIsIdempotent(t *testing.T) {
+	transport := &closeTrackingTransport{}
+	client := &Client{httpClient: &http.Client{Transport: transport}}
+	client.CloseIdleConnections()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.closes.Load(); got != 1 {
+		t.Fatalf("transport close count = %d, want 1", got)
+	}
+}
+
+func TestAccessAnalysisScanDirectBoundedEnvelopeDecode(t *testing.T) {
+	want := accessanalysis.AgentScanResponse{ScannedLines: 7, Paths: []accessanalysis.PathStat{{Date: "2026-07-26", Path: "/ok", Requests: 3, LastSeenAt: "2026-07-26T01:02:03Z"}}}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := append([]byte("{\"ok\":true,\"data\":"), data...)
+	body = append(body, '}')
+	client := &Client{httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/internal/v1/logs/access-analysis/scan" {
+			t.Fatalf("path=%s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: make(http.Header)}, nil
+	})}}
+	got, err := client.AccessAnalysisScan(context.Background(), &accessanalysis.AgentScanRequest{MaxBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ScannedLines != want.ScannedLines || len(got.Paths) != 1 || got.Paths[0].Path != "/ok" {
+		t.Fatalf("decoded response=%+v", got)
+	}
+}
+
+func TestAccessAnalysisScanRejectsOverLimitResponse(t *testing.T) {
+	req := &accessanalysis.AgentScanRequest{MaxBytes: 1}
+	limit := accessAnalysisResponseLimit(req)
+	body := "{\"ok\":true,\"data\":{\"parse_errors\":[\"" + strings.Repeat("x", int(limit)) + "\"]}}"
+	client := &Client{httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	if _, err := client.AccessAnalysisScan(context.Background(), req); err == nil || !strings.Contains(err.Error(), "超过") {
+		t.Fatalf("over-limit error=%v", err)
+	}
+}
 
 // setupTestAgent 启动测试用的 agent 服务器
 // 返回 socket 路径、token 和 cleanup 函数
@@ -105,6 +173,23 @@ func TestClient_HealthInvalidToken(t *testing.T) {
 	_, err := client.Health(ctx)
 	if err == nil {
 		t.Error("错误 token 应返回错误")
+	}
+}
+
+func TestClient_FilesUploadStream(t *testing.T) {
+	allowedDir := t.TempDir()
+	socketPath, token := setupTestAgent(t, allowedDir)
+	client := NewWithDefaults(socketPath, token)
+	target := filepath.Join(allowedDir, "streamed.txt")
+	if err := client.FilesUploadStream(context.Background(), target, strings.NewReader("streamed content"), 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "streamed content" {
+		t.Fatalf("content = %q", content)
 	}
 }
 

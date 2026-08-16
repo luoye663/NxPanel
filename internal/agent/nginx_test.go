@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -762,6 +763,32 @@ exit 0
 	_, err := executor.Test(ctx)
 	if err == nil {
 		t.Error("超时应返回错误")
+	}
+}
+
+func TestNginxExecutor_OutputOverflowKillsProcessGroup(t *testing.T) {
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "nginx")
+	script := `#!/bin/sh
+while :; do
+  printf '0123456789abcdef0123456789abcdef\n'
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	executor := NewNginxExecutorWithDefaults(scriptPath, "")
+	executor.SetOutputLimits(1024, 128)
+	started := time.Now()
+	result, err := executor.Test(context.Background())
+	if !errors.Is(err, ErrCommandOutputLimit) {
+		t.Fatalf("expected typed output limit error, got %v", err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("overflow did not terminate command promptly")
+	}
+	if len(result.Stdout)+len(result.Stderr) > 128 {
+		t.Fatalf("overflow diagnostic exceeded cap: %d", len(result.Stdout)+len(result.Stderr))
 	}
 }
 

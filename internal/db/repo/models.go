@@ -85,24 +85,67 @@ type SiteHotlinkRule struct {
 
 // SiteProxy 对应 site_proxy 表的一行
 type SiteProxy struct {
-	ID               string
-	SiteID           string
-	Name             string
-	Enabled          bool
-	LocationPath     string
-	UpstreamURL      string
-	HostHeader       string
-	WebSocketEnabled bool
-	ConnectTimeout   int
-	SendTimeout      int
-	ReadTimeout      int
-	CacheEnabled     bool
-	CacheType        string // "nginx" or "file"
-	CacheTime        int    // 分钟
-	AuthEnabled      bool
-	AuthHtpasswdPath string
-	CreatedAt        string
-	UpdatedAt        string
+	ID                         string
+	SiteID                     string
+	Name                       string
+	Enabled                    bool
+	LocationPath               string
+	UpstreamURL                string
+	UpstreamID                 *string
+	UpstreamScheme             string
+	ProxySSLServerName         string
+	ProxySSLVerify             bool
+	ProxySSLTrustedCertificate string
+	ProxySSLVerifyDepth        int
+	HostHeader                 string
+	WebSocketEnabled           bool
+	ConnectTimeout             int
+	SendTimeout                int
+	ReadTimeout                int
+	CacheEnabled               bool
+	CacheType                  string // "nginx" or "file"
+	CacheTime                  int    // 分钟
+	AuthEnabled                bool
+	AuthHtpasswdPath           string
+	CreatedAt                  string
+	UpdatedAt                  string
+}
+
+// NginxUpstream and NginxUpstreamServer form one global upstream aggregate.
+type NginxUpstream struct {
+	ID                      string
+	Name                    string
+	Algorithm               string
+	HashKey                 string
+	Consistent              bool
+	Keepalive               int
+	KeepaliveRequests       int
+	KeepaliveTimeoutSeconds int
+	AdvancedDirectives      string
+	CreatedAt               string
+	UpdatedAt               string
+	ReferenceCount          int
+	Servers                 []*NginxUpstreamServer
+}
+
+type NginxUpstreamServer struct {
+	ID                 string
+	UpstreamID         string
+	Address            string
+	Weight             int
+	MaxFails           int
+	FailTimeoutSeconds int
+	Backup             bool
+	Down               bool
+	SortOrder          int
+	CreatedAt          string
+	UpdatedAt          string
+}
+
+type NginxUpstreamAppliedState struct {
+	AppliedHash string
+	AppliedPath string
+	AppliedAt   *string
 }
 
 // AuthAccount 对应 auth_accounts 表的一行。

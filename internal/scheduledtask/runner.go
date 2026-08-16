@@ -5,14 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
+
+const runFinalizationTimeout = 5 * time.Second
 
 type Runner struct {
 	repo     *Repo
 	registry *Registry
 	runnerID string
 	sem      chan struct{}
+	mu       sync.RWMutex
+	reloader taskReloader
 }
 
 func NewRunner(repo *Repo, registry *Registry, runnerID string, maxConcurrent int) *Runner {
@@ -23,18 +28,38 @@ func NewRunner(repo *Repo, registry *Registry, runnerID string, maxConcurrent in
 }
 
 func (r *Runner) Run(ctx context.Context, taskID, trigger string) {
+	r.RunVersion(ctx, taskID, trigger, 0)
+}
+
+func (r *Runner) SetReloader(reloader taskReloader) {
+	r.mu.Lock()
+	r.reloader = reloader
+	r.mu.Unlock()
+}
+
+func (r *Runner) reload(taskID string) {
+	r.mu.RLock()
+	reloader := r.reloader
+	r.mu.RUnlock()
+	if reloader != nil {
+		reloader.ReloadTask(taskID)
+	}
+}
+
+func (r *Runner) RunVersion(ctx context.Context, taskID, trigger string, expectedVersion int) {
+	defer r.reload(taskID)
 	select {
 	case r.sem <- struct{}{}:
 		defer func() { <-r.sem }()
 	case <-ctx.Done():
 		return
 	}
-	r.run(ctx, taskID, trigger)
+	r.run(ctx, taskID, trigger, expectedVersion)
 }
 
-func (r *Runner) run(ctx context.Context, taskID, trigger string) {
+func (r *Runner) run(ctx context.Context, taskID, trigger string, expectedVersion int) {
 	now := time.Now().UTC()
-	task, run, locked, err := r.repo.BeginRun(ctx, taskID, trigger, r.runnerID, now)
+	task, run, locked, err := r.repo.BeginRunVersion(ctx, taskID, trigger, r.runnerID, expectedVersion, now)
 	if err != nil {
 		slog.Warn("计划任务抢锁失败", "task_id", taskID, "error", err)
 		return
@@ -56,8 +81,13 @@ func (r *Runner) run(ctx context.Context, taskID, trigger string) {
 			status = RunStatusFailed
 			errText = nextErr.Error()
 		}
-		if err := r.repo.FinishRun(context.Background(), *task, *run, status, errText, next, finishedAt); err != nil {
+		finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), runFinalizationTimeout)
+		defer cancelFinalize()
+		outcome, err := r.repo.FinishRun(finalizeCtx, *task, *run, status, errText, next, finishedAt)
+		if err != nil {
 			slog.Warn("计划任务完成状态写入失败", "task_id", task.ID, "run_id", run.ID, "error", err)
+		} else if outcome.Stale {
+			slog.Debug("计划任务完成结果已过期", "task_id", task.ID, "run_id", run.ID, "run_finalized", outcome.RunFinalized)
 		}
 	}()
 	handler, ok := r.registry.Get(task.Type)
@@ -80,6 +110,8 @@ func (r *Runner) run(ctx context.Context, taskID, trigger string) {
 	status = RunStatusFailed
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		status = RunStatusTimeout
+	} else if errors.Is(runCtx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		status = RunStatusCancelled
 	}
 	errText = err.Error()
 }

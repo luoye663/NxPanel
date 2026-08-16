@@ -354,6 +354,15 @@ export interface AccessAnalysisScanResponse {
   skipped_lines: number
   truncated: boolean
   duration_ms: number
+  truncation: {
+    truncated: boolean
+    paths_dropped: number
+    ips_dropped: number
+    hourly_dropped: number
+    anomalies_dropped: number
+    entries_dropped: number
+    unique_values_dropped: number
+  }
 }
 
 export interface AccessPathStat {
@@ -500,6 +509,11 @@ export interface TaskLogTypeList {
 }
 
 // === Settings — 高级配置 ===
+export interface BrandingSettings {
+  site_name: string
+  subtitle: string
+}
+
 export interface DefaultPagesSettings {
   new_site_page: string
   page_404: string
@@ -606,6 +620,72 @@ export interface SaveNginxParametersResponse {
   operation_id: string
 }
 
+export type NginxUpstreamAlgorithm = 'round_robin' | 'least_conn' | 'ip_hash' | 'hash'
+
+export interface NginxUpstreamServer {
+  id: string
+  address: string
+  weight: number
+  max_fails: number
+  fail_timeout_seconds: number
+  backup: boolean
+  down: boolean
+  sort_order: number
+}
+
+export interface NginxUpstreamServerRequest extends Omit<NginxUpstreamServer, 'id'> {}
+
+export interface NginxUpstream {
+  id: string
+  name: string
+  algorithm: NginxUpstreamAlgorithm
+  hash_key: string
+  consistent: boolean
+  keepalive: number
+  keepalive_requests: number
+  keepalive_timeout_seconds: number
+  advanced_directives: string
+  servers: NginxUpstreamServer[]
+  created_at: string
+  updated_at: string
+  reference_count: number
+}
+
+export interface NginxUpstreamSaveRequest {
+  name?: string
+  algorithm: NginxUpstreamAlgorithm
+  hash_key: string
+  consistent: boolean
+  keepalive: number
+  keepalive_requests: number
+  keepalive_timeout_seconds: number
+  advanced_directives: string
+  servers: NginxUpstreamServerRequest[]
+}
+
+export interface NginxUpstreamStatus {
+  desired_hash: string
+  applied_hash: string
+  applied_at: string | null
+  synced: boolean
+  path: string
+}
+
+export interface NginxUpstreamValidateResult {
+  rendered_block: string
+  preview: string
+}
+
+export interface NginxUpstreamWriteResult {
+  upstream?: NginxUpstream
+  operation_id: string
+}
+
+export interface NginxUpstreamSyncResult {
+  operation_id: string
+  path: string
+}
+
 // === Proxy — 反向代理 ===
 export interface SiteProxy {
   id: string
@@ -613,6 +693,12 @@ export interface SiteProxy {
   enabled: boolean
   location_path: string
   upstream_url: string
+  upstream_id: string | null
+  upstream_scheme: 'http' | 'https'
+  proxy_ssl_server_name: string
+  proxy_ssl_verify: boolean
+  proxy_ssl_trusted_certificate: string
+  proxy_ssl_verify_depth: number
   host_header: string
   websocket_enabled: boolean
   connect_timeout: number
@@ -631,6 +717,12 @@ export interface CreateProxyRequest {
   enabled: boolean
   location_path: string
   upstream_url: string
+  upstream_id: string | null
+  upstream_scheme: 'http' | 'https'
+  proxy_ssl_server_name: string
+  proxy_ssl_verify?: boolean
+  proxy_ssl_trusted_certificate: string
+  proxy_ssl_verify_depth: number
   host_header: string
   websocket_enabled: boolean
   connect_timeout: number

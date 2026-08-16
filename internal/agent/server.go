@@ -25,6 +25,8 @@ type Server struct {
 	policy   *PathPolicy
 	executor *NginxExecutor
 	timeouts NginxTimeouts
+	// restoreSnapshotHook is only set by tests that inject a post-snapshot fault.
+	restoreSnapshotHook func(string)
 }
 
 func NewServer(cfg *app.Config) (*Server, error) {
@@ -42,6 +44,7 @@ func NewServer(cfg *app.Config) (*Server, error) {
 		executor: NewNginxExecutor(cfg.Nginx.Bin, cfg.Nginx.ConfPath, timeouts),
 		timeouts: timeouts,
 	}
+	s.executor.SetOutputLimits(s.commandOutputLimits())
 
 	s.setupMiddleware()
 	s.setupRoutes()

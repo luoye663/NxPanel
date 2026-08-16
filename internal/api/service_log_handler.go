@@ -80,26 +80,21 @@ func (s *Server) handleServiceLogStream(w http.ResponseWriter, r *http.Request) 
 		WriteError(w, r, http.StatusBadRequest, "BAD_REQUEST", "service 必须是 api 或 agent", nil)
 		return
 	}
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
+	resp, ok := s.openSSEResponse(w, r)
 	if !ok {
-		WriteError(w, r, http.StatusInternalServerError, "STREAM_UNSUPPORTED", "当前连接不支持实时日志", nil)
 		return
 	}
+	defer resp.Close()
 
 	last := ""
 	if r.URL.Query().Get("from") != "end" {
-		if resp, err := s.agentClient.ServiceLogTail(r.Context(), &agentclient.ServiceLogRequest{Service: service, MaxLines: 50}); err == nil {
-			for _, line := range resp.Lines {
-				writeSSELine(w, "line", line)
+		if result, err := s.agentClient.ServiceLogTail(r.Context(), &agentclient.ServiceLogRequest{Service: service, MaxLines: 50}); err == nil {
+			for _, line := range result.Lines {
+				if resp.WriteFrame(sseEventFrame("line", line)) != nil {
+					return
+				}
 				last = line
 			}
-			flusher.Flush()
 		}
 	}
 
@@ -112,21 +107,24 @@ func (s *Server) handleServiceLogStream(w http.ResponseWriter, r *http.Request) 
 		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
-			writeSSELine(w, "heartbeat", "{}")
-			flusher.Flush()
+			if resp.WriteFrame(sseHeartbeatFrame) != nil {
+				return
+			}
 		case <-ticker.C:
-			resp, err := s.agentClient.ServiceLogTail(r.Context(), &agentclient.ServiceLogRequest{Service: service, MaxLines: 50})
+			result, err := s.agentClient.ServiceLogTail(r.Context(), &agentclient.ServiceLogRequest{Service: service, MaxLines: 50})
 			if err != nil {
-				writeSSELine(w, "error", err.Error())
-				flusher.Flush()
+				if resp.WriteFrame(sseEventFrame("error", err.Error())) != nil {
+					return
+				}
 				continue
 			}
 			// 与站点日志追踪一致：根据最后一行去重，只把新增内容推给前端。
-			for _, line := range newLinesAfter(resp.Lines, last) {
-				writeSSELine(w, "line", line)
+			for _, line := range newLinesAfter(result.Lines, last) {
+				if resp.WriteFrame(sseEventFrame("line", line)) != nil {
+					return
+				}
 				last = line
 			}
-			flusher.Flush()
 		}
 	}
 }

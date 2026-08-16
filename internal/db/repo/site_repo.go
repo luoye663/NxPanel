@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -47,11 +48,15 @@ func (r *SiteRepo) Create(s *Site) error {
 }
 
 func (r *SiteRepo) GetByID(id string) (*Site, error) {
+	return r.GetByIDContext(context.Background(), id)
+}
+
+func (r *SiteRepo) GetByIDContext(ctx context.Context, id string) (*Site, error) {
 	s := &Site{}
 	var accessLogInt, autoindexInt, autoindexExactSizeInt, autoindexLocaltimeInt int
 	var bindingsJSON, accessLimitPath, hotlinkPath sql.NullString
 
-	err := r.db.QueryRow(
+	err := r.db.QueryRowContext(ctx,
 		`SELECT id, primary_domain, domains_json, bindings_json, status,
 			http_port, https_port, root_path, index_files,
 			access_log_enabled, access_log_path, error_log_path,

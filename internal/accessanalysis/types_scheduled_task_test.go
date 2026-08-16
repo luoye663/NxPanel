@@ -32,7 +32,7 @@ func TestAccessAnalysisMigrateSettingsToTasks(t *testing.T) {
 	settings := defaultSettings("site_1")
 	settings.Enabled = true
 	settings.ScanTime = "04:15"
-	if err := svc.repo.SaveSettings(settings); err != nil {
+	if err := svc.repo.SaveSettings(context.Background(), settings); err != nil {
 		t.Fatalf("写入访问分析设置失败: %v", err)
 	}
 	if err := svc.MigrateSettingsToTasks(context.Background()); err != nil {
@@ -74,7 +74,7 @@ func TestAccessAnalysisSaveSettingsSyncsTask(t *testing.T) {
 	settings := defaultSettings("site_1")
 	settings.Enabled = true
 	settings.ScanTime = "05:20"
-	if _, err := svc.SaveSettings("site_1", settings, "req_1"); err != nil {
+	if _, err := svc.SaveSettings(context.Background(), "site_1", settings, "req_1"); err != nil {
 		t.Fatalf("保存访问分析设置失败: %v", err)
 	}
 	task, err := taskRepo.GetBySource(context.Background(), accessAnalysisSourceType, "site_1")
@@ -86,7 +86,7 @@ func TestAccessAnalysisSaveSettingsSyncsTask(t *testing.T) {
 	}
 	settings.Enabled = false
 	settings.ScanTime = "06:30"
-	if _, err := svc.SaveSettings("site_1", settings, "req_2"); err != nil {
+	if _, err := svc.SaveSettings(context.Background(), "site_1", settings, "req_2"); err != nil {
 		t.Fatalf("保存禁用设置失败: %v", err)
 	}
 	task, err = taskRepo.GetBySource(context.Background(), accessAnalysisSourceType, "site_1")
@@ -96,7 +96,7 @@ func TestAccessAnalysisSaveSettingsSyncsTask(t *testing.T) {
 	if task == nil || task.Enabled || task.ScheduleExpr != "06:30" || task.Status != scheduledtask.TaskStatusDisabled {
 		t.Fatalf("保存禁用设置未同步更新任务: %+v", task)
 	}
-	loaded, err := svc.Settings("site_1")
+	loaded, err := svc.Settings(context.Background(), "site_1")
 	if err != nil {
 		t.Fatalf("读取访问分析设置失败: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestAccessAnalysisScheduledRun(t *testing.T) {
 	if err := svc.RunScheduledScan(context.Background(), AccessAnalysisParams{SiteID: "site_1", Range: "today"}, scheduledtask.RunContext{RunID: "run_1"}); err != nil {
 		t.Fatalf("计划任务扫描应复用访问分析业务链路: %v", err)
 	}
-	jobs, err := svc.repo.Jobs("site_1", 1, 10)
+	jobs, err := svc.repo.Jobs(context.Background(), "site_1", 1, 10)
 	if err != nil {
 		t.Fatalf("查询扫描任务失败: %v", err)
 	}
@@ -141,8 +141,10 @@ func newAccessAnalysisTaskTestService() (*sql.DB, *Service, *scheduledtask.Repo,
 	taskRepo := scheduledtask.NewRepo(database)
 	registry := scheduledtask.NewRegistry()
 	runner := scheduledtask.NewRunner(taskRepo, registry, app.NewID("runner"), 1)
-	taskSvc := scheduledtask.NewService(taskRepo, registry, runner, nil)
-	svc := NewService(repo.NewSiteRepo(database), NewRepo(database), repo.NewOperationRepo(database), fakeAnalysisAgent{})
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	taskSvc := scheduledtask.NewService(workerCtx, taskRepo, registry, runner, nil, 4, 1)
+	cancelWorkers()
+	svc := NewService(context.Background(), repo.NewSiteRepo(database), NewRepo(database), repo.NewOperationRepo(database), fakeAnalysisAgent{})
 	if err := svc.AttachScheduledTasks(taskSvc); err != nil {
 		database.Close()
 		return nil, nil, nil, err

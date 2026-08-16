@@ -3,6 +3,7 @@
 // 处理反向代理配置接口：
 //   - GET    /api/v1/sites/{site_id}/proxy              列出所有代理
 //   - POST   /api/v1/sites/{site_id}/proxy              创建代理
+//   - POST   /api/v1/sites/{site_id}/proxy/sync         同步代理 desired state
 //   - GET    /api/v1/sites/{site_id}/proxy/{proxy_id}   获取单个代理
 //   - PUT    /api/v1/sites/{site_id}/proxy/{proxy_id}   更新代理
 //   - DELETE /api/v1/sites/{site_id}/proxy/{proxy_id}   删除代理
@@ -67,6 +68,25 @@ func (s *Server) handleProxyCreate(w http.ResponseWriter, r *http.Request) {
 		"proxy":        result,
 		"operation_id": opID,
 	})
+}
+
+// handleProxySync 从数据库 desired state 重建并应用站点反代配置。
+func (s *Server) handleProxySync(w http.ResponseWriter, r *http.Request) {
+	siteID := chi.URLParam(r, "site_id")
+	if siteID == "" {
+		WriteError(w, r, http.StatusBadRequest, "BAD_REQUEST", "site_id 不能为空", nil)
+		return
+	}
+	var req struct{}
+	if !DecodeJSONOptional(w, r, &req) {
+		return
+	}
+	opID, err := s.proxySvc.Sync(r.Context(), siteID, middleware.GetRequestID(r.Context()))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, map[string]any{"operation_id": opID})
 }
 
 // ============================================================

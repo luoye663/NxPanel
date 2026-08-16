@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/app"
@@ -74,6 +76,88 @@ func (svc *Service) AttachScheduledTasks(taskSvc ScheduledTaskService) error {
 		return nil
 	}
 	return taskSvc.Register(NewNginxLogRotationTaskHandler(svc))
+}
+
+const brandingKVKey = "branding"
+
+func defaultBrandingSettings() *BrandingSettings {
+	return &BrandingSettings{
+		SiteName: DefaultSiteName,
+		Subtitle: DefaultBrandSubtitle,
+	}
+}
+
+func (svc *Service) GetBranding() (*BrandingSettings, error) {
+	value, err := svc.settingsRepo.Get(brandingKVKey)
+	if err != nil {
+		return nil, err
+	}
+	if value == "" {
+		return defaultBrandingSettings(), nil
+	}
+
+	var branding BrandingSettings
+	if err := json.Unmarshal([]byte(value), &branding); err != nil {
+		slog.Warn("解析 branding 设置失败，使用默认值", "error", err)
+		return defaultBrandingSettings(), nil
+	}
+	branding.SiteName = strings.TrimSpace(branding.SiteName)
+	branding.Subtitle = strings.TrimSpace(branding.Subtitle)
+	if err := validateBranding(&branding); err != nil {
+		slog.Warn("branding 设置无效，使用默认值", "error", err)
+		return defaultBrandingSettings(), nil
+	}
+	return &branding, nil
+}
+
+func (svc *Service) UpdateBranding(req *UpdateBrandingRequest, requestID string) (*BrandingSettings, error) {
+	branding := &BrandingSettings{
+		SiteName: strings.TrimSpace(req.SiteName),
+		Subtitle: strings.TrimSpace(req.Subtitle),
+	}
+	if err := validateBranding(branding); err != nil {
+		return nil, app.ErrValidationFailedMsg(err.Error(), nil)
+	}
+
+	data, err := json.Marshal(branding)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, "编码面板品牌设置失败", nil)
+	}
+	if err := svc.settingsRepo.Set(brandingKVKey, string(data)); err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, "保存面板品牌设置失败: "+err.Error(), nil)
+	}
+
+	if svc.opRepo != nil {
+		opID := app.NewOperationID()
+		if err := svc.opRepo.Create(&repo.Operation{
+			ID: opID, Action: "settings.update_branding", TargetType: "settings", TargetID: brandingKVKey,
+			Status: "pending", RequestID: requestID, Actor: "admin", Message: "更新面板品牌设置",
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}); err == nil {
+			_ = svc.opRepo.UpdateStatus(opID, "success")
+		}
+	}
+	return branding, nil
+}
+
+func validateBranding(branding *BrandingSettings) error {
+	if branding.SiteName == "" {
+		return fmt.Errorf("网站名称不能为空")
+	}
+	if utf8.RuneCountInString(branding.SiteName) > SiteNameMaxRunes {
+		return fmt.Errorf("网站名称不能超过 %d 个字符", SiteNameMaxRunes)
+	}
+	if utf8.RuneCountInString(branding.Subtitle) > BrandSubtitleMaxRunes {
+		return fmt.Errorf("副标题不能超过 %d 个字符", BrandSubtitleMaxRunes)
+	}
+	if containsControlCharacter(branding.SiteName) || containsControlCharacter(branding.Subtitle) {
+		return fmt.Errorf("网站名称和副标题不能包含控制字符")
+	}
+	return nil
+}
+
+func containsControlCharacter(value string) bool {
+	return strings.ContainsFunc(value, unicode.IsControl)
 }
 
 // ============================================================
@@ -786,22 +870,27 @@ func (svc *Service) GetSecuritySettings() *SecuritySettings {
 		proxies = []string{}
 	}
 	return &SecuritySettings{
-		LoginPath:              svc.cfg.API.LoginPath,
-		PublicHealth:           svc.cfg.API.PublicHealth,
-		RateLimitMaxFailures:   svc.cfg.API.RateLimit.MaxFailures,
-		RateLimitWindow:        svc.cfg.API.RateLimit.Window,
-		MaxSessions:            svc.cfg.API.MaxSessions,
-		BindSessionIP:          svc.cfg.API.BindSessionIP,
-		BindSessionUA:          svc.cfg.API.BindSessionUA,
-		TrustedProxies:         proxies,
-		CaptchaProvider:        svc.cfg.API.Captcha.Provider,
-		CaptchaSiteKey:         svc.cfg.API.Captcha.SiteKey,
-		CaptchaSecretKeyMasked: masked,
-		CaptchaTriggerAfter:    svc.cfg.API.Captcha.TriggerAfterFailures,
-		TLSEnabled:             svc.cfg.API.TLS.Enabled,
-		TLSCert:                svc.cfg.API.TLS.Cert,
-		TLSKey:                 svc.cfg.API.TLS.Key,
-		TLSCertValidity:        svc.cfg.API.TLS.CertValidity,
+		LoginPath:                   svc.cfg.API.LoginPath,
+		PublicHealth:                svc.cfg.API.PublicHealth,
+		RateLimitMaxFailures:        svc.cfg.API.RateLimit.MaxFailures,
+		RateLimitAccountMaxFailures: svc.cfg.API.RateLimit.AccountMaxFailures,
+		RateLimitGlobalMaxFailures:  svc.cfg.API.RateLimit.GlobalMaxFailures,
+		RateLimitWindow:             svc.cfg.API.RateLimit.Window,
+		MaxSessions:                 svc.cfg.API.MaxSessions,
+		BindSessionIP:               svc.cfg.API.BindSessionIP,
+		BindSessionUA:               svc.cfg.API.BindSessionUA,
+		TrustedProxies:              proxies,
+		CaptchaProvider:             svc.cfg.API.Captcha.Provider,
+		CaptchaSiteKey:              svc.cfg.API.Captcha.SiteKey,
+		CaptchaSecretKeyMasked:      masked,
+		CaptchaTriggerAfter:         svc.cfg.API.Captcha.TriggerAfterFailures,
+		CaptchaMaxConcurrent:        svc.cfg.API.Captcha.MaxConcurrent,
+		TwoFATempTokenMaxPerAccount: svc.cfg.API.TwoFA.TempTokenMaxPerAccount,
+		TwoFATempTokenMaxTotal:      svc.cfg.API.TwoFA.TempTokenMaxTotal,
+		TLSEnabled:                  svc.cfg.API.TLS.Enabled,
+		TLSCert:                     svc.cfg.API.TLS.Cert,
+		TLSKey:                      svc.cfg.API.TLS.Key,
+		TLSCertValidity:             svc.cfg.API.TLS.CertValidity,
 	}
 }
 
@@ -832,6 +921,20 @@ func (svc *Service) UpdateSecuritySettings(ctx context.Context, req *UpdateSecur
 		}
 		svc.cfg.API.RateLimit.Window = *req.RateLimitWindow
 		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.rate_limit.window", Value: *req.RateLimitWindow})
+	}
+	if req.RateLimitAccountMaxFailures != nil {
+		if *req.RateLimitAccountMaxFailures < 1 || *req.RateLimitAccountMaxFailures > 10000 {
+			return nil, app.NewAppError(app.ErrValidationFailed, "account_max_failures 必须在 1 到 10000 之间", nil)
+		}
+		svc.cfg.API.RateLimit.AccountMaxFailures = *req.RateLimitAccountMaxFailures
+		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.rate_limit.account_max_failures", Value: strconv.Itoa(*req.RateLimitAccountMaxFailures)})
+	}
+	if req.RateLimitGlobalMaxFailures != nil {
+		if *req.RateLimitGlobalMaxFailures < 1 || *req.RateLimitGlobalMaxFailures > 1000000 {
+			return nil, app.NewAppError(app.ErrValidationFailed, "global_max_failures 必须在 1 到 1000000 之间", nil)
+		}
+		svc.cfg.API.RateLimit.GlobalMaxFailures = *req.RateLimitGlobalMaxFailures
+		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.rate_limit.global_max_failures", Value: strconv.Itoa(*req.RateLimitGlobalMaxFailures)})
 	}
 	if req.MaxSessions != nil {
 		if *req.MaxSessions < 1 {
@@ -879,6 +982,27 @@ func (svc *Service) UpdateSecuritySettings(ctx context.Context, req *UpdateSecur
 		}
 		svc.cfg.API.Captcha.TriggerAfterFailures = *req.CaptchaTriggerAfter
 		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.captcha.trigger_after_failures", Value: strconv.Itoa(*req.CaptchaTriggerAfter)})
+	}
+	if req.CaptchaMaxConcurrent != nil {
+		if *req.CaptchaMaxConcurrent < 1 || *req.CaptchaMaxConcurrent > 1000 {
+			return nil, app.NewAppError(app.ErrValidationFailed, "captcha 并发上限必须在 1 到 1000 之间", nil)
+		}
+		svc.cfg.API.Captcha.MaxConcurrent = *req.CaptchaMaxConcurrent
+		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.captcha.max_concurrent_verifications", Value: strconv.Itoa(*req.CaptchaMaxConcurrent)})
+	}
+	if req.TwoFATempTokenMaxPerAccount != nil {
+		if *req.TwoFATempTokenMaxPerAccount < 1 || *req.TwoFATempTokenMaxPerAccount > 1000 {
+			return nil, app.NewAppError(app.ErrValidationFailed, "账号临时令牌上限必须在 1 到 1000 之间", nil)
+		}
+		svc.cfg.API.TwoFA.TempTokenMaxPerAccount = *req.TwoFATempTokenMaxPerAccount
+		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.twofa.temp_token_max_per_account", Value: strconv.Itoa(*req.TwoFATempTokenMaxPerAccount)})
+	}
+	if req.TwoFATempTokenMaxTotal != nil {
+		if *req.TwoFATempTokenMaxTotal < 1 || *req.TwoFATempTokenMaxTotal > 100000 {
+			return nil, app.NewAppError(app.ErrValidationFailed, "临时令牌总上限必须在 1 到 100000 之间", nil)
+		}
+		svc.cfg.API.TwoFA.TempTokenMaxTotal = *req.TwoFATempTokenMaxTotal
+		fields = append(fields, agentclient.ConfigWriteBackField{Key: "api.twofa.temp_token_max_total", Value: strconv.Itoa(*req.TwoFATempTokenMaxTotal)})
 	}
 	if req.TLSEnabled != nil {
 		svc.cfg.API.TLS.Enabled = *req.TLSEnabled

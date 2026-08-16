@@ -3,7 +3,7 @@ package sse
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
 type Event struct {
@@ -13,14 +13,22 @@ type Event struct {
 }
 
 type Stream struct {
-	id      string
-	mu      sync.RWMutex
-	subs    map[uint64]chan Event
-	nextSub uint64
-	done    chan struct{}
-	closed  bool
-	history []Event
-	maxHist int
+	id       string
+	mu       sync.RWMutex
+	subs     map[uint64]chan Event
+	nextSub  uint64
+	done     chan struct{}
+	closed   bool
+	closedAt time.Time
+	history  []Event
+	maxHist  int
+}
+
+type Subscription struct {
+	Events      <-chan Event
+	History     []Event
+	Closed      bool
+	Unsubscribe func()
 }
 
 type Hub struct {
@@ -50,12 +58,11 @@ func (h *Hub) GetStream(id string) *Stream {
 }
 
 func (h *Hub) CloseStream(id string) {
-	val, ok := h.streams.LoadAndDelete(id)
+	val, ok := h.streams.Load(id)
 	if !ok {
 		return
 	}
-	s := val.(*Stream)
-	s.close()
+	val.(*Stream).close()
 }
 
 func (h *Hub) CloseAll() {
@@ -67,17 +74,39 @@ func (h *Hub) CloseAll() {
 	})
 }
 
+func (h *Hub) PruneClosedBefore(cutoff time.Time) int {
+	pruned := 0
+	h.streams.Range(func(key, val any) bool {
+		stream := val.(*Stream)
+		stream.mu.RLock()
+		shouldPrune := stream.closed && !stream.closedAt.After(cutoff)
+		stream.mu.RUnlock()
+		if shouldPrune && h.streams.CompareAndDelete(key, val) {
+			pruned++
+		}
+		return true
+	})
+	return pruned
+}
+
 func (s *Stream) Subscribe() (<-chan Event, func()) {
+	sub := s.SubscribeSnapshot()
+	return sub.Events, sub.Unsubscribe
+}
+
+func (s *Stream) SubscribeSnapshot() Subscription {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	history := append([]Event(nil), s.history...)
 	if s.closed {
-		ch := make(chan Event, 1)
+		ch := make(chan Event)
 		close(ch)
-		return ch, func() {}
+		return Subscription{Events: ch, History: history, Closed: true, Unsubscribe: func() {}}
 	}
 
-	id := atomic.AddUint64(&s.nextSub, 1)
+	s.nextSub++
+	id := s.nextSub
 	ch := make(chan Event, 256)
 	s.subs[id] = ch
 
@@ -90,17 +119,20 @@ func (s *Stream) Subscribe() (<-chan Event, func()) {
 		}
 	}
 
-	return ch, unsub
+	return Subscription{Events: ch, History: history, Unsubscribe: unsub}
 }
 
 func (s *Stream) Publish(event Event) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.closed {
 		return
 	}
+	s.publishLocked(event)
+}
 
+func (s *Stream) publishLocked(event Event) {
 	if s.maxHist > 0 {
 		s.history = append(s.history, event)
 		if len(s.history) > s.maxHist {
@@ -121,11 +153,16 @@ func (s *Stream) PublishData(data string) {
 }
 
 func (s *Stream) PublishDone(data string) {
-	if data != "" {
-		s.PublishData(data)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
 	}
-	s.PublishData("[DONE]")
-	s.close()
+	if data != "" {
+		s.publishLocked(Event{Data: data})
+	}
+	s.publishLocked(Event{Data: "[DONE]"})
+	s.closeLocked(time.Now())
 }
 
 func (s *Stream) IsClosed() bool {
@@ -155,11 +192,15 @@ func (s *Stream) String() string {
 func (s *Stream) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closeLocked(time.Now())
+}
 
+func (s *Stream) closeLocked(now time.Time) {
 	if s.closed {
 		return
 	}
 	s.closed = true
+	s.closedAt = now
 	close(s.done)
 
 	for id, ch := range s.subs {

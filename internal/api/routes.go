@@ -9,14 +9,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/luoye663/nxpanel/internal/api/middleware"
+	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/web"
 )
 
 func (s *Server) setupRoutes() {
+	uploadDeadline := middleware.UploadReadDeadline(app.ParseDurationOrDefault(s.cfg.API.UploadTimeout, 300*time.Second))
 	s.router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		if !s.PublicHealthEnabled() {
 			http.NotFound(w, r)
@@ -31,16 +34,17 @@ func (s *Server) setupRoutes() {
 		r.With(middleware.LoginRateLimitMiddleware(s.setupLimiter)).Post("/setup/admin", s.handleSetupAdmin)
 
 		// Auth — 登录（限流）
-		r.With(middleware.LoginRateLimitMiddleware(s.limiter)).Post("/auth/login", s.handleLogin)
+		r.Post("/auth/login", s.handleLogin)
 
 		// Auth — 2FA 验证（公开，但需要 temp_token，限流）
-		r.With(middleware.LoginRateLimitMiddleware(s.limiter)).Post("/auth/login/2fa", s.handleLogin2FA)
-		r.With(middleware.LoginRateLimitMiddleware(s.limiter)).Post("/auth/login/recover", s.handleLoginRecover)
+		r.Post("/auth/login/2fa", s.handleLogin2FA)
+		r.Post("/auth/login/recover", s.handleLoginRecover)
 
 		// Auth — 状态查询
 		r.Get("/auth/me", s.handleMe)
 		r.Get("/auth/captcha-config", s.handleCaptchaConfig)
 		r.Post("/auth/logout", s.handleLogout)
+		r.Get("/settings/branding", s.handleBrandingGet)
 
 		// 以下路由需要认证
 		r.Group(func(r chi.Router) {
@@ -74,6 +78,14 @@ func (s *Server) setupRoutes() {
 			r.Put("/nginx/conf", s.handleNginxConfSave)
 			r.Get("/nginx/parameters", s.handleNginxParametersGet)
 			r.Put("/nginx/parameters", s.handleNginxParametersSave)
+			r.Get("/nginx/upstreams", s.handleUpstreamList)
+			r.Post("/nginx/upstreams", s.handleUpstreamCreate)
+			r.Post("/nginx/upstreams/validate", s.handleUpstreamValidate)
+			r.Post("/nginx/upstreams/sync", s.handleUpstreamSync)
+			r.Get("/nginx/upstreams/status", s.handleUpstreamStatus)
+			r.Get("/nginx/upstreams/{upstream_id}", s.handleUpstreamGet)
+			r.Put("/nginx/upstreams/{upstream_id}", s.handleUpstreamUpdate)
+			r.Delete("/nginx/upstreams/{upstream_id}", s.handleUpstreamDelete)
 
 			// Sites
 			r.Get("/sites", s.handleSiteList)
@@ -88,6 +100,7 @@ func (s *Server) setupRoutes() {
 			// Proxy
 			r.Get("/sites/{site_id}/proxy", s.handleProxyList)
 			r.Post("/sites/{site_id}/proxy", s.handleProxyCreate)
+			r.Post("/sites/{site_id}/proxy/sync", s.handleProxySync)
 			r.Get("/sites/{site_id}/proxy/{proxy_id}", s.handleProxyGet)
 			r.Put("/sites/{site_id}/proxy/{proxy_id}", s.handleProxyUpdate)
 			r.Delete("/sites/{site_id}/proxy/{proxy_id}", s.handleProxyDelete)
@@ -197,6 +210,7 @@ func (s *Server) setupRoutes() {
 			r.Delete("/acme/emails/{email}", s.handleACMEEmailDelete)
 
 			// Settings
+			r.Put("/settings/branding", s.handleBrandingUpdate)
 			r.Get("/settings/default-pages", s.handleSettingsDefaultPagesGet)
 			r.Put("/settings/default-pages", s.handleSettingsDefaultPagesUpdate)
 			r.Get("/settings/default-site", s.handleSettingsDefaultSiteGet)
@@ -248,7 +262,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/files/extract", s.handleGlobalFilesExtract)
 			r.Get("/files/download", s.handleGlobalFilesDownload)
 			r.Get("/files/archive", s.handleGlobalFilesArchive)
-			r.Post("/files/upload", s.handleGlobalFilesUpload)
+			r.With(uploadDeadline).Post("/files/upload", s.handleGlobalFilesUpload)
 
 			// Files — 站点文件管理
 			r.Get("/sites/{site_id}/files", s.handleFilesList)
@@ -264,7 +278,7 @@ func (s *Server) setupRoutes() {
 			r.Post("/sites/{site_id}/files/extract", s.handleFilesExtract)
 			r.Get("/sites/{site_id}/files/download", s.handleFilesDownload)
 			r.Get("/sites/{site_id}/files/archive", s.handleFilesArchive)
-			r.Post("/sites/{site_id}/files/upload", s.handleFilesUpload)
+			r.With(uploadDeadline).Post("/sites/{site_id}/files/upload", s.handleFilesUpload)
 		})
 	})
 

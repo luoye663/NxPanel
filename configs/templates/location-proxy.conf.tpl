@@ -12,6 +12,19 @@
 {{- if .WebSocketEnabled}}
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+{{- else}}
+        proxy_set_header Connection "";
+{{- end}}
+{{- if and .ManagedUpstream (eq .UpstreamScheme "https")}}
+        proxy_ssl_server_name on;
+        proxy_ssl_name {{.ProxySSLServerName}};
+{{- if .ProxySSLVerify}}
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate {{.ProxySSLTrustedCertificate}};
+        proxy_ssl_verify_depth {{.ProxySSLVerifyDepth}};
+{{- else}}
+        proxy_ssl_verify off;
+{{- end}}
 {{- end}}
         proxy_connect_timeout {{.ConnectTimeout}}s;
         proxy_send_timeout {{.SendTimeout}}s;

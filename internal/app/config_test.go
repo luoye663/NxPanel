@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDefaultConfig 验证默认配置值的合理性
@@ -40,6 +41,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.DownloadTimeout != "2m" {
 		t.Errorf("默认 Agent.DownloadTimeout 期望 2m，实际 %s", cfg.Agent.DownloadTimeout)
 	}
+	if cfg.Agent.Resources.CommandOutputMaxSize != "32M" || cfg.Agent.Resources.CommandDiagnosticMaxSize != "64K" || cfg.Agent.Resources.LogLineMaxSize != "64K" {
+		t.Fatalf("默认 Agent resource 配置不正确: %+v", cfg.Agent.Resources)
+	}
+	if cfg.Agent.Archive.MaxEntries != 100000 || cfg.Agent.Archive.MaxInputSize != "2G" || cfg.Agent.Archive.MaxArchiveSize != "1G" || cfg.Agent.Archive.MaxExtractedSize != "2G" || cfg.Agent.Archive.MaxEntrySize != "512M" || cfg.Agent.Archive.MaxDepth != 64 || cfg.Agent.Archive.MaxCompressionRatio != 100 || cfg.Agent.Archive.Timeout != "30m" {
+		t.Fatalf("默认 Agent archive 配置不正确: %+v", cfg.Agent.Archive)
+	}
 
 	// 默认 Nginx 主配置路径
 	if cfg.Nginx.ConfPath != "" {
@@ -56,6 +63,105 @@ func TestDefaultConfig(t *testing.T) {
 	// 默认面板配置目录
 	if cfg.Nginx.PanelDir != "/opt/nxpanel/nginx" {
 		t.Errorf("默认 Nginx.PanelDir 不正确: %s", cfg.Nginx.PanelDir)
+	}
+	if cfg.API.RateLimit.AccountMaxFailures != 10 || cfg.API.RateLimit.GlobalMaxFailures != 100 {
+		t.Fatalf("登录账号/全局预算默认值不正确: %+v", cfg.API.RateLimit)
+	}
+	if cfg.API.TwoFA.TempTokenMaxPerAccount != 3 || cfg.API.TwoFA.TempTokenMaxTotal != 1000 {
+		t.Fatalf("2FA 临时令牌默认值不正确: %+v", cfg.API.TwoFA)
+	}
+	if cfg.API.Captcha.MaxConcurrent != 8 {
+		t.Fatalf("CAPTCHA 并发默认值期望 8，实际 %d", cfg.API.Captcha.MaxConcurrent)
+	}
+	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 2 || cfg.API.AsyncJobs.BackupMaxConcurrent != 2 || cfg.API.AsyncJobs.ManualQueueSize != 32 || cfg.API.AsyncJobs.ManualWorkers != 2 || cfg.API.AsyncJobs.ScheduledQueueSize != 128 || cfg.API.AsyncJobs.ScheduledWorkers != 2 || cfg.API.AsyncJobs.TaskReconcileInterval != "1m" {
+		t.Fatalf("异步任务默认值不正确: %+v", cfg.API.AsyncJobs)
+	}
+	policy := cfg.Database.Retention.Policy()
+	if policy.LoginAuditMaxAge != 2160*time.Hour || policy.LoginAuditMaxCount != 50000 || policy.ScheduledRunMaxAge != 720*time.Hour || policy.ScheduledRunMaxPerTask != 100 || policy.CleanupInterval != time.Hour {
+		t.Fatalf("数据库保留默认值不正确: %+v", policy)
+	}
+}
+
+func TestRetentionConfigYAMLEnvAndHardClamps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := []byte(`database:
+  retention:
+    login_audit_max_age: "1h"
+    login_audit_max_count: -5
+    scheduled_task_runs_max_age: "999999h"
+    scheduled_task_runs_max_per_task: 0
+    cleanup_interval: "1s"
+`)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("NXPANEL_DATABASE_RETENTION_LOGIN_AUDIT_MAX_COUNT", "200")
+	t.Setenv("NXPANEL_DATABASE_RETENTION_SCHEDULED_TASK_RUNS_MAX_PER_TASK", "250")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	policy := cfg.Database.Retention.Policy()
+	if policy.LoginAuditMaxAge != 24*time.Hour || policy.LoginAuditMaxCount != 200 {
+		t.Fatalf("login audit policy = %+v", policy)
+	}
+	if policy.ScheduledRunMaxAge != 10*365*24*time.Hour || policy.ScheduledRunMaxPerTask != 250 || policy.CleanupInterval != time.Minute {
+		t.Fatalf("scheduled run policy = %+v", policy)
+	}
+}
+
+func TestAsyncJobEnvironmentOverrides(t *testing.T) {
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_ACME_MAX_CONCURRENT", "3")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_BACKUP_MAX_CONCURRENT", "4")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_MANUAL_QUEUE_SIZE", "12")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_MANUAL_WORKERS", "5")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_QUEUE_SIZE", "96")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_WORKERS", "6")
+	t.Setenv("NXPANEL_API_ASYNC_JOBS_TASK_RECONCILE_INTERVAL", "30s")
+	cfg := defaultConfig()
+	applyEnvOverrides(cfg)
+	if cfg.API.AsyncJobs.ACMEMaxConcurrent != 3 || cfg.API.AsyncJobs.BackupMaxConcurrent != 4 || cfg.API.AsyncJobs.ManualQueueSize != 12 || cfg.API.AsyncJobs.ManualWorkers != 5 || cfg.API.AsyncJobs.ScheduledQueueSize != 96 || cfg.API.AsyncJobs.ScheduledWorkers != 6 || cfg.API.AsyncJobs.TaskReconcileInterval != "30s" {
+		t.Fatalf("异步任务环境变量覆盖失败: %+v", cfg.API.AsyncJobs)
+	}
+}
+
+func TestScheduledTaskReconcileIntervalClamp(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "default empty", value: "", want: time.Minute},
+		{name: "invalid default", value: "invalid", want: time.Minute},
+		{name: "minimum", value: "1s", want: 5 * time.Second},
+		{name: "normal", value: "30s", want: 30 * time.Second},
+		{name: "maximum", value: "2h", want: time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := AsyncJobConfig{TaskReconcileInterval: tc.value}
+			if got := cfg.ScheduledTaskReconcileInterval(); got != tc.want {
+				t.Fatalf("ScheduledTaskReconcileInterval()=%s want=%s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentBudgetEnvironmentOverrides(t *testing.T) {
+	t.Setenv("NXPANEL_AGENT_RESOURCES_COMMAND_OUTPUT_MAX_SIZE", "8M")
+	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_LINES", "123")
+	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_PATHS", "321")
+	t.Setenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_DISTINCT", "654")
+	t.Setenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRIES", "99")
+	t.Setenv("NXPANEL_AGENT_ARCHIVE_MAX_INPUT_SIZE", "12M")
+	t.Setenv("NXPANEL_AGENT_ARCHIVE_TIMEOUT", "5m")
+	cfg := defaultConfig()
+	applyEnvOverrides(cfg)
+	if cfg.Agent.Resources.CommandOutputMaxSize != "8M" || cfg.Agent.Resources.AccessScanMaxLines != 123 || cfg.Agent.Resources.AccessScanMaxPaths != 321 || cfg.Agent.Resources.AccessScanMaxDistinct != 654 {
+		t.Fatalf("Agent resource 环境变量覆盖失败: %+v", cfg.Agent.Resources)
+	}
+	if cfg.Agent.Archive.MaxEntries != 99 || cfg.Agent.Archive.MaxInputSize != "12M" || cfg.Agent.Archive.Timeout != "5m" {
+		t.Fatalf("Agent archive 环境变量覆盖失败: %+v", cfg.Agent.Archive)
 	}
 }
 
@@ -164,6 +270,11 @@ agent:
 	t.Setenv("NXPANEL_AGENT_MAX_READ_SIZE", "12M")
 	t.Setenv("NXPANEL_AGENT_MAX_DOWNLOAD_SIZE", "512M")
 	t.Setenv("NXPANEL_AGENT_DOWNLOAD_TIMEOUT", "3m")
+	t.Setenv("NXPANEL_API_RATE_LIMIT_ACCOUNT_MAX_FAILURES", "12")
+	t.Setenv("NXPANEL_API_RATE_LIMIT_GLOBAL_MAX_FAILURES", "120")
+	t.Setenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_PER_ACCOUNT", "4")
+	t.Setenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_TOTAL", "400")
+	t.Setenv("NXPANEL_API_CAPTCHA_MAX_CONCURRENT_VERIFICATIONS", "6")
 
 	cfg, err := LoadConfig(tmpFile)
 	if err != nil {
@@ -188,6 +299,15 @@ agent:
 	}
 	if cfg.Agent.DownloadTimeout != "3m" {
 		t.Errorf("环境变量覆盖后 Agent.DownloadTimeout 期望 3m，实际 %s", cfg.Agent.DownloadTimeout)
+	}
+	if cfg.API.RateLimit.AccountMaxFailures != 12 || cfg.API.RateLimit.GlobalMaxFailures != 120 {
+		t.Fatalf("登录预算环境变量覆盖失败: %+v", cfg.API.RateLimit)
+	}
+	if cfg.API.TwoFA.TempTokenMaxPerAccount != 4 || cfg.API.TwoFA.TempTokenMaxTotal != 400 {
+		t.Fatalf("2FA 临时令牌环境变量覆盖失败: %+v", cfg.API.TwoFA)
+	}
+	if cfg.API.Captcha.MaxConcurrent != 6 {
+		t.Fatalf("CAPTCHA 并发环境变量覆盖失败: %d", cfg.API.Captcha.MaxConcurrent)
 	}
 	// 未被环境变量覆盖的字段应保持 YAML 中的值
 	if cfg.Agent.SocketPath != "/run/default.sock" {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,13 +39,14 @@ import (
 	"github.com/luoye663/nxpanel/internal/systemmetrics"
 	"github.com/luoye663/nxpanel/internal/twofa"
 	"github.com/luoye663/nxpanel/internal/upgrade"
+	"github.com/luoye663/nxpanel/internal/upstream"
 )
 
 type Server struct {
 	cfg                    *app.Config
 	db                     *sql.DB
 	authSvc                *auth.AuthService
-	limiter                *middleware.LoginRateLimiter
+	loginProtection        *middleware.LoginProtection
 	setupLimiter           *middleware.LoginRateLimiter
 	sensitiveActionLimiter *middleware.LoginRateLimiter
 	captchaSvc             *captcha.Service
@@ -74,8 +76,13 @@ type Server struct {
 	scheduledTaskSvc       *scheduledtask.Service
 	scheduledTaskEngine    *scheduledtask.Engine
 	upgradeSvc             *upgrade.Service
+	upstreamSvc            *upstream.Service
 	router                 *chi.Mux
-	cancelCleanup          context.CancelFunc
+	rootCtx                context.Context
+	rootCancel             context.CancelFunc
+	backgroundWG           sync.WaitGroup
+	closeOnce              sync.Once
+	sseSlots               chan struct{}
 	gateSecret             atomic.Value
 	loginPath              atomic.Value
 	needsSetup             atomic.Bool
@@ -84,6 +91,12 @@ type Server struct {
 
 func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
 	s := newServerBase(cfg, db)
+	complete := false
+	defer func() {
+		if !complete {
+			s.Close()
+		}
+	}()
 	r := newRepos(db)
 	if err := s.initScheduledTaskCenter(r.scheduledTask); err != nil {
 		return nil, err
@@ -91,11 +104,17 @@ func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
 	if err := s.initAgentBackedServices(r); err != nil {
 		return nil, err
 	}
+	// Handlers and startup-created/migrated tasks must exist before any due task
+	// can be claimed. ReloadTask calls made during setup are retained by Engine.
+	if err := s.scheduledTaskEngine.Start(); err != nil {
+		return nil, fmt.Errorf("启动计划任务中心失败: %w", err)
+	}
 	s.startRuntimeServices()
 
 	s.setupMiddleware()
 	s.setupRoutes()
 
+	complete = true
 	return s, nil
 }
 
@@ -103,27 +122,119 @@ func (s *Server) Handler() http.Handler {
 	return s.router
 }
 
+func (s *Server) Context() context.Context {
+	if s.rootCtx == nil {
+		return context.Background()
+	}
+	return s.rootCtx
+}
+
+func (s *Server) Cancel() {
+	if s.rootCancel != nil {
+		s.rootCancel()
+	}
+	if s.sseHub != nil {
+		s.sseHub.CloseAll()
+	}
+}
+
 func (s *Server) Close() {
-	if s.cancelCleanup != nil {
-		s.cancelCleanup()
+	s.closeOnce.Do(func() {
+		s.Cancel()
+		if s.scheduledTaskEngine != nil {
+			s.scheduledTaskEngine.Stop()
+		}
+		if s.scheduledTaskSvc != nil {
+			s.scheduledTaskSvc.Close()
+		}
+		if s.acmeSvc != nil {
+			s.acmeSvc.Close()
+		}
+		if s.siteBackupSvc != nil {
+			s.siteBackupSvc.Close()
+		}
+		if s.upgradeSvc != nil {
+			s.upgradeSvc.Close()
+		}
+		if s.metricsSvc != nil {
+			s.metricsSvc.Close()
+		}
+		if s.loginProtection != nil {
+			s.loginProtection.Stop()
+		}
+		if s.setupLimiter != nil {
+			s.setupLimiter.Stop()
+		}
+		if s.sensitiveActionLimiter != nil {
+			s.sensitiveActionLimiter.Stop()
+		}
+		if s.twofaSvc != nil {
+			s.twofaSvc.Stop()
+		}
+		s.backgroundWG.Wait()
+		if s.agentClient != nil {
+			_ = s.agentClient.Close()
+		}
+	})
+}
+
+func (s *Server) sseCleanup(ctx context.Context) {
+	ttl := app.ParseDurationOrDefault(s.cfg.API.AsyncResultTTL, 10*time.Minute)
+	interval := ttl / 2
+	if interval < time.Second {
+		interval = time.Second
 	}
-	if s.limiter != nil {
-		s.limiter.Stop()
+	if interval > time.Minute {
+		interval = time.Minute
 	}
-	if s.setupLimiter != nil {
-		s.setupLimiter.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.sseHub.PruneClosedBefore(now.Add(-ttl))
+			if s.siteBackupSvc != nil {
+				s.siteBackupSvc.PruneTasksBefore(now.Add(-ttl))
+			}
+		}
 	}
-	if s.sensitiveActionLimiter != nil {
-		s.sensitiveActionLimiter.Stop()
+}
+
+func maintenanceLoop(ctx context.Context, interval time.Duration, run func(context.Context)) {
+	run(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run(ctx)
+		}
 	}
-	if s.twofaSvc != nil {
-		s.twofaSvc.Stop()
+}
+
+func (s *Server) pruneRetainedData(ctx context.Context) {
+	policy := s.cfg.Database.Retention.Policy()
+	now := time.Now().UTC()
+	if deleted, err := s.loginAuditRepo.Prune(ctx, now.Add(-policy.LoginAuditMaxAge), policy.LoginAuditMaxCount); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("清理登录审计失败", "error", err)
+		}
+	} else if deleted > 0 {
+		slog.Info("登录审计清理完成", "deleted", deleted)
 	}
-	if s.metricsSvc != nil {
-		s.metricsSvc.Close()
+	if s.scheduledTaskSvc == nil {
+		return
 	}
-	if s.scheduledTaskEngine != nil {
-		s.scheduledTaskEngine.Stop()
+	if deleted, err := scheduledtask.NewRepo(s.db).PruneRuns(ctx, now.Add(-policy.ScheduledRunMaxAge), policy.ScheduledRunMaxPerTask); err != nil {
+		if ctx.Err() == nil {
+			slog.Error("清理计划任务执行历史失败", "error", err)
+		}
+	} else if deleted > 0 {
+		slog.Info("计划任务执行历史清理完成", "deleted", deleted)
 	}
 }
 
@@ -133,8 +244,13 @@ func (s *Server) ReloadSecurityConfig(cfg *app.Config) {
 		maxFailures = 5
 	}
 	window := app.ParseDurationOrDefault(cfg.API.RateLimit.Window, 15*time.Minute)
-	if s.limiter != nil {
-		s.limiter.ReloadConfig(maxFailures, window)
+	if s.loginProtection != nil {
+		s.loginProtection.ReloadConfig(middleware.LoginProtectionConfig{
+			IPMaxFailures:      maxFailures,
+			AccountMaxFailures: cfg.API.RateLimit.AccountMaxFailures,
+			GlobalMaxFailures:  cfg.API.RateLimit.GlobalMaxFailures,
+			Window:             window,
+		})
 	}
 	if s.sensitiveActionLimiter != nil {
 		s.sensitiveActionLimiter.ReloadConfig(maxFailures, window)
@@ -144,7 +260,10 @@ func (s *Server) ReloadSecurityConfig(cfg *app.Config) {
 	}
 	middleware.ReloadTrustedProxies(cfg.API.TrustedProxies)
 	if s.captchaSvc != nil {
-		s.captchaSvc.ReloadConfig(cfg.API.Captcha.Provider, cfg.API.Captcha.SecretKey, cfg.API.Captcha.SiteKey, cfg.API.Captcha.TriggerAfterFailures)
+		s.captchaSvc.ReloadConfig(cfg.API.Captcha.Provider, cfg.API.Captcha.SecretKey, cfg.API.Captcha.SiteKey, cfg.API.Captcha.TriggerAfterFailures, cfg.API.Captcha.MaxConcurrent)
+	}
+	if s.twofaSvc != nil {
+		s.twofaSvc.ReloadTempTokenLimits(cfg.API.TwoFA.TempTokenMaxPerAccount, cfg.API.TwoFA.TempTokenMaxTotal)
 	}
 	s.setGateState(cfg.API.LoginPath, cfg.API.PublicHealth)
 	slog.Info("安全配置已热重载")
@@ -203,6 +322,11 @@ func (s *Server) sessionCleanup(ctx context.Context) {
 func (s *Server) setupMiddleware() {
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.TrustedRealIP(s.cfg.API.TrustedProxies))
+	s.router.Use(middleware.RequestRateLimit(middleware.NewRequestTokenBucket(
+		s.cfg.API.Ingress.RequestRate,
+		s.cfg.API.Ingress.RequestBurst,
+		s.cfg.API.Ingress.MaxTrackedIPs,
+	)))
 	s.router.Use(middleware.SecurityHeaders)
 	s.router.Use(middleware.MaxBodySizeExcept(2*1024*1024, "/api/v1/files/upload", "/files/upload"))
 	s.router.Use(middleware.Recoverer)

@@ -81,6 +81,9 @@ func (r *Repo) Create(ctx context.Context, task *Task) error {
 	if task.Status == "" {
 		task.Status = TaskStatusIdle
 	}
+	if task.Version <= 0 {
+		task.Version = 1
+	}
 	if !task.Enabled {
 		task.Status = TaskStatusDisabled
 	}
@@ -121,14 +124,17 @@ func (r *Repo) Update(ctx context.Context, task *Task, expectedVersion int) erro
 	return nil
 }
 
-func (r *Repo) SetEnabled(ctx context.Context, taskID string, enabled bool) error {
+func (r *Repo) SetEnabled(ctx context.Context, taskID string, enabled bool, nextRunAt *time.Time) error {
 	status := TaskStatusDisabled
 	if enabled {
 		status = TaskStatusIdle
 	}
+	if !enabled {
+		nextRunAt = nil
+	}
 	_, err := r.db.ExecContext(ctx, `UPDATE scheduled_tasks
-		SET enabled = ?, status = ?, version = version + 1, updated_at = ?
-		WHERE id = ?`, boolToInt(enabled), status, formatTime(time.Now().UTC()), taskID)
+		SET enabled = ?, status = ?, next_run_at = ?, last_error = '', version = version + 1, updated_at = ?
+		WHERE id = ?`, boolToInt(enabled), status, formatTimePtr(nextRunAt), formatTime(time.Now().UTC()), taskID)
 	if err != nil {
 		return fmt.Errorf("切换计划任务启用状态失败 id=%s: %w", taskID, err)
 	}
@@ -163,14 +169,38 @@ func (r *Repo) ListRuns(ctx context.Context, taskID string, limit int) ([]*Run, 
 	return result, rows.Err()
 }
 
-func (r *Repo) UpdateNextRun(ctx context.Context, taskID string, next time.Time, status string, errText string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE scheduled_tasks
-		SET next_run_at = ?, status = ?, last_error = ?, version = version + 1, updated_at = ?
-		WHERE id = ?`, formatTimePtr(&next), status, errText, formatTime(time.Now().UTC()), taskID)
-	if err != nil {
-		return fmt.Errorf("更新计划任务下次执行时间失败 id=%s: %w", taskID, err)
+func (r *Repo) PruneRuns(ctx context.Context, cutoff time.Time, maxPerTask int) (int64, error) {
+	if maxPerTask < 1 {
+		return 0, fmt.Errorf("计划任务执行记录每任务最大保留数必须大于 0")
 	}
-	return nil
+	result, err := r.db.ExecContext(ctx, `WITH ranked AS (
+		SELECT id,
+			ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC, id DESC) AS row_num
+		FROM scheduled_task_runs
+		WHERE status != 'running'
+	), over_limit AS (
+		SELECT id FROM ranked WHERE row_num > ?
+	)
+	DELETE FROM scheduled_task_runs
+	WHERE status != 'running' AND (COALESCE(NULLIF(finished_at, ''), created_at) < ? OR id IN (SELECT id FROM over_limit))`, maxPerTask, formatTime(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("清理计划任务执行历史失败: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+func (r *Repo) UpdateNextRun(ctx context.Context, taskID string, expectedVersion int, next time.Time, status string, errText string) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE scheduled_tasks
+		SET next_run_at = ?, status = ?, last_error = ?, version = version + 1, updated_at = ?
+		WHERE id = ? AND version = ?`, formatTimePtr(&next), status, errText, formatTime(time.Now().UTC()), taskID, expectedVersion)
+	if err != nil {
+		return false, fmt.Errorf("更新计划任务下次执行时间失败 id=%s: %w", taskID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return changed == 1, nil
 }
 
 func (r *Repo) DueTasks(ctx context.Context, now time.Time, limit int) ([]*Task, error) {
@@ -194,21 +224,65 @@ func (r *Repo) DueTasks(ctx context.Context, now time.Time, limit int) ([]*Task,
 }
 
 func (r *Repo) MarkExpiredRunningAbandoned(ctx context.Context, now time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `UPDATE scheduled_tasks
-		SET status = 'error', last_status = 'abandoned', last_error = '任务锁已过期，标记为异常退出', locked_by = '', locked_until = NULL, updated_at = ?
-		WHERE status = 'running' AND locked_until IS NOT NULL AND locked_until < ?`, formatTime(now), formatTime(now))
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	changed, err := r.recoverExpiredLocksTx(ctx, tx, now, "")
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
+func (r *Repo) recoverExpiredLocksTx(ctx context.Context, tx *sql.Tx, now time.Time, taskID string) (int64, error) {
+	const message = "任务锁已过期，标记为异常退出"
+	if _, err := tx.ExecContext(ctx, `UPDATE scheduled_task_runs
+		SET status = 'abandoned', finished_at = ?,
+			duration_ms = MAX(0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)), error_message = ?
+		WHERE status = 'running' AND id IN (
+			SELECT last_run_id FROM scheduled_tasks
+			WHERE locked_by != '' AND locked_until IS NOT NULL
+				AND julianday(locked_until) IS NOT NULL AND julianday(locked_until) < julianday(?)
+				AND (? = '' OR id = ?)
+		)`, formatTime(now), formatTime(now), message, formatTime(now), taskID, taskID); err != nil {
+		return 0, fmt.Errorf("恢复过期任务执行记录失败: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE scheduled_tasks
+		SET status = CASE WHEN enabled = 0 THEN 'disabled' ELSE 'error' END,
+			last_finished_at = ?, last_status = 'abandoned', last_error = ?,
+			locked_by = '', locked_until = NULL, version = version + 1, updated_at = ?
+		WHERE locked_by != '' AND locked_until IS NOT NULL
+			AND julianday(locked_until) IS NOT NULL AND julianday(locked_until) < julianday(?)
+			AND (? = '' OR id = ?)`,
+		formatTime(now), message, formatTime(now), formatTime(now), taskID, taskID)
 	if err != nil {
 		return 0, fmt.Errorf("恢复过期运行任务失败: %w", err)
 	}
-	return result.RowsAffected()
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return changed, nil
 }
 
 func (r *Repo) BeginRun(ctx context.Context, taskID, trigger, runnerID string, now time.Time) (*Task, *Run, bool, error) {
+	return r.BeginRunVersion(ctx, taskID, trigger, runnerID, 0, now)
+}
+
+func (r *Repo) BeginRunVersion(ctx context.Context, taskID, trigger, runnerID string, expectedVersion int, now time.Time) (*Task, *Run, bool, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return nil, nil, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if _, err := r.recoverExpiredLocksTx(ctx, tx, now, taskID); err != nil {
+		return nil, nil, false, err
+	}
 
 	run := &Run{
 		ID:        app.NewID("schrun"),
@@ -224,15 +298,31 @@ func (r *Repo) BeginRun(ctx context.Context, taskID, trigger, runnerID string, n
 	if trigger == TriggerSchedule {
 		whereScheduleDue = " AND next_run_at IS NOT NULL AND next_run_at <= ?"
 		args = append(args, formatTime(now))
+		if expectedVersion > 0 {
+			whereScheduleDue += " AND version = ?"
+			args = append(args, expectedVersion)
+		}
 	}
+	// A nonempty owner with a NULL or malformed expiry is ambiguous. Deny the
+	// claim fail-closed until an operator repairs the lock metadata.
 	row := tx.QueryRowContext(ctx, `UPDATE scheduled_tasks
 		SET status = 'running', locked_by = ?, locked_until = strftime('%Y-%m-%dT%H:%M:%fZ', ?, 'unixepoch', '+' || (timeout_seconds + 30) || ' seconds'), last_run_at = ?, last_run_id = ?, version = version + 1, updated_at = ?
-		WHERE id = ? AND enabled = 1 AND (status != 'running' OR locked_until IS NULL OR locked_until < ?)`+whereScheduleDue+`
+		WHERE id = ? AND enabled = 1 AND (
+			locked_by = '' OR (
+				locked_until IS NOT NULL AND julianday(locked_until) IS NOT NULL
+				AND julianday(locked_until) < julianday(?)
+			)
+		)`+whereScheduleDue+`
 		RETURNING `+taskColumns, args...)
 	task, err := scanTask(row)
 	if err == sql.ErrNoRows {
 		task, err := r.getTx(ctx, tx, taskID)
 		if err != nil {
+			return nil, nil, false, err
+		}
+		// Expired-lock recovery may have changed state even when this claim is
+		// rejected (notably a scheduled claim with a now-stale version).
+		if err := tx.Commit(); err != nil {
 			return nil, nil, false, err
 		}
 		return task, nil, false, nil
@@ -243,8 +333,10 @@ func (r *Repo) BeginRun(ctx context.Context, taskID, trigger, runnerID string, n
 	run.TaskID = task.ID
 	run.TaskType = task.Type
 	run.TaskName = task.Name
-	if _, err := tx.ExecContext(ctx, `INSERT INTO scheduled_task_runs (id, task_id, task_type, task_name, trigger, status, attempt, started_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.ID, run.TaskID, run.TaskType, run.TaskName, run.Trigger, run.Status, run.Attempt, formatTime(run.StartedAt), formatTime(run.CreatedAt)); err != nil {
+	run.TaskVersion = task.Version
+	run.RunnerID = runnerID
+	if _, err := tx.ExecContext(ctx, `INSERT INTO scheduled_task_runs (id, task_id, task_type, task_name, trigger, status, attempt, task_version, runner_id, started_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.ID, run.TaskID, run.TaskType, run.TaskName, run.Trigger, run.Status, run.Attempt, run.TaskVersion, run.RunnerID, formatTime(run.StartedAt), formatTime(run.CreatedAt)); err != nil {
 		return nil, nil, false, fmt.Errorf("创建计划任务执行记录失败 run_id=%s: %w", run.ID, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -254,19 +346,35 @@ func (r *Repo) BeginRun(ctx context.Context, taskID, trigger, runnerID string, n
 	return task, run, true, nil
 }
 
-func (r *Repo) FinishRun(ctx context.Context, task Task, run Run, status string, errText string, nextRunAt time.Time, finishedAt time.Time) error {
+func (r *Repo) FinishRun(ctx context.Context, task Task, run Run, status string, errText string, nextRunAt time.Time, finishedAt time.Time) (FinishOutcome, error) {
 	durationMillis := finishedAt.Sub(run.StartedAt).Milliseconds()
 	if durationMillis < 0 {
 		durationMillis = 0
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return FinishOutcome{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE scheduled_task_runs
-		SET status = ?, finished_at = ?, duration_ms = ?, error_message = ? WHERE id = ?`, status, formatTime(finishedAt), durationMillis, errText, run.ID); err != nil {
-		return fmt.Errorf("更新计划任务执行记录失败 run_id=%s: %w", run.ID, err)
+	runResult, err := tx.ExecContext(ctx, `UPDATE scheduled_task_runs
+		SET status = ?, finished_at = ?, duration_ms = ?, error_message = ?
+		WHERE id = ? AND status = 'running' AND task_version = ? AND runner_id = ?`,
+		status, formatTime(finishedAt), durationMillis, errText, run.ID, run.TaskVersion, run.RunnerID)
+	if err != nil {
+		return FinishOutcome{}, fmt.Errorf("更新计划任务执行记录失败 run_id=%s: %w", run.ID, err)
+	}
+	runChanged, err := runResult.RowsAffected()
+	if err != nil {
+		return FinishOutcome{}, err
+	}
+	if runChanged != 1 {
+		if err := r.releaseMatchingLock(ctx, tx, task.ID, run, finishedAt); err != nil {
+			return FinishOutcome{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return FinishOutcome{}, err
+		}
+		return FinishOutcome{Stale: true}, nil
 	}
 	nextStatus := TaskStatusIdle
 	if !task.Enabled {
@@ -275,13 +383,36 @@ func (r *Repo) FinishRun(ctx context.Context, task Task, run Run, status string,
 		nextStatus = TaskStatusError
 	}
 	lastStatus := status
-	_, err = tx.ExecContext(ctx, `UPDATE scheduled_tasks
+	result, err := tx.ExecContext(ctx, `UPDATE scheduled_tasks
 		SET status = ?, next_run_at = ?, last_finished_at = ?, last_status = ?, last_error = ?, last_duration_ms = ?, locked_by = '', locked_until = NULL, version = version + 1, updated_at = ?
-		WHERE id = ?`, nextStatus, formatTimePtr(&nextRunAt), formatTime(finishedAt), lastStatus, errText, durationMillis, formatTime(finishedAt), task.ID)
+		WHERE id = ? AND version = ? AND last_run_id = ? AND locked_by = ?`,
+		nextStatus, formatTimePtr(&nextRunAt), formatTime(finishedAt), lastStatus, errText, durationMillis, formatTime(finishedAt),
+		task.ID, run.TaskVersion, run.ID, run.RunnerID)
 	if err != nil {
-		return fmt.Errorf("更新计划任务完成状态失败 id=%s: %w", task.ID, err)
+		return FinishOutcome{}, fmt.Errorf("更新计划任务完成状态失败 id=%s: %w", task.ID, err)
 	}
-	return tx.Commit()
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return FinishOutcome{}, err
+	}
+	if changed == 0 {
+		if err := r.releaseMatchingLock(ctx, tx, task.ID, run, finishedAt); err != nil {
+			return FinishOutcome{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return FinishOutcome{}, err
+	}
+	return FinishOutcome{RunFinalized: true, ScheduleUpdated: changed == 1, Stale: changed == 0}, nil
+}
+
+func (r *Repo) releaseMatchingLock(ctx context.Context, tx *sql.Tx, taskID string, run Run, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE scheduled_tasks
+		SET locked_by = '', locked_until = NULL, updated_at = ?
+		WHERE id = ? AND last_run_id = ? AND locked_by = ?`, formatTime(now), taskID, run.ID, run.RunnerID); err != nil {
+		return fmt.Errorf("释放过期计划任务锁失败 id=%s: %w", taskID, err)
+	}
+	return nil
 }
 
 func (r *Repo) getTx(ctx context.Context, tx *sql.Tx, id string) (*Task, error) {
@@ -301,7 +432,7 @@ const taskColumns = `id, type, name, enabled, system, source_type, source_id, st
 
 const selectTaskSQL = `SELECT ` + taskColumns + ` FROM scheduled_tasks`
 
-const selectRunSQL = `SELECT id, task_id, task_type, task_name, trigger, status, attempt,
+const selectRunSQL = `SELECT id, task_id, task_type, task_name, trigger, status, attempt, task_version, runner_id,
 	started_at, finished_at, duration_ms, error_message, log_file, operation_id, request_id, created_at FROM scheduled_task_runs`
 
 type scanner interface{ Scan(dest ...any) error }
@@ -341,7 +472,7 @@ func scanTask(row scanner) (*Task, error) {
 func scanRun(row scanner) (*Run, error) {
 	run := &Run{}
 	var startedAt, finishedAt, createdAt sql.NullString
-	err := row.Scan(&run.ID, &run.TaskID, &run.TaskType, &run.TaskName, &run.Trigger, &run.Status, &run.Attempt,
+	err := row.Scan(&run.ID, &run.TaskID, &run.TaskType, &run.TaskName, &run.Trigger, &run.Status, &run.Attempt, &run.TaskVersion, &run.RunnerID,
 		&startedAt, &finishedAt, &run.DurationMillis, &run.ErrorMessage, &run.LogFile, &run.OperationID, &run.RequestID, &createdAt)
 	if err != nil {
 		return nil, err

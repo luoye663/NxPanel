@@ -23,7 +23,8 @@ func TestEnsureNginxLogRotationSystemTask_DefaultEnabled(t *testing.T) {
 	taskRepo := scheduledtask.NewRepo(database)
 	registry := scheduledtask.NewRegistry()
 	runner := scheduledtask.NewRunner(taskRepo, registry, app.NewID("runner"), 1)
-	taskSvc := scheduledtask.NewService(taskRepo, registry, runner, nil)
+	taskSvc := scheduledtask.NewService(context.Background(), taskRepo, registry, runner, nil, 4, 1)
+	t.Cleanup(taskSvc.Close)
 	svc := &Service{}
 
 	if err := svc.AttachScheduledTasks(taskSvc); err != nil {

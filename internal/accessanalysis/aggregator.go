@@ -6,16 +6,17 @@ import (
 	"time"
 )
 
-const maxAggregateItems = 1000
-
 type Aggregator struct {
-	from      time.Time
-	to        time.Time
-	hourly    map[string]*hourBucket
-	paths     map[string]*pathBucket
-	ips       map[string]*ipBucket
-	anomalies map[string]*Anomaly
-	entries   []Entry
+	from       time.Time
+	to         time.Time
+	limits     AggregationLimits
+	distinct   int
+	hourly     map[string]*hourBucket
+	paths      map[string]*pathBucket
+	ips        map[string]*ipBucket
+	anomalies  map[string]*Anomaly
+	entries    []Entry
+	truncation TruncationStats
 }
 
 type hourBucket struct {
@@ -34,10 +35,39 @@ type ipBucket struct {
 }
 
 func NewAggregator(from, to time.Time) *Aggregator {
-	return &Aggregator{from: from, to: to, hourly: map[string]*hourBucket{}, paths: map[string]*pathBucket{}, ips: map[string]*ipBucket{}, anomalies: map[string]*Anomaly{}, entries: make([]Entry, 0, 500)}
+	return NewAggregatorWithLimits(from, to, DefaultAggregationLimits())
+}
+
+func NewAggregatorWithLimits(from, to time.Time, limits AggregationLimits) *Aggregator {
+	defaults := DefaultAggregationLimits()
+	if limits.Paths <= 0 {
+		limits.Paths = defaults.Paths
+	}
+	if limits.IPs <= 0 {
+		limits.IPs = defaults.IPs
+	}
+	if limits.Hourly <= 0 {
+		limits.Hourly = defaults.Hourly
+	}
+	if limits.Anomalies <= 0 {
+		limits.Anomalies = defaults.Anomalies
+	}
+	if limits.Entries < 0 {
+		limits.Entries = 0
+	}
+	if limits.TotalDistinct <= 0 {
+		limits.TotalDistinct = defaults.TotalDistinct
+	}
+	return &Aggregator{
+		from: from, to: to, limits: limits,
+		hourly: make(map[string]*hourBucket), paths: make(map[string]*pathBucket),
+		ips: make(map[string]*ipBucket), anomalies: make(map[string]*Anomaly),
+		entries: make([]Entry, 0, min(limits.Entries, 1024)),
+	}
 }
 
 func (a *Aggregator) Add(entry Entry) bool {
+	entry = NormalizeEntryStrings(entry)
 	ts, err := time.Parse(time.RFC3339, entry.TS)
 	if err != nil || ts.Before(a.from) || !ts.Before(a.to) {
 		return false
@@ -45,33 +75,28 @@ func (a *Aggregator) Add(entry Entry) bool {
 	date := ts.Format("2006-01-02")
 	hour := ts.Format("2006-01-02T15:00:00Z")
 
-	hb := a.hourly[hour]
-	if hb == nil {
-		hb = &hourBucket{HourlyPoint: HourlyPoint{Hour: hour}, ips: map[string]struct{}{}}
-		a.hourly[hour] = hb
+	if hb := a.hourBucket(hour); hb != nil {
+		hb.Requests++
+		hb.Bytes += entry.Bytes
+		a.addUnique(hb.ips, entry.IP)
+		if entry.Status >= 400 && entry.Status < 500 {
+			hb.Status4xx++
+		}
+		if entry.Status >= 500 {
+			hb.Status5xx++
+		}
 	}
-	hb.Requests++
-	hb.Bytes += entry.Bytes
-	hb.ips[entry.IP] = struct{}{}
-	if entry.Status >= 400 && entry.Status < 500 {
-		hb.Status4xx++
-	}
-	if entry.Status >= 500 {
-		hb.Status5xx++
-	}
-
-	// 聚合 map 做 Top N 保护，避免异常日志把内存撑爆。
 	if pb := a.pathBucket(date, entry.Path, entry.TS); pb != nil {
 		pb.Requests++
 		pb.Bytes += entry.Bytes
-		pb.ips[entry.IP] = struct{}{}
+		a.addUnique(pb.ips, entry.IP)
 		pb.LastSeenAt = maxTimeString(pb.LastSeenAt, entry.TS)
 		addStatus(&pb.PathStat, entry.Status)
 	}
 	if ib := a.ipBucket(date, entry.IP, entry.TS); ib != nil {
 		ib.Requests++
 		ib.Bytes += entry.Bytes
-		ib.paths[entry.Path] = struct{}{}
+		a.addUnique(ib.paths, entry.Path)
 		if entry.Status >= 400 {
 			ib.ErrorRequests++
 		}
@@ -81,8 +106,12 @@ func (a *Aggregator) Add(entry Entry) bool {
 		ib.FirstSeenAt = minTimeString(ib.FirstSeenAt, entry.TS)
 		ib.LastSeenAt = maxTimeString(ib.LastSeenAt, entry.TS)
 	}
-	if len(a.entries) < 5000 {
-		a.entries = append(a.entries, entry)
+	if a.limits.Entries > 0 {
+		if len(a.entries) < a.limits.Entries {
+			a.entries = append(a.entries, entry)
+		} else {
+			a.truncation.EntriesDropped++
+		}
 	}
 	a.collectAnomaly(date, entry)
 	return true
@@ -95,28 +124,84 @@ func (a *Aggregator) Result() AgentScanResponse {
 		hourly = append(hourly, bucket.HourlyPoint)
 	}
 	sort.Slice(hourly, func(i, j int) bool { return hourly[i].Hour < hourly[j].Hour })
-
 	paths := make([]PathStat, 0, len(a.paths))
 	for _, bucket := range a.paths {
 		bucket.UniqueIPs = int64(len(bucket.ips))
 		paths = append(paths, bucket.PathStat)
 	}
-	sort.Slice(paths, func(i, j int) bool { return paths[i].Requests > paths[j].Requests })
-
+	sort.Slice(paths, func(i, j int) bool {
+		if paths[i].Requests == paths[j].Requests {
+			if paths[i].Date == paths[j].Date {
+				return paths[i].Path < paths[j].Path
+			}
+			return paths[i].Date < paths[j].Date
+		}
+		return paths[i].Requests > paths[j].Requests
+	})
 	ips := make([]IPStat, 0, len(a.ips))
 	for _, bucket := range a.ips {
 		bucket.UniquePaths = int64(len(bucket.paths))
 		ips = append(ips, bucket.IPStat)
 	}
-	sort.Slice(ips, func(i, j int) bool { return ips[i].Requests > ips[j].Requests })
-
+	sort.Slice(ips, func(i, j int) bool {
+		if ips[i].Requests == ips[j].Requests {
+			if ips[i].Date == ips[j].Date {
+				return ips[i].IP < ips[j].IP
+			}
+			return ips[i].Date < ips[j].Date
+		}
+		return ips[i].Requests > ips[j].Requests
+	})
 	anomalies := make([]Anomaly, 0, len(a.anomalies))
 	for _, item := range a.anomalies {
 		anomalies = append(anomalies, *item)
 	}
-	sort.Slice(anomalies, func(i, j int) bool { return anomalies[i].Requests > anomalies[j].Requests })
+	sort.Slice(anomalies, func(i, j int) bool {
+		if anomalies[i].Requests == anomalies[j].Requests {
+			if anomalies[i].Date == anomalies[j].Date {
+				if anomalies[i].Kind == anomalies[j].Kind {
+					return anomalies[i].Target < anomalies[j].Target
+				}
+				return anomalies[i].Kind < anomalies[j].Kind
+			}
+			return anomalies[i].Date < anomalies[j].Date
+		}
+		return anomalies[i].Requests > anomalies[j].Requests
+	})
+	a.truncation.Truncated = a.truncation.PathsDropped+a.truncation.IPsDropped+a.truncation.HourlyDropped+a.truncation.AnomaliesDropped+a.truncation.EntriesDropped+a.truncation.UniqueValuesDropped > 0
+	return AgentScanResponse{Hourly: hourly, Paths: paths, IPs: ips, EntriesSample: a.entries, Anomalies: anomalies, Truncation: a.truncation}
+}
 
-	return AgentScanResponse{Hourly: hourly, Paths: paths, IPs: ips, EntriesSample: a.entries, Anomalies: anomalies}
+func (a *Aggregator) admitDistinct() bool {
+	if a.distinct >= a.limits.TotalDistinct {
+		return false
+	}
+	a.distinct++
+	return true
+}
+
+func (a *Aggregator) addUnique(values map[string]struct{}, value string) {
+	if _, ok := values[value]; ok {
+		return
+	}
+	if !a.admitDistinct() {
+		a.truncation.UniqueValuesDropped++
+		return
+	}
+	values[value] = struct{}{}
+}
+
+func (a *Aggregator) hourBucket(hour string) *hourBucket {
+	if bucket := a.hourly[hour]; bucket != nil {
+		return bucket
+	}
+	if len(a.hourly) >= a.limits.Hourly || !a.admitDistinct() {
+		a.truncation.HourlyDropped++
+		return nil
+	}
+	bucket := &hourBucket{HourlyPoint: HourlyPoint{Hour: hour}, ips: make(map[string]struct{})}
+	a.hourly[hour] = bucket
+	return bucket
 }
 
 func (a *Aggregator) pathBucket(date, path, ts string) *pathBucket {
@@ -124,10 +209,11 @@ func (a *Aggregator) pathBucket(date, path, ts string) *pathBucket {
 	if bucket := a.paths[key]; bucket != nil {
 		return bucket
 	}
-	if len(a.paths) >= maxAggregateItems {
+	if len(a.paths) >= a.limits.Paths || !a.admitDistinct() {
+		a.truncation.PathsDropped++
 		return nil
 	}
-	bucket := &pathBucket{PathStat: PathStat{Date: date, Path: path, LastSeenAt: ts}, ips: map[string]struct{}{}}
+	bucket := &pathBucket{PathStat: PathStat{Date: date, Path: path, LastSeenAt: ts}, ips: make(map[string]struct{})}
 	a.paths[key] = bucket
 	return bucket
 }
@@ -137,10 +223,11 @@ func (a *Aggregator) ipBucket(date, ip, ts string) *ipBucket {
 	if bucket := a.ips[key]; bucket != nil {
 		return bucket
 	}
-	if len(a.ips) >= maxAggregateItems {
+	if len(a.ips) >= a.limits.IPs || !a.admitDistinct() {
+		a.truncation.IPsDropped++
 		return nil
 	}
-	bucket := &ipBucket{IPStat: IPStat{Date: date, IP: ip, FirstSeenAt: ts, LastSeenAt: ts}, paths: map[string]struct{}{}}
+	bucket := &ipBucket{IPStat: IPStat{Date: date, IP: ip, FirstSeenAt: ts, LastSeenAt: ts}, paths: make(map[string]struct{})}
 	a.ips[key] = bucket
 	return bucket
 }
@@ -163,6 +250,10 @@ func (a *Aggregator) collectAnomaly(date string, entry Entry) {
 	key := date + "\x00" + kind + "\x00" + target
 	item := a.anomalies[key]
 	if item == nil {
+		if len(a.anomalies) >= a.limits.Anomalies || !a.admitDistinct() {
+			a.truncation.AnomaliesDropped++
+			return
+		}
 		item = &Anomaly{Date: date, Kind: kind, Target: target, Severity: severity, Reason: reason, FirstSeenAt: entry.TS, LastSeenAt: entry.TS}
 		a.anomalies[key] = item
 	}
@@ -190,7 +281,6 @@ func minTimeString(a, b string) string {
 	}
 	return a
 }
-
 func maxTimeString(a, b string) string {
 	if b > a {
 		return b

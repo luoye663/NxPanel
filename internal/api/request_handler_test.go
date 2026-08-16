@@ -85,6 +85,37 @@ func TestLogin_MultipleJSONValuesRejected(t *testing.T) {
 	}
 }
 
+func TestProxyCreateUnknownFieldRejected(t *testing.T) {
+	server := newTestServerWithAgent(t)
+	setupTestAdmin(t, server)
+	body := `{"name":"proxy","location_path":"/","upstream_url":"http://127.0.0.1:8080","host_header":"$host","unexpected":true}`
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, authenticatedUpstreamRequest(t, server, http.MethodPost, "/sites/site_missing/proxy", body, true))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("proxy unknown field status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProxySyncRequiresAuthAndCSRFAndUsesStaticRoute(t *testing.T) {
+	server := newTestServerWithAgent(t)
+	setupTestAdmin(t, server)
+	unauthenticated := httptest.NewRecorder()
+	server.Handler().ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodPost, apiTestPath(server, "/sites/site_missing/proxy/sync"), nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("proxy sync unauthenticated status=%d", unauthenticated.Code)
+	}
+	withoutCSRF := httptest.NewRecorder()
+	server.Handler().ServeHTTP(withoutCSRF, authenticatedUpstreamRequest(t, server, http.MethodPost, "/sites/site_missing/proxy/sync", "", false))
+	if withoutCSRF.Code != http.StatusForbidden {
+		t.Fatalf("proxy sync missing CSRF status=%d body=%s", withoutCSRF.Code, withoutCSRF.Body.String())
+	}
+	withCSRF := httptest.NewRecorder()
+	server.Handler().ServeHTTP(withCSRF, authenticatedUpstreamRequest(t, server, http.MethodPost, "/sites/site_missing/proxy/sync", "", true))
+	if withCSRF.Code != http.StatusNotFound {
+		t.Fatalf("proxy sync static route status=%d body=%s", withCSRF.Code, withCSRF.Body.String())
+	}
+}
+
 func TestHandleNginxReload_OptionalBody(t *testing.T) {
 	server := newNoAgentTestServer(t)
 

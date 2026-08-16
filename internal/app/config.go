@@ -85,6 +85,32 @@ type ServiceLogRotateConfig struct {
 type DatabaseConfig struct {
 	// BusyTimeout SQLite 忙等超时（毫秒）
 	BusyTimeout int `yaml:"busy_timeout"`
+
+	Retention DatabaseRetentionConfig `yaml:"retention"`
+}
+
+type DatabaseRetentionConfig struct {
+	LoginAuditMaxAge       string `yaml:"login_audit_max_age"`
+	LoginAuditMaxCount     int    `yaml:"login_audit_max_count"`
+	ScheduledRunMaxAge     string `yaml:"scheduled_task_runs_max_age"`
+	ScheduledRunMaxPerTask int    `yaml:"scheduled_task_runs_max_per_task"`
+	CleanupInterval        string `yaml:"cleanup_interval"`
+}
+
+const (
+	defaultLoginAuditMaxAge       = 2160 * time.Hour
+	defaultLoginAuditMaxCount     = 50000
+	defaultScheduledRunMaxAge     = 720 * time.Hour
+	defaultScheduledRunMaxPerTask = 100
+	defaultRetentionCleanup       = time.Hour
+)
+
+type RetentionPolicy struct {
+	LoginAuditMaxAge       time.Duration
+	LoginAuditMaxCount     int
+	ScheduledRunMaxAge     time.Duration
+	ScheduledRunMaxPerTask int
+	CleanupInterval        time.Duration
 }
 
 // UpgradeConfig — 升级检测配置
@@ -120,17 +146,27 @@ type APIConfig struct {
 
 	ReadTimeout string `yaml:"read_timeout"`
 
+	ReadHeaderTimeout string `yaml:"read_header_timeout"`
+
 	WriteTimeout string `yaml:"write_timeout"`
 
 	IdleTimeout string `yaml:"idle_timeout"`
 
 	ShutdownTimeout string `yaml:"shutdown_timeout"`
 
-	SSEHeartbeat string `yaml:"sse_heartbeat"`
+	SSEHeartbeat      string         `yaml:"sse_heartbeat"`
+	SSEWriteTimeout   string         `yaml:"sse_write_timeout"`
+	SSEMaxConnections int            `yaml:"sse_max_connections"`
+	AsyncResultTTL    string         `yaml:"async_result_ttl"`
+	AsyncJobs         AsyncJobConfig `yaml:"async_jobs"`
 
 	SystemMetricsInterval string `yaml:"system_metrics_interval"`
 
 	UploadTimeout string `yaml:"upload_timeout"`
+
+	MaxUploadSize string `yaml:"max_upload_size"`
+
+	Ingress IngressConfig `yaml:"ingress"`
 
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 
@@ -140,6 +176,8 @@ type APIConfig struct {
 
 	Captcha CaptchaConfig `yaml:"captcha"`
 
+	TwoFA TwoFAConfig `yaml:"twofa"`
+
 	BindSessionIP bool `yaml:"bind_session_ip"`
 
 	BindSessionUA bool `yaml:"bind_session_ua"`
@@ -147,9 +185,40 @@ type APIConfig struct {
 	TLS TLSConfig `yaml:"tls"`
 }
 
+type AsyncJobConfig struct {
+	ACMEMaxConcurrent     int    `yaml:"acme_max_concurrent"`
+	BackupMaxConcurrent   int    `yaml:"backup_max_concurrent"`
+	ManualQueueSize       int    `yaml:"manual_queue_size"`
+	ManualWorkers         int    `yaml:"manual_workers"`
+	ScheduledQueueSize    int    `yaml:"scheduled_queue_size"`
+	ScheduledWorkers      int    `yaml:"scheduled_workers"`
+	TaskReconcileInterval string `yaml:"task_reconcile_interval"`
+}
+
+func (c AsyncJobConfig) ScheduledTaskReconcileInterval() time.Duration {
+	interval := ParseDurationOrDefault(c.TaskReconcileInterval, time.Minute)
+	if interval < 5*time.Second {
+		return 5 * time.Second
+	}
+	if interval > time.Hour {
+		return time.Hour
+	}
+	return interval
+}
+
+type IngressConfig struct {
+	RequestRate         float64 `yaml:"request_rate"`
+	RequestBurst        int     `yaml:"request_burst"`
+	MaxTrackedIPs       int     `yaml:"max_tracked_ips"`
+	MaxConnections      int     `yaml:"max_connections"`
+	MaxConnectionsPerIP int     `yaml:"max_connections_per_ip"`
+}
+
 type RateLimitConfig struct {
-	MaxFailures int    `yaml:"max_failures"`
-	Window      string `yaml:"window"`
+	MaxFailures        int    `yaml:"max_failures"`
+	AccountMaxFailures int    `yaml:"account_max_failures"`
+	GlobalMaxFailures  int    `yaml:"global_max_failures"`
+	Window             string `yaml:"window"`
 }
 
 type CaptchaConfig struct {
@@ -157,6 +226,12 @@ type CaptchaConfig struct {
 	SiteKey              string `yaml:"site_key"`
 	SecretKey            string `yaml:"secret_key"`
 	TriggerAfterFailures int    `yaml:"trigger_after_failures"`
+	MaxConcurrent        int    `yaml:"max_concurrent_verifications"`
+}
+
+type TwoFAConfig struct {
+	TempTokenMaxPerAccount int `yaml:"temp_token_max_per_account"`
+	TempTokenMaxTotal      int `yaml:"temp_token_max_total"`
 }
 
 // AgentConfig — Agent 服务的配置
@@ -196,6 +271,40 @@ type AgentConfig struct {
 
 	// DownloadTimeout 单次文件/日志下载最长传输时间（如 "2m"）
 	DownloadTimeout string `yaml:"download_timeout"`
+
+	// Resources Agent 子进程、日志和访问分析的资源预算
+	Resources AgentResourceConfig `yaml:"resources"`
+
+	// Archive 通用压缩、解压和站点备份共享的资源预算
+	Archive AgentArchiveConfig `yaml:"archive"`
+}
+
+type AgentResourceConfig struct {
+	CommandOutputMaxSize     string `yaml:"command_output_max_size"`
+	CommandDiagnosticMaxSize string `yaml:"command_diagnostic_max_size"`
+	LogLineMaxSize           string `yaml:"log_line_max_size"`
+	AccessScanMaxBytes       string `yaml:"access_scan_max_bytes"`
+	AccessScanMaxLines       int64  `yaml:"access_scan_max_lines"`
+	AccessScanTimeout        string `yaml:"access_scan_timeout"`
+	AccessScanLineMaxSize    string `yaml:"access_scan_line_max_size"`
+	AccessScanRotatedFiles   int    `yaml:"access_scan_rotated_files"`
+	AccessScanMaxPaths       int    `yaml:"access_scan_max_paths"`
+	AccessScanMaxIPs         int    `yaml:"access_scan_max_ips"`
+	AccessScanMaxHourly      int    `yaml:"access_scan_max_hourly"`
+	AccessScanMaxAnomalies   int    `yaml:"access_scan_max_anomalies"`
+	AccessScanMaxEntries     int    `yaml:"access_scan_max_entries"`
+	AccessScanMaxDistinct    int    `yaml:"access_scan_max_distinct"`
+}
+
+type AgentArchiveConfig struct {
+	MaxEntries          int64  `yaml:"max_entries"`
+	MaxInputSize        string `yaml:"max_input_size"`
+	MaxArchiveSize      string `yaml:"max_archive_size"`
+	MaxExtractedSize    string `yaml:"max_extracted_size"`
+	MaxEntrySize        string `yaml:"max_entry_size"`
+	MaxDepth            int    `yaml:"max_depth"`
+	MaxCompressionRatio int64  `yaml:"max_compression_ratio"`
+	Timeout             string `yaml:"timeout"`
 }
 
 // NginxConfig — Nginx 相关配置
@@ -296,6 +405,7 @@ func LoadConfig(path string) (*Config, error) {
 		if os.IsNotExist(err) {
 			// 配置文件不存在是合法的，使用默认值 + 环境变量
 			applyEnvOverrides(cfg)
+			normalizeRetentionConfig(cfg)
 			normalizeLoginPath(cfg)
 			return cfg, nil
 		}
@@ -309,6 +419,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	// 环境变量覆盖 YAML 配置（优先级最高）
 	applyEnvOverrides(cfg)
+	normalizeRetentionConfig(cfg)
 	normalizeLoginPath(cfg)
 
 	return cfg, nil
@@ -333,24 +444,52 @@ func defaultConfig() *Config {
 			MaxAge:   "720h",
 		},
 		API: APIConfig{
-			Listen:                "127.0.0.1:8888",
-			SessionDuration:       "24h",
-			ReadTimeout:           "15s",
-			WriteTimeout:          "30s",
-			IdleTimeout:           "60s",
-			ShutdownTimeout:       "10s",
-			SSEHeartbeat:          "15s",
+			Listen:            "127.0.0.1:8888",
+			SessionDuration:   "24h",
+			ReadTimeout:       "15s",
+			ReadHeaderTimeout: "5s",
+			WriteTimeout:      "30s",
+			IdleTimeout:       "60s",
+			ShutdownTimeout:   "10s",
+			SSEHeartbeat:      "15s",
+			SSEWriteTimeout:   "10s",
+			SSEMaxConnections: 64,
+			AsyncResultTTL:    "10m",
+			AsyncJobs: AsyncJobConfig{
+				ACMEMaxConcurrent:     2,
+				BackupMaxConcurrent:   2,
+				ManualQueueSize:       32,
+				ManualWorkers:         2,
+				ScheduledQueueSize:    128,
+				ScheduledWorkers:      2,
+				TaskReconcileInterval: "1m",
+			},
 			SystemMetricsInterval: "2s",
 			UploadTimeout:         "300s",
+			MaxUploadSize:         "100M",
+			Ingress: IngressConfig{
+				RequestRate:         10,
+				RequestBurst:        40,
+				MaxTrackedIPs:       4096,
+				MaxConnections:      256,
+				MaxConnectionsPerIP: 20,
+			},
 			RateLimit: RateLimitConfig{
-				MaxFailures: 5,
-				Window:      "15m",
+				MaxFailures:        5,
+				AccountMaxFailures: 10,
+				GlobalMaxFailures:  100,
+				Window:             "15m",
 			},
 			TrustedProxies: []string{"127.0.0.1", "::1"},
 			MaxSessions:    5,
 			Captcha: CaptchaConfig{
 				Provider:             "none",
 				TriggerAfterFailures: 3,
+				MaxConcurrent:        8,
+			},
+			TwoFA: TwoFAConfig{
+				TempTokenMaxPerAccount: 3,
+				TempTokenMaxTotal:      1000,
 			},
 			BindSessionIP: true,
 			BindSessionUA: true,
@@ -369,6 +508,32 @@ func defaultConfig() *Config {
 			MaxReadSize:     "16M",
 			MaxDownloadSize: "256M",
 			DownloadTimeout: "2m",
+			Resources: AgentResourceConfig{
+				CommandOutputMaxSize:     "32M",
+				CommandDiagnosticMaxSize: "64K",
+				LogLineMaxSize:           "64K",
+				AccessScanMaxBytes:       "64M",
+				AccessScanMaxLines:       500000,
+				AccessScanTimeout:        "300s",
+				AccessScanLineMaxSize:    "32K",
+				AccessScanRotatedFiles:   32,
+				AccessScanMaxPaths:       10000,
+				AccessScanMaxIPs:         10000,
+				AccessScanMaxHourly:      1000,
+				AccessScanMaxAnomalies:   1000,
+				AccessScanMaxEntries:     100000,
+				AccessScanMaxDistinct:    50000,
+			},
+			Archive: AgentArchiveConfig{
+				MaxEntries:          100000,
+				MaxInputSize:        "2G",
+				MaxArchiveSize:      "1G",
+				MaxExtractedSize:    "2G",
+				MaxEntrySize:        "512M",
+				MaxDepth:            64,
+				MaxCompressionRatio: 100,
+				Timeout:             "30m",
+			},
 		},
 		Nginx: NginxConfig{
 			Bin:                 "",
@@ -400,6 +565,13 @@ func defaultConfig() *Config {
 		},
 		Database: DatabaseConfig{
 			BusyTimeout: 5000,
+			Retention: DatabaseRetentionConfig{
+				LoginAuditMaxAge:       "2160h",
+				LoginAuditMaxCount:     defaultLoginAuditMaxCount,
+				ScheduledRunMaxAge:     "720h",
+				ScheduledRunMaxPerTask: defaultScheduledRunMaxPerTask,
+				CleanupInterval:        "1h",
+			},
 		},
 		Upgrade: UpgradeConfig{
 			Enabled:       true,
@@ -503,6 +675,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_API_READ_TIMEOUT"); v != "" {
 		cfg.API.ReadTimeout = v
 	}
+	if v := os.Getenv("NXPANEL_API_READ_HEADER_TIMEOUT"); v != "" {
+		cfg.API.ReadHeaderTimeout = v
+	}
 	if v := os.Getenv("NXPANEL_API_WRITE_TIMEOUT"); v != "" {
 		cfg.API.WriteTimeout = v
 	}
@@ -515,11 +690,83 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_API_SSE_HEARTBEAT"); v != "" {
 		cfg.API.SSEHeartbeat = v
 	}
+	if v := os.Getenv("NXPANEL_API_SSE_WRITE_TIMEOUT"); v != "" {
+		cfg.API.SSEWriteTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_API_SSE_MAX_CONNECTIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.SSEMaxConnections = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_RESULT_TTL"); v != "" {
+		cfg.API.AsyncResultTTL = v
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_ACME_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ACMEMaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_BACKUP_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.BackupMaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_MANUAL_QUEUE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ManualQueueSize = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_MANUAL_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ManualWorkers = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_QUEUE_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ScheduledQueueSize = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_SCHEDULED_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.AsyncJobs.ScheduledWorkers = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_ASYNC_JOBS_TASK_RECONCILE_INTERVAL"); v != "" {
+		cfg.API.AsyncJobs.TaskReconcileInterval = v
+	}
 	if v := os.Getenv("NXPANEL_API_SYSTEM_METRICS_INTERVAL"); v != "" {
 		cfg.API.SystemMetricsInterval = v
 	}
 	if v := os.Getenv("NXPANEL_API_UPLOAD_TIMEOUT"); v != "" {
 		cfg.API.UploadTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_API_MAX_UPLOAD_SIZE"); v != "" {
+		cfg.API.MaxUploadSize = v
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_REQUEST_RATE"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.API.Ingress.RequestRate = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_REQUEST_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.RequestBurst = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_MAX_TRACKED_IPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.MaxTrackedIPs = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_MAX_CONNECTIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.MaxConnections = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_INGRESS_MAX_CONNECTIONS_PER_IP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Ingress.MaxConnectionsPerIP = n
+		}
 	}
 	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_MAX_FAILURES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -528,6 +775,16 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_WINDOW"); v != "" {
 		cfg.API.RateLimit.Window = v
+	}
+	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_ACCOUNT_MAX_FAILURES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.RateLimit.AccountMaxFailures = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_RATE_LIMIT_GLOBAL_MAX_FAILURES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.RateLimit.GlobalMaxFailures = n
+		}
 	}
 	if v := os.Getenv("NXPANEL_API_TRUSTED_PROXIES"); v != "" {
 		cfg.API.TrustedProxies = strings.Split(v, ",")
@@ -549,6 +806,21 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_API_CAPTCHA_TRIGGER_AFTER_FAILURES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.API.Captcha.TriggerAfterFailures = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_CAPTCHA_MAX_CONCURRENT_VERIFICATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.Captcha.MaxConcurrent = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_PER_ACCOUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.TwoFA.TempTokenMaxPerAccount = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_API_TWOFA_TEMP_TOKEN_MAX_TOTAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.API.TwoFA.TempTokenMaxTotal = n
 		}
 	}
 	if v := os.Getenv("NXPANEL_API_BIND_SESSION_IP"); v != "" {
@@ -593,6 +865,77 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("NXPANEL_AGENT_DOWNLOAD_TIMEOUT"); v != "" {
 		cfg.Agent.DownloadTimeout = v
 	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_COMMAND_OUTPUT_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.CommandOutputMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_COMMAND_DIAGNOSTIC_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.CommandDiagnosticMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_LOG_LINE_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.LogLineMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_BYTES"); v != "" {
+		cfg.Agent.Resources.AccessScanMaxBytes = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_LINES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Agent.Resources.AccessScanMaxLines = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_TIMEOUT"); v != "" {
+		cfg.Agent.Resources.AccessScanTimeout = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_LINE_MAX_SIZE"); v != "" {
+		cfg.Agent.Resources.AccessScanLineMaxSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_ROTATED_FILES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Agent.Resources.AccessScanRotatedFiles = n
+		}
+	}
+	applyEnvInt := func(name string, target *int) {
+		if v := os.Getenv(name); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				*target = n
+			}
+		}
+	}
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_PATHS", &cfg.Agent.Resources.AccessScanMaxPaths)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_IPS", &cfg.Agent.Resources.AccessScanMaxIPs)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_HOURLY", &cfg.Agent.Resources.AccessScanMaxHourly)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_ANOMALIES", &cfg.Agent.Resources.AccessScanMaxAnomalies)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_ENTRIES", &cfg.Agent.Resources.AccessScanMaxEntries)
+	applyEnvInt("NXPANEL_AGENT_RESOURCES_ACCESS_SCAN_MAX_DISTINCT", &cfg.Agent.Resources.AccessScanMaxDistinct)
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRIES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Agent.Archive.MaxEntries = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_INPUT_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxInputSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ARCHIVE_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxArchiveSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_EXTRACTED_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxExtractedSize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_ENTRY_SIZE"); v != "" {
+		cfg.Agent.Archive.MaxEntrySize = v
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_DEPTH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Agent.Archive.MaxDepth = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_MAX_COMPRESSION_RATIO"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Agent.Archive.MaxCompressionRatio = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_AGENT_ARCHIVE_TIMEOUT"); v != "" {
+		cfg.Agent.Archive.Timeout = v
+	}
 	if v := os.Getenv("NXPANEL_NGINX_LOG_DIR"); v != "" {
 		cfg.Nginx.LogDir = v
 	}
@@ -629,6 +972,25 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Database.BusyTimeout = n
 		}
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_LOGIN_AUDIT_MAX_AGE"); v != "" {
+		cfg.Database.Retention.LoginAuditMaxAge = v
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_LOGIN_AUDIT_MAX_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Database.Retention.LoginAuditMaxCount = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_SCHEDULED_TASK_RUNS_MAX_AGE"); v != "" {
+		cfg.Database.Retention.ScheduledRunMaxAge = v
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_SCHEDULED_TASK_RUNS_MAX_PER_TASK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Database.Retention.ScheduledRunMaxPerTask = n
+		}
+	}
+	if v := os.Getenv("NXPANEL_DATABASE_RETENTION_CLEANUP_INTERVAL"); v != "" {
+		cfg.Database.Retention.CleanupInterval = v
 	}
 	if v := os.Getenv("NXPANEL_UPGRADE_ENABLED"); v != "" {
 		cfg.Upgrade.Enabled = v == "true" || v == "1"
@@ -797,6 +1159,48 @@ func ParseDurationOrDefault(s string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
+func (c DatabaseRetentionConfig) Policy() RetentionPolicy {
+	return RetentionPolicy{
+		LoginAuditMaxAge:       clampDuration(ParseDurationOrDefault(c.LoginAuditMaxAge, defaultLoginAuditMaxAge), 24*time.Hour, 10*365*24*time.Hour),
+		LoginAuditMaxCount:     clampIntDefault(c.LoginAuditMaxCount, defaultLoginAuditMaxCount, 100, 1000000),
+		ScheduledRunMaxAge:     clampDuration(ParseDurationOrDefault(c.ScheduledRunMaxAge, defaultScheduledRunMaxAge), time.Hour, 10*365*24*time.Hour),
+		ScheduledRunMaxPerTask: clampIntDefault(c.ScheduledRunMaxPerTask, defaultScheduledRunMaxPerTask, 1, 10000),
+		CleanupInterval:        clampDuration(ParseDurationOrDefault(c.CleanupInterval, defaultRetentionCleanup), time.Minute, 24*time.Hour),
+	}
+}
+
+func normalizeRetentionConfig(cfg *Config) {
+	policy := cfg.Database.Retention.Policy()
+	cfg.Database.Retention.LoginAuditMaxAge = policy.LoginAuditMaxAge.String()
+	cfg.Database.Retention.LoginAuditMaxCount = policy.LoginAuditMaxCount
+	cfg.Database.Retention.ScheduledRunMaxAge = policy.ScheduledRunMaxAge.String()
+	cfg.Database.Retention.ScheduledRunMaxPerTask = policy.ScheduledRunMaxPerTask
+	cfg.Database.Retention.CleanupInterval = policy.CleanupInterval.String()
+}
+
+func clampDuration(value, minValue, maxValue time.Duration) time.Duration {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func clampIntDefault(value, defaultValue, minValue, maxValue int) int {
+	if value == 0 {
+		value = defaultValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
 // WriteBack 将当前配置写回配置文件，保留注释和格式
 // 只更新指定的字段，其他内容不变
 func (c *Config) WriteBack() error {
@@ -827,6 +1231,8 @@ func (c *Config) WriteBack() error {
 	setYAMLNodeValue(&root, "api", "login_path", c.API.LoginPath)
 	setYAMLNodeBool(&root, "api", "public_health", c.API.PublicHealth)
 	setYAMLNodeScalar3L(&root, "api", "rate_limit", "max_failures", strconv.Itoa(c.API.RateLimit.MaxFailures), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "rate_limit", "account_max_failures", strconv.Itoa(c.API.RateLimit.AccountMaxFailures), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "rate_limit", "global_max_failures", strconv.Itoa(c.API.RateLimit.GlobalMaxFailures), "!!int")
 	setYAMLNodeValue3L(&root, "api", "rate_limit", "window", c.API.RateLimit.Window)
 	setYAMLNodeScalar(&root, "api", "max_sessions", strconv.Itoa(c.API.MaxSessions), "!!int")
 	setYAMLNodeBool(&root, "api", "bind_session_ip", c.API.BindSessionIP)
@@ -836,6 +1242,9 @@ func (c *Config) WriteBack() error {
 	setYAMLNodeValue3L(&root, "api", "captcha", "site_key", c.API.Captcha.SiteKey)
 	setYAMLNodeValue3L(&root, "api", "captcha", "secret_key", c.API.Captcha.SecretKey)
 	setYAMLNodeScalar3L(&root, "api", "captcha", "trigger_after_failures", strconv.Itoa(c.API.Captcha.TriggerAfterFailures), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "captcha", "max_concurrent_verifications", strconv.Itoa(c.API.Captcha.MaxConcurrent), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "twofa", "temp_token_max_per_account", strconv.Itoa(c.API.TwoFA.TempTokenMaxPerAccount), "!!int")
+	setYAMLNodeScalar3L(&root, "api", "twofa", "temp_token_max_total", strconv.Itoa(c.API.TwoFA.TempTokenMaxTotal), "!!int")
 
 	// API TLS 配置
 	setYAMLNodeBool3L(&root, "api", "tls", "enabled", c.API.TLS.Enabled)

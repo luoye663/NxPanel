@@ -31,6 +31,7 @@ api:
   # 会话有效期，默认 24 小时
   session_duration: "24h"
   # HTTP 服务器超时设置
+  read_header_timeout: "5s"
   read_timeout: "15s"
   write_timeout: "30s"
   idle_timeout: "60s"
@@ -38,12 +39,39 @@ api:
   shutdown_timeout: "10s"
   # SSE 心跳间隔
   sse_heartbeat: "15s"
+  # 每个 SSE 帧的滚动写超时、进程级 SSE 连接上限和异步终态保留时间
+  sse_write_timeout: "10s"
+  sse_max_connections: 64
+  async_result_ttl: "10m"
+  # 长任务并发准入，以及“立即执行”计划任务的固定工作队列
+  async_jobs:
+    acme_max_concurrent: 2
+    backup_max_concurrent: 2
+    manual_queue_size: 32
+    manual_workers: 2
+    scheduled_queue_size: 128
+    scheduled_workers: 2
+    task_reconcile_interval: "1m"
   # 仪表盘系统指标 SSE 下发间隔，最低 1s
   system_metrics_interval: "3s"
+  # 已认证上传路由独立超时和文件内容上限
+  upload_timeout: "300s"
+  max_upload_size: "100M"
+  # 直接暴露面板端口时的请求和连接保护
+  ingress:
+    request_rate: 10
+    request_burst: 40
+    max_tracked_ips: 4096
+    max_connections: 256
+    max_connections_per_ip: 20
   # 登录安全配置
   rate_limit:
     # 窗口内最大登录失败次数
-    max_failures: 3
+    max_failures: 5
+    # 同一规范化账号在不同 IP 下的最大失败次数
+    account_max_failures: 10
+    # 所有登录来源合计的最大失败次数；单次成功不会重置
+    global_max_failures: 100
     # 失败计数窗口时长
     window: "15m"
   # 可信代理 IP 列表（IP 或 CIDR 格式），仅来自这些 IP 的转发头才会被信任
@@ -66,7 +94,13 @@ api:
     # 密钥（后端验证使用）
     secret_key: ""
     # 登录失败 N 次后触发 CAPTCHA
-    trigger_after_failures: 1
+    trigger_after_failures: 3
+    # 同时执行的第三方 CAPTCHA 验证上限，超出时立即拒绝
+    max_concurrent_verifications: 8
+  # 登录阶段 2FA 临时令牌限制
+  twofa:
+    temp_token_max_per_account: 3
+    temp_token_max_total: 1000
   # TLS 配置
   tls:
     # 是否启用 TLS，默认 true
@@ -113,6 +147,33 @@ agent:
   max_download_size: "256M"
   # 单次文件/日志下载最长传输时间
   download_timeout: "2m"
+  # Agent 子进程、日志行和访问分析扫描资源预算
+  resources:
+    command_output_max_size: "32M"
+    command_diagnostic_max_size: "64K"
+    log_line_max_size: "64K"
+    access_scan_max_bytes: "64M"
+    access_scan_max_lines: 500000
+    access_scan_timeout: "300s"
+    access_scan_line_max_size: "32K"
+    access_scan_rotated_files: 32
+    # 聚合结果与去重集合的全局基数预算；超限项会被确定性丢弃并计数
+    access_scan_max_paths: 10000
+    access_scan_max_ips: 10000
+    access_scan_max_hourly: 1000
+    access_scan_max_anomalies: 1000
+    access_scan_max_entries: 100000
+    access_scan_max_distinct: 50000
+  # 通用归档与站点备份/恢复共享预算
+  archive:
+    max_entries: 100000
+    max_input_size: "2G"
+    max_archive_size: "1G"
+    max_extracted_size: "2G"
+    max_entry_size: "512M"
+    max_depth: 64
+    max_compression_ratio: 100
+    timeout: "30m"
 # Nginx 相关配置
 nginx:
   # Nginx 二进制路径，为空则自动检测
@@ -157,6 +218,15 @@ nginx:
 database:
   # SQLite 忙等超时（毫秒）
   busy_timeout: 5000
+  # 审计与任务执行历史保留；不能用 0 禁用，超出硬限制的值会被钳制
+  # login audit: age 24h..87600h, count 100..1000000
+  # scheduled runs: age 1h..87600h, per task 1..10000; cleanup: 1m..24h
+  retention:
+    login_audit_max_age: "2160h"
+    login_audit_max_count: 50000
+    scheduled_task_runs_max_age: "720h"
+    scheduled_task_runs_max_per_task: 100
+    cleanup_interval: "1h"
 # ACME / Let's Encrypt 配置
 acme:
   # 使用 Let's Encrypt 测试环境（证书不受信任，但无频率限制）

@@ -2,8 +2,10 @@ package auth
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/luoye663/nxpanel/internal/db"
 	"github.com/luoye663/nxpanel/internal/db/repo"
@@ -302,5 +304,37 @@ func TestSessionUABinding(t *testing.T) {
 	session, err = svc.ValidateSession(sessionID, "127.0.0.1", "firefox-99")
 	if err != ErrSessionMismatch {
 		t.Errorf("不同 UA 应返回 ErrSessionMismatch，实际 err=%v session=%v", err, session)
+	}
+}
+
+func TestLoginWithLongUANormalizesSessionCreateAndValidation(t *testing.T) {
+	database := newTestDB(t)
+	svc := NewAuthService(database, time.Hour, 0, false, true)
+	if err := svc.SetupAdmin("admin", "Test-password-123"); err != nil {
+		t.Fatalf("SetupAdmin() error = %v", err)
+	}
+	longUA := strings.Repeat("a", SessionUserAgentMaxBytes-1) + "界" + strings.Repeat("z", 80)
+	result, err := svc.Login("admin", "Test-password-123", longUA, "192.0.2.1")
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	session, err := svc.ValidateSession(result.SessionID, "192.0.2.1", longUA)
+	if err != nil || session == nil {
+		t.Fatalf("ValidateSession() session=%v error=%v", session, err)
+	}
+	if len(session.UserAgent) > SessionUserAgentMaxBytes || session.UserAgent != NormalizeSessionUserAgent(longUA) || !utf8.ValidString(session.UserAgent) {
+		t.Fatalf("stored User-Agent length=%d valid=%v", len(session.UserAgent), utf8.ValidString(session.UserAgent))
+	}
+	changedPrefix := "b" + longUA[1:]
+	if session, err = svc.ValidateSession(result.SessionID, "192.0.2.1", changedPrefix); err != ErrSessionMismatch || session != nil {
+		t.Fatalf("changed significant prefix session=%v error=%v", session, err)
+	}
+	result, err = svc.Login("admin", "Test-password-123", longUA, "192.0.2.1")
+	if err != nil {
+		t.Fatalf("second Login() error = %v", err)
+	}
+	changedSuffix := longUA[:len(longUA)-1] + "y"
+	if session, err = svc.ValidateSession(result.SessionID, "192.0.2.1", changedSuffix); err != ErrSessionMismatch || session != nil {
+		t.Fatalf("changed hashed suffix session=%v error=%v", session, err)
 	}
 }

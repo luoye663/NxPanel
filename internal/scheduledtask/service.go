@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/app"
@@ -14,14 +15,48 @@ type taskReloader interface {
 }
 
 type Service struct {
-	repo     *Repo
-	registry *Registry
-	runner   *Runner
-	reloader taskReloader
+	repo      *Repo
+	registry  *Registry
+	runner    *Runner
+	reloader  taskReloader
+	ctx       context.Context
+	cancel    context.CancelFunc
+	manual    chan string
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
-func NewService(repo *Repo, registry *Registry, runner *Runner, reloader taskReloader) *Service {
-	return &Service{repo: repo, registry: registry, runner: runner, reloader: reloader}
+func NewService(parent context.Context, repo *Repo, registry *Registry, runner *Runner, reloader taskReloader, queueSize, workers int) *Service {
+	if queueSize <= 0 {
+		queueSize = 32
+	}
+	if workers <= 0 {
+		workers = 2
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s := &Service{repo: repo, registry: registry, runner: runner, reloader: reloader, ctx: ctx, cancel: cancel, manual: make(chan string, queueSize)}
+	for range workers {
+		s.wg.Add(1)
+		go s.manualWorker()
+	}
+	return s
+}
+
+func (s *Service) Close() {
+	s.closeOnce.Do(s.cancel)
+	s.wg.Wait()
+}
+
+func (s *Service) manualWorker() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case taskID := <-s.manual:
+			s.runner.Run(s.ctx, taskID, TriggerManual)
+		}
+	}
 }
 
 func (s *Service) Definitions() []TaskDefinition {
@@ -165,13 +200,8 @@ func (s *Service) SetEnabled(ctx context.Context, taskID string, enabled bool) e
 		next := compiled.Next(time.Now().UTC())
 		task.NextRunAt = &next
 	}
-	if err := s.repo.SetEnabled(ctx, taskID, enabled); err != nil {
+	if err := s.repo.SetEnabled(ctx, taskID, enabled, task.NextRunAt); err != nil {
 		return err
-	}
-	if enabled && task.NextRunAt != nil {
-		if err := s.repo.UpdateNextRun(ctx, taskID, *task.NextRunAt, TaskStatusIdle, ""); err != nil {
-			return err
-		}
 	}
 	s.reload(taskID)
 	return nil
@@ -188,7 +218,11 @@ func (s *Service) Delete(ctx context.Context, taskID string) error {
 	if task.System {
 		return app.NewAppError(app.ErrForbidden, "系统内置任务不能删除", nil)
 	}
-	return s.repo.Delete(ctx, taskID)
+	if err := s.repo.Delete(ctx, taskID); err != nil {
+		return err
+	}
+	s.reload(taskID)
+	return nil
 }
 
 func (s *Service) RunNow(ctx context.Context, taskID string) error {
@@ -206,8 +240,14 @@ func (s *Service) RunNow(ctx context.Context, taskID string) error {
 		return app.ErrBadRequestMsg("计划任务类型尚未接入执行器")
 	}
 	// 手动执行仍交给 Runner，确保锁、超时、执行记录和调度执行共用同一套流程。
-	go s.runner.Run(context.Background(), taskID, TriggerManual)
-	return nil
+	select {
+	case <-s.ctx.Done():
+		return app.ErrBusyMsg("服务正在关闭，不能提交计划任务")
+	case s.manual <- taskID:
+		return nil
+	default:
+		return app.ErrBusyMsg("手动计划任务队列已满，请稍后重试")
+	}
 }
 
 func (s *Service) ListRuns(ctx context.Context, taskID string, limit int) ([]RunListItem, error) {
@@ -322,6 +362,7 @@ func runToListItem(run Run) RunListItem {
 	return RunListItem{
 		ID: run.ID, TaskID: run.TaskID, TaskType: run.TaskType, TaskName: run.TaskName, Trigger: run.Trigger,
 		Status: run.Status, Attempt: run.Attempt, StartedAt: formatTime(run.StartedAt), FinishedAt: timePtrToString(run.FinishedAt),
+		TaskVersion: run.TaskVersion, RunnerID: run.RunnerID,
 		DurationMillis: run.DurationMillis, ErrorMessage: run.ErrorMessage, LogFile: run.LogFile, OperationID: run.OperationID,
 		RequestID: run.RequestID, CreatedAt: formatTime(run.CreatedAt),
 	}

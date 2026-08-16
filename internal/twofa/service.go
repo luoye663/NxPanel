@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -22,17 +23,38 @@ type Service struct {
 	tempStore      *TempTokenStore
 	pendingSecrets sync.Map
 	pendingCancel  context.CancelFunc
+	pendingWG      sync.WaitGroup
+	stopOnce       sync.Once
 }
 
-func NewService(adminRepo *repo.AdminRepo) *Service {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewService(adminRepo *repo.AdminRepo, tempTokenLimits ...int) *Service {
+	return NewServiceWithContext(context.Background(), adminRepo, tempTokenLimits...)
+}
+
+func NewServiceWithContext(parent context.Context, adminRepo *repo.AdminRepo, tempTokenLimits ...int) *Service {
+	maxPerAccount, maxTotal := 3, 1000
+	if len(tempTokenLimits) > 0 {
+		maxPerAccount = tempTokenLimits[0]
+	}
+	if len(tempTokenLimits) > 1 {
+		maxTotal = tempTokenLimits[1]
+	}
+	ctx, cancel := context.WithCancel(parent)
 	s := &Service{
 		adminRepo:     adminRepo,
-		tempStore:     NewTempTokenStore(5 * time.Minute),
+		tempStore:     NewTempTokenStoreWithContext(parent, 5*time.Minute, maxPerAccount, maxTotal),
 		pendingCancel: cancel,
 	}
-	go s.cleanupPending(ctx)
+	s.pendingWG.Add(1)
+	go func() {
+		defer s.pendingWG.Done()
+		s.cleanupPending(ctx)
+	}()
 	return s
+}
+
+func (s *Service) ReloadTempTokenLimits(maxPerAccount, maxTotal int) {
+	s.tempStore.ReloadLimits(maxPerAccount, maxTotal)
 }
 
 func (s *Service) GetTempStore() *TempTokenStore {
@@ -40,10 +62,11 @@ func (s *Service) GetTempStore() *TempTokenStore {
 }
 
 func (s *Service) Stop() {
-	s.tempStore.Stop()
-	if s.pendingCancel != nil {
+	s.stopOnce.Do(func() {
+		s.tempStore.Stop()
 		s.pendingCancel()
-	}
+	})
+	s.pendingWG.Wait()
 }
 
 func (s *Service) cleanupPending(ctx context.Context) {
@@ -209,39 +232,91 @@ type TempTokenEntry struct {
 }
 
 type TempTokenStore struct {
-	mu          sync.Mutex
-	tokens      map[string]*TempTokenEntry
-	ttl         time.Duration
-	maxAttempts int
-	cancel      context.CancelFunc
+	mu            sync.Mutex
+	tokens        map[string]*TempTokenEntry
+	ttl           time.Duration
+	maxAttempts   int
+	maxPerAccount int
+	maxTotal      int
+	accountCounts map[int]int
+	randReader    io.Reader
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	stopOnce      sync.Once
 }
 
-func NewTempTokenStore(ttl time.Duration) *TempTokenStore {
-	ctx, cancel := context.WithCancel(context.Background())
-	store := &TempTokenStore{
-		tokens:      make(map[string]*TempTokenEntry),
-		ttl:         ttl,
-		maxAttempts: 5,
-		cancel:      cancel,
+func NewTempTokenStore(ttl time.Duration, limits ...int) *TempTokenStore {
+	return NewTempTokenStoreWithContext(context.Background(), ttl, limits...)
+}
+
+func NewTempTokenStoreWithContext(parent context.Context, ttl time.Duration, limits ...int) *TempTokenStore {
+	maxPerAccount, maxTotal := 3, 1000
+	if len(limits) > 0 {
+		maxPerAccount = limits[0]
 	}
-	go store.cleanup(ctx)
+	if len(limits) > 1 {
+		maxTotal = limits[1]
+	}
+	if maxPerAccount <= 0 {
+		maxPerAccount = 3
+	}
+	if maxTotal <= 0 {
+		maxTotal = 1000
+	}
+	ctx, cancel := context.WithCancel(parent)
+	store := &TempTokenStore{
+		tokens:        make(map[string]*TempTokenEntry),
+		ttl:           ttl,
+		maxAttempts:   5,
+		maxPerAccount: maxPerAccount,
+		maxTotal:      maxTotal,
+		accountCounts: make(map[int]int),
+		randReader:    rand.Reader,
+		cancel:        cancel,
+	}
+	store.wg.Add(1)
+	go func() {
+		defer store.wg.Done()
+		store.cleanup(ctx)
+	}()
 	return store
 }
 
-func (s *TempTokenStore) Stop() {
-	if s.cancel != nil {
-		s.cancel()
+func (s *TempTokenStore) ReloadLimits(maxPerAccount, maxTotal int) {
+	if maxPerAccount <= 0 {
+		maxPerAccount = 3
 	}
+	if maxTotal <= 0 {
+		maxTotal = 1000
+	}
+	s.mu.Lock()
+	s.maxPerAccount = maxPerAccount
+	s.maxTotal = maxTotal
+	s.mu.Unlock()
 }
 
-func (s *TempTokenStore) Create(adminID int, username, ip, userAgent string) string {
+func (s *TempTokenStore) Stop() {
+	s.stopOnce.Do(s.cancel)
+	s.wg.Wait()
+}
+
+func (s *TempTokenStore) Create(adminID int, username, ip, userAgent string) (string, error) {
+	ip = auth.NormalizeSessionIP(ip)
+	userAgent = auth.NormalizeSessionUserAgent(userAgent)
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand.Read failed: " + err.Error())
+	if _, err := io.ReadFull(s.randReader, b); err != nil {
+		return "", fmt.Errorf("生成临时令牌失败: %w", err)
 	}
 	token := hex.EncodeToString(b)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.purgeExpiredLocked(time.Now().UTC())
+	if len(s.tokens) >= s.maxTotal || s.accountCounts[adminID] >= s.maxPerAccount {
+		return "", fmt.Errorf("临时令牌容量已满")
+	}
+	if _, exists := s.tokens[token]; exists {
+		return "", fmt.Errorf("临时令牌冲突")
+	}
 	s.tokens[token] = &TempTokenEntry{
 		AdminID:     adminID,
 		Username:    username,
@@ -250,10 +325,13 @@ func (s *TempTokenStore) Create(adminID int, username, ip, userAgent string) str
 		MaxAttempts: s.maxAttempts,
 		ExpiresAt:   time.Now().UTC().Add(s.ttl),
 	}
-	return token
+	s.accountCounts[adminID]++
+	return token, nil
 }
 
 func (s *TempTokenStore) ValidateContext(token, ip, userAgent string) (*TempTokenEntry, bool) {
+	ip = auth.NormalizeSessionIP(ip)
+	userAgent = auth.NormalizeSessionUserAgent(userAgent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.validateLocked(token, ip, userAgent)
@@ -263,27 +341,31 @@ func (s *TempTokenStore) ValidateContext(token, ip, userAgent string) (*TempToke
 	return cloneTempTokenEntry(entry), true
 }
 
-func (s *TempTokenStore) RecordFailure(token string) {
+func (s *TempTokenStore) RecordFailure(token string) *TempTokenEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.tokens[token]
 	if !ok {
-		return
+		return nil
 	}
+	result := cloneTempTokenEntry(entry)
 	entry.Attempts++
 	if entry.Attempts >= entry.MaxAttempts {
-		delete(s.tokens, token)
+		s.deleteLocked(token, entry)
 	}
+	return result
 }
 
 func (s *TempTokenStore) Consume(token, ip, userAgent string) (*TempTokenEntry, bool) {
+	ip = auth.NormalizeSessionIP(ip)
+	userAgent = auth.NormalizeSessionUserAgent(userAgent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.validateLocked(token, ip, userAgent)
 	if !ok {
 		return nil, false
 	}
-	delete(s.tokens, token)
+	s.deleteLocked(token, entry)
 	return cloneTempTokenEntry(entry), true
 }
 
@@ -293,7 +375,7 @@ func (s *TempTokenStore) validateLocked(token, ip, userAgent string) (*TempToken
 		return nil, false
 	}
 	if time.Now().UTC().After(entry.ExpiresAt) || entry.Attempts >= entry.MaxAttempts {
-		delete(s.tokens, token)
+		s.deleteLocked(token, entry)
 		return nil, false
 	}
 	// 临时令牌绑定首次登录的 IP 与 User-Agent，避免泄露后被其他客户端继续完成二阶段认证。
@@ -301,6 +383,23 @@ func (s *TempTokenStore) validateLocked(token, ip, userAgent string) (*TempToken
 		return nil, false
 	}
 	return entry, true
+}
+
+func (s *TempTokenStore) deleteLocked(token string, entry *TempTokenEntry) {
+	delete(s.tokens, token)
+	if count := s.accountCounts[entry.AdminID]; count <= 1 {
+		delete(s.accountCounts, entry.AdminID)
+	} else {
+		s.accountCounts[entry.AdminID] = count - 1
+	}
+}
+
+func (s *TempTokenStore) purgeExpiredLocked(now time.Time) {
+	for token, entry := range s.tokens {
+		if now.After(entry.ExpiresAt) {
+			s.deleteLocked(token, entry)
+		}
+	}
 }
 
 func cloneTempTokenEntry(entry *TempTokenEntry) *TempTokenEntry {
@@ -318,11 +417,7 @@ func (s *TempTokenStore) cleanup(ctx context.Context) {
 		case <-ticker.C:
 			now := time.Now().UTC()
 			s.mu.Lock()
-			for token, entry := range s.tokens {
-				if now.After(entry.ExpiresAt) {
-					delete(s.tokens, token)
-				}
-			}
+			s.purgeExpiredLocked(now)
 			s.mu.Unlock()
 		}
 	}

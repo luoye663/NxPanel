@@ -169,6 +169,9 @@ func TestMigrationCreatesAllTables(t *testing.T) {
 		"site_auth_rule_accounts",
 		"site_proxy_auth_accounts",
 		"rewrite_templates",
+		"nginx_upstreams",
+		"nginx_upstream_servers",
+		"nginx_upstream_applied_state",
 	}
 
 	for _, table := range expectedTables {
@@ -210,7 +213,12 @@ func TestMigrationCreatesIndexes(t *testing.T) {
 		"idx_site_backup_schedules_enabled",
 		"idx_scheduled_tasks_enabled_next",
 		"idx_scheduled_task_runs_task_created",
+		"idx_login_audit_retention",
+		"idx_scheduled_task_runs_terminal_finished",
+		"idx_scheduled_task_runs_terminal_task_created",
 		"idx_rewrite_templates_enabled_sort",
+		"idx_nginx_upstream_servers_order",
+		"idx_site_proxy_upstream_id",
 	}
 
 	for _, idx := range expectedIndexes {
@@ -224,6 +232,180 @@ func TestMigrationCreatesIndexes(t *testing.T) {
 		} else if err != nil {
 			t.Fatalf("查询索引 %s 失败: %v", idx, err)
 		}
+	}
+}
+
+func TestProxyUpstreamMigrationPreservesOldRowsAndRestrictsDelete(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, migration := range migrations {
+		if migration.Version >= 6 {
+			break
+		}
+		if _, err := database.Exec(migration.SQL); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.Version, err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO sites
+		(id, primary_domain, domains_json, status, root_path, access_log_path, error_log_path,
+		 config_path, enabled_path, rewrite_path)
+		VALUES ('site_old', 'old.example.com', '["old.example.com"]', 'enabled', '/www/old',
+		'/logs/old.access.log', '/logs/old.error.log', '/nginx/old.conf', '/nginx/enabled/old.conf', '/nginx/rewrite/old.conf')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO site_proxy (id, site_id, name, upstream_url)
+		VALUES ('proxy_old', 'site_old', 'old', 'https://old.example.com:8443')`); err != nil {
+		t.Fatal(err)
+	}
+	var migration6 Migration
+	for _, migration := range migrations {
+		if migration.Version == 6 {
+			migration6 = migration
+		}
+	}
+	if migration6.SQL == "" {
+		t.Fatal("migration 6 not found")
+	}
+	if _, err := database.Exec(migration6.SQL); err != nil {
+		t.Fatal(err)
+	}
+	var upstreamID sql.NullString
+	var url, scheme, serverName, ca string
+	var verify, depth int
+	if err := database.QueryRow(`SELECT upstream_id, upstream_url, upstream_scheme,
+		proxy_ssl_server_name, proxy_ssl_verify, proxy_ssl_trusted_certificate, proxy_ssl_verify_depth
+		FROM site_proxy WHERE id = 'proxy_old'`).Scan(&upstreamID, &url, &scheme, &serverName, &verify, &ca, &depth); err != nil {
+		t.Fatal(err)
+	}
+	if upstreamID.Valid || url != "https://old.example.com:8443" || scheme != "http" || serverName != "" || verify != 0 || ca != "" || depth != 0 {
+		t.Fatalf("old row changed: id=%v url=%q scheme=%q sni=%q verify=%d ca=%q depth=%d", upstreamID, url, scheme, serverName, verify, ca, depth)
+	}
+	if _, err := database.Exec(`INSERT INTO nginx_upstreams (id, name, algorithm) VALUES ('up_ref', 'managed_backend', 'round_robin')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE site_proxy SET upstream_id='up_ref', upstream_scheme='https',
+		proxy_ssl_server_name='backend.example.com', proxy_ssl_verify=1,
+		proxy_ssl_trusted_certificate='/etc/ssl/certs/ca.pem', proxy_ssl_verify_depth=3
+		WHERE id='proxy_old'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM nginx_upstreams WHERE id='up_ref'`); err == nil {
+		t.Fatal("referenced upstream delete should be restricted")
+	}
+	invalidUpdates := []string{
+		`UPDATE site_proxy SET upstream_scheme='ftp' WHERE id='proxy_old'`,
+		`UPDATE site_proxy SET proxy_ssl_verify=2 WHERE id='proxy_old'`,
+		`UPDATE site_proxy SET proxy_ssl_verify_depth=101 WHERE id='proxy_old'`,
+	}
+	for _, statement := range invalidUpdates {
+		if _, err := database.Exec(statement); err == nil {
+			t.Fatalf("expected CHECK failure for %s", statement)
+		}
+	}
+}
+
+func TestProxyUpstreamMigrationV5ToV6SurvivesDiskReopen(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "panel.db")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations {
+		if migration.Version >= 6 {
+			break
+		}
+		if _, err := database.Exec(migration.SQL); err != nil {
+			database.Close()
+			t.Fatalf("apply migration %d: %v", migration.Version, err)
+		}
+		if _, err := database.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, migration.Version); err != nil {
+			database.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.Exec(`INSERT INTO sites
+		(id, primary_domain, domains_json, status, root_path, access_log_path, error_log_path, config_path, enabled_path, rewrite_path)
+		VALUES ('site_disk', 'disk.example.com', '["disk.example.com"]', 'enabled', '/www/disk', '/logs/disk.access', '/logs/disk.error', '/nginx/disk.conf', '/nginx/enabled/disk.conf', '/nginx/rewrite/disk.conf')`); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO site_proxy (id, site_id, name, upstream_url)
+		VALUES ('proxy_disk', 'site_disk', 'disk', 'https://service_api:8443')`); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(database); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	database, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var version int
+	var upstreamID sql.NullString
+	var url, scheme string
+	if err := database.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT upstream_id, upstream_url, upstream_scheme FROM site_proxy WHERE id='proxy_disk'`).Scan(&upstreamID, &url, &scheme); err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 || upstreamID.Valid || url != "https://service_api:8443" || scheme != "http" {
+		t.Fatalf("reopened migration state: version=%d id=%v url=%q scheme=%q", version, upstreamID, url, scheme)
+	}
+}
+
+func TestMigrationAddsScheduledRunClaimColumns(t *testing.T) {
+	database, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := RunMigrations(database); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.Query(`PRAGMA table_info(scheduled_task_runs)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatal(err)
+		}
+		found[name] = true
+	}
+	if !found["task_version"] || !found["runner_id"] {
+		t.Fatalf("scheduled run claim columns missing: %v", found)
 	}
 }
 

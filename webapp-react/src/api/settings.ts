@@ -1,5 +1,13 @@
 import { get, put } from './client'
-import type { DefaultPagesSettings, DefaultSiteSettings, HTTPSHijackSettings, LogRotateSettings, SecuritySettings, UpdateLogRotateRequest, UpdateSecuritySettingsRequest } from './types'
+import type { BrandingSettings, DefaultPagesSettings, DefaultSiteSettings, HTTPSHijackSettings, LogRotateSettings, SecuritySettings, UpdateLogRotateRequest, UpdateSecuritySettingsRequest } from './types'
+
+export function getBranding(): Promise<BrandingSettings> {
+  return get('/settings/branding')
+}
+
+export function updateBranding(data: BrandingSettings): Promise<BrandingSettings> {
+  return put('/settings/branding', data)
+}
 
 export function getDefaultPages(): Promise<DefaultPagesSettings> {
   return get('/settings/default-pages')

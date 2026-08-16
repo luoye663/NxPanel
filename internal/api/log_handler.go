@@ -6,7 +6,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -125,27 +124,22 @@ func (s *Server) handleRotatedLogDelete(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
-	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
+	resp, ok := s.openSSEResponse(w, r)
 	if !ok {
-		WriteError(w, r, http.StatusInternalServerError, "STREAM_UNSUPPORTED", "当前连接不支持实时日志", nil)
 		return
 	}
+	defer resp.Close()
 	logType := queryLogType(r)
 	from := r.URL.Query().Get("from")
 	last := ""
 	if from != "end" {
 		if result, err := s.logsSvc.Get(r.Context(), chi.URLParam(r, "site_id"), logType, 50); err == nil {
 			for _, line := range result.Lines {
-				writeSSELine(w, "line", line)
+				if resp.WriteFrame(sseEventFrame("line", line)) != nil {
+					return
+				}
 				last = line
 			}
-			flusher.Flush()
 		}
 	}
 	ticker := time.NewTicker(2 * time.Second)
@@ -157,20 +151,23 @@ func (s *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
-			writeSSELine(w, "heartbeat", "{}")
-			flusher.Flush()
+			if resp.WriteFrame(sseHeartbeatFrame) != nil {
+				return
+			}
 		case <-ticker.C:
 			result, err := s.logsSvc.Get(r.Context(), chi.URLParam(r, "site_id"), logType, 50)
 			if err != nil {
-				writeSSELine(w, "error", err.Error())
-				flusher.Flush()
+				if resp.WriteFrame(sseEventFrame("error", err.Error())) != nil {
+					return
+				}
 				continue
 			}
 			for _, line := range newLinesAfter(result.Lines, last) {
-				writeSSELine(w, "line", line)
+				if resp.WriteFrame(sseEventFrame("line", line)) != nil {
+					return
+				}
 				last = line
 			}
-			flusher.Flush()
 		}
 	}
 }
@@ -187,12 +184,6 @@ func parseLines(r *http.Request, fallback int) int {
 		return n
 	}
 	return fallback
-}
-
-func writeSSELine(w io.Writer, event, data string) {
-	_, _ = fmt.Fprintf(w, "event: %s\n", event)
-	encoded, _ := json.Marshal(map[string]string{"line": data})
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", encoded)
 }
 
 func newLinesAfter(lines []string, last string) []string {

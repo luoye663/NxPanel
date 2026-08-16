@@ -4,7 +4,7 @@ import {
   IconDashboard,
   IconExternalLink,
   IconFolder,
-  IconLock,
+  IconPalette,
   IconLogout,
   IconCalendarTime,
   IconRefresh,
@@ -15,6 +15,7 @@ import {
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { useSystemOverview, useUpgradeCheckMutation, useUpgradeStatus } from '@/api/hooks'
 import { useAuth } from '@/auth/AuthProvider'
+import { useBranding } from '@/branding/BrandingProvider'
 import { notifyError, notifySuccess } from '@/utils/notify'
 
 const menuItems = [
@@ -24,10 +25,8 @@ const menuItems = [
   { path: '/nginx', label: 'Nginx 管理', icon: IconServer },
   { path: '/scheduled-tasks', label: '计划任务', icon: IconCalendarTime },
   { path: '/logs', label: '日志', icon: IconSettings },
-  { path: '/security-settings', label: '安全设置', icon: IconLock },
+  { path: '/panel-settings', label: '面板设置', icon: IconPalette },
 ]
-
-const defaultSubtitle = ''
 const upgradeCheckInterval = 6 * 60 * 60 * 1000
 
 function formatPublishedAt(value?: string) {
@@ -43,6 +42,7 @@ export function BasicLayout() {
   const [opened, { toggle, close }] = useDisclosure()
   const location = useLocation()
   const auth = useAuth()
+  const { branding } = useBranding()
   const systemOverviewQuery = useSystemOverview()
   const upgradeQuery = useUpgradeStatus(upgradeCheckInterval)
   const upgradeCheckMutation = useUpgradeCheckMutation()
@@ -85,8 +85,7 @@ export function BasicLayout() {
           <Group gap="sm">
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="切换导航菜单" />
             <div>
-              <Title order={4} lh={1.1}>{activeItem?.label || 'NxPanel'}</Title>
-              <Text size="xs" c="dimmed">{defaultSubtitle}</Text>
+              <Title order={4} lh={1.1}>{activeItem?.label || branding.site_name}</Title>
             </div>
           </Group>
           <Group gap="xs" wrap="nowrap">
@@ -171,11 +170,11 @@ export function BasicLayout() {
       </AppShell.Header>
 
       <AppShell.Navbar p="md">
-        <Group mb="lg" gap="sm">
-          <div className="brandMark">N</div>
-          <div>
-            <Text fw={700}>NxPanel</Text>
-            <Text size="xs" c="dimmed">Nginx 管理面板</Text>
+        <Group mb="lg" gap="sm" wrap="nowrap" align="flex-start">
+          <div className="brandMark">{Array.from(branding.site_name)[0] || 'N'}</div>
+          <div className="brandCopy">
+            <Text fw={700} className="brandText">{branding.site_name}</Text>
+            {branding.subtitle ? <Text size="xs" c="dimmed" className="brandText">{branding.subtitle}</Text> : null}
           </div>
         </Group>
 

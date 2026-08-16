@@ -48,9 +48,11 @@ func TestMigrateSchedulesToTasks(t *testing.T) {
 	// 测试场景只验证迁移建档，不启动调度引擎，避免后台 goroutine 影响断言稳定性。
 	registry := scheduledtask.NewRegistry()
 	runner := scheduledtask.NewRunner(taskRepo, registry, app.NewID("runner"), 1)
-	taskSvc := scheduledtask.NewService(taskRepo, registry, runner, nil)
+	taskSvc := scheduledtask.NewService(context.Background(), taskRepo, registry, runner, nil, 4, 1)
+	t.Cleanup(taskSvc.Close)
 
-	svc := NewService(fakeSiteRepo{sites: map[string]*repo.Site{"site_1": site}}, repo.NewSiteBackupRepo(database), scheduleRepo, nil, nil, nil, "/panel", nil)
+	svc := NewService(context.Background(), 2, fakeSiteRepo{sites: map[string]*repo.Site{"site_1": site}}, repo.NewSiteBackupRepo(database), scheduleRepo, nil, nil, nil, "/panel", nil)
+	t.Cleanup(svc.Close)
 	if err := svc.AttachScheduledTasks(taskSvc); err != nil {
 		t.Fatalf("注册站点备份 handler 失败: %v", err)
 	}
