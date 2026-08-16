@@ -377,7 +377,15 @@ sudo bash scripts/nginx-install/install.sh --openresty --non-interactive
 
 ## Release 流程
 
-当前仓库同时支持本地打包和 GitHub Actions 自动发布。
+正式版本使用 GitHub Actions 的 build-first、tag-last 流程发布。发布必须绑定 `main` 上已通过 CI 的精确提交；二进制包和容器镜像全部构建成功后，才会发布 GitHub Release 并创建版本 tag。
+
+### 发布正式版本
+
+1. 确保目标提交已合并到 `main`，且该提交的 `CI` push workflow 已成功。
+2. 打开 GitHub 仓库的 `Actions` 页面，选择 `Release`，点击 `Run workflow`。
+3. 选择 `main` 分支，输入 `vX.Y.Z` 形式的稳定版本号并启动。
+
+如果构建、网络、registry 或资产上传暂时失败，在原 workflow run 上使用 `Re-run failed jobs`。不要删除或移动已发布的 tag；已发布版本需修复时应发布新的 patch 版本。当启用 GHCR 或 Docker Hub 推送时，镜像可能在 GitHub Release 最终发布前短暂可见。
 
 ### 本地生成 release 包
 
@@ -503,9 +511,6 @@ make dev-frontend
 
 # 生成发布包
 make release
-
-# 上传 release 到 GitHub（本地手动）
-make upload-release
 
 # 构建 Docker 镜像（nginx / openresty 两个变体）
 make docker-build-nginx

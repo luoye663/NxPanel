@@ -23,10 +23,11 @@ GHCR_USERNAME ?= $(GITHUB_ACTOR)
 
 # 版本号（可通过 -ldflags 注入）
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION)
 
 # 构建目标
-.PHONY: all build build-api build-agent build-frontend clean test run-api run-agent lint fmt vet tidy help upload-release test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
+.PHONY: all build build-api build-agent build-frontend clean test run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
 
 # 默认目标：构建全部（含前端）
 all: build-frontend build
@@ -222,18 +223,12 @@ release: build-frontend build
 	@echo "生成校验文件..."
 	@cd release/nxpanel && \
 		echo "# nxpanel $(VERSION)" > checksums.txt && \
-		echo "# generated: $$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> checksums.txt && \
+		echo "# generated: $(BUILD_TIME)" >> checksums.txt && \
 		sha256sum bin/nxpanel-api >> checksums.txt && \
 		sha256sum bin/nxpanel-agent >> checksums.txt && \
 		find configs/templates -type f -exec sha256sum {} \; >> checksums.txt
 	@cd release && tar -czf nxpanel-linux-amd64.tar.gz nxpanel/
 	@echo "发布包已生成: release/nxpanel-linux-amd64.tar.gz"
-
-## upload-release: 上传到 GitHub Release（需要 gh CLI）
-upload-release: release
-	gh release create $(VERSION) \
-		release/nxpanel-linux-amd64.tar.gz \
-		--title "$(VERSION)"
 
 ## test-install-compat: 测试 scripts/nginx-install/install.sh 在各发行版的兼容性
 test-install-compat:
@@ -281,6 +276,5 @@ help:
 	@echo "  tidy             整理依赖"
 	@echo "  install          安装到系统路径"
 	@echo "  release          生成发布包（tar.gz）"
-	@echo "  upload-release   上传到 GitHub Release（需要 gh CLI）"
 	@echo "  test-install-compat     测试 scripts/nginx-install/install.sh 在各发行版的兼容性（Docker）"
 	@echo "  test-install-compat-full 测试完整 install.sh 在各发行版的兼容性（Docker + systemd）"
