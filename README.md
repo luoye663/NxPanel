@@ -405,7 +405,7 @@ release/nxpanel-linux-amd64.tar.gz
 前置条件：
 
 - Go 1.25+
-- Node.js 22+
+- Node.js 24+
 - pnpm
 - Nginx 或 OpenResty
 
