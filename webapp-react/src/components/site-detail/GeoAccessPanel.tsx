@@ -48,6 +48,7 @@ const statusOptions = [
 const actionLabel: Record<GeoAction, string> = { allow: '允许', deny_403: '拒绝 403', deny_444: '关闭 444' }
 
 function countryName(code: string) {
+  if (code === 'TW') return '中国台湾 (TW)'
   if (code === 'ZZ') return '未知地区 (ZZ)'
   try { return `${new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of(code) || code} (${code})` } catch { return code }
 }
