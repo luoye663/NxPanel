@@ -48,7 +48,12 @@ cd webapp-react && pnpm build
 
 ## Commit and PR Guidance
 
-- Use concise commit messages.
+- Enable the repository hooks once after cloning with `make setup-git-hooks`.
+- Use `type(scope): subject` for commit titles; use `type(scope)!: subject` for breaking changes.
+- The scope is required and uses lowercase letters, digits, `.`, `_`, `/`, or `-`.
+- Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`.
+- For example: `fix(web): correct the failure timeout label`.
+- Git-generated `Merge`, `Revert`, `fixup!`, and `squash!` messages are accepted.
 - Describe behavior changes, migration impact, and test results in the pull request.
 - If a change affects security boundaries, call that out explicitly in the PR description.
 
@@ -109,7 +114,12 @@ cd webapp-react && pnpm build
 
 ## Commit 与 PR 建议
 
-- commit message 保持简洁。
+- 克隆仓库后执行一次 `make setup-git-hooks`，启用仓库内置 Git hooks。
+- commit 标题使用 `type(scope): 内容`；破坏性变更使用 `type(scope)!: 内容`。
+- 功能区 scope 必填，只能使用小写英文字母、数字、`.`、`_`、`/` 或 `-`。
+- type 允许 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore` 和 `revert`。
+- 例如：`fix(web): 修复失败超时输入框描述`。
+- Git 生成的 `Merge`、`Revert`、`fixup!` 和 `squash!` 提交信息允许作为例外。
 - PR 描述中说明行为变化、迁移影响和测试结果。
 - 若改动涉及安全边界，请在 PR 描述中显式说明。
 
