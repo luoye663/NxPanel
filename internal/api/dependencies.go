@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +19,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/captcha"
 	"github.com/luoye663/nxpanel/internal/config"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/luoye663/nxpanel/internal/geoaccess"
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
@@ -55,6 +57,7 @@ type repos struct {
 	accessAnalysis  *accessanalysis.Repo
 	scheduledTask   *scheduledtask.Repo
 	upstream        *repo.UpstreamRepo
+	geoAccess       *repo.GeoAccessRepo
 }
 
 func newServerBase(cfg *app.Config, db *sql.DB) *Server {
@@ -146,6 +149,7 @@ func newRepos(db *sql.DB) repos {
 		accessAnalysis:  accessanalysis.NewRepo(db),
 		scheduledTask:   scheduledtask.NewRepo(db),
 		upstream:        repo.NewUpstreamRepo(db),
+		geoAccess:       repo.NewGeoAccessRepo(db),
 	}
 }
 
@@ -189,6 +193,21 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	s.sslSvc = ssl.NewService(r.site, r.ssl, r.certificate, s.opRepo, sslAgent, s.cfg)
 	s.rewriteSvc = rewrite.NewService(r.site, r.rewrite, s.opRepo, s.agentClient, r.rewriteTemplate)
 	s.accessLimitSvc = accesslimit.NewService(r.site, r.authAccount, r.authRule, r.denyRule, r.ipWhitelistRule, r.proxy, s.opRepo, s.agentClient, s.agentClient, s.cfg.Nginx.PanelDir)
+	geoSvc, err := geoaccess.NewService(r.geoAccess, r.site, r.ipWhitelistRule, s.opRepo, s.agentClient, s.cfg.DataDir, s.cfg.Nginx.PanelDir)
+	if err != nil {
+		return fmt.Errorf("初始化地域访问服务失败: %w", err)
+	}
+	s.geoAccessSvc = geoSvc
+	s.accessLimitSvc.SetGeoAccessSyncer(geoSvc)
+	if err := geoSvc.AttachScheduledTasks(s.scheduledTaskSvc); err != nil {
+		return fmt.Errorf("注册 GeoIP 更新计划任务失败: %w", err)
+	}
+	if err := geoSvc.EnsureUpdateSystemTask(s.rootCtx, s.scheduledTaskSvc); err != nil {
+		return fmt.Errorf("创建 GeoIP 更新计划任务失败: %w", err)
+	}
+	if err := geoSvc.Reconcile(s.rootCtx); err != nil {
+		slog.Warn("对账地域访问配置失败，面板将继续启动", "error", err)
+	}
 	s.hotlinkSvc = hotlink.NewService(r.site, r.hotlinkRule, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.configSvc = config.NewService(r.site, r.proxy, r.ssl, s.opRepo, s.agentClient)
 	s.settingsSvc = settings.NewService(

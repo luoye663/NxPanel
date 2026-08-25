@@ -33,6 +33,7 @@ import { MonoText } from '@/components/common/MonoText'
 import { SectionCard } from '@/components/common/SectionCard'
 import { DataTable } from '@/components/tables/DataTable'
 import { AuthAccountManager, AuthAccountSelector, authAccountKeys } from './AuthAccountManager'
+import { GeoAccessPanel } from './GeoAccessPanel'
 import { confirmDanger } from '@/utils/confirm'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
@@ -69,7 +70,7 @@ interface HotlinkFormValues {
   block_status: '403' | '404' | '444'
 }
 
-type AccessSubTab = 'auth' | 'deny' | 'ip-limit' | 'hotlink'
+type AccessSubTab = 'auth' | 'deny' | 'ip-limit' | 'geo' | 'hotlink'
 
 const defaultAuthForm: AuthFormValues = { name: '', path: '/', account_ids: [] }
 const defaultDenyForm: DenyFormValues = { name: '', extension_pattern: '', path_pattern: '' }
@@ -369,6 +370,7 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
               <Tabs.Tab value="auth">加密访问</Tabs.Tab>
               <Tabs.Tab value="deny">禁止访问</Tabs.Tab>
               <Tabs.Tab value="ip-limit">IP 限制</Tabs.Tab>
+              <Tabs.Tab value="geo">地域策略</Tabs.Tab>
             </Tabs.List>
           ) : null}
 
@@ -443,6 +445,10 @@ export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = fals
                 )}
               />
             </Stack>
+          </Tabs.Panel>
+
+          <Tabs.Panel value="geo" pt="md">
+            <GeoAccessPanel siteId={site.id} />
           </Tabs.Panel>
 
           <Tabs.Panel value="hotlink" pt={singleTab ? 0 : 'md'}>

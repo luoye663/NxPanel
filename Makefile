@@ -27,7 +27,7 @@ BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION)
 
 # 构建目标
-.PHONY: all build build-api build-agent build-frontend clean test run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
+.PHONY: all build build-api build-agent build-frontend clean test test-commit-message setup-git-hooks run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
 
 # 默认目标：构建全部（含前端）
 all: build-frontend build
@@ -165,6 +165,15 @@ clean:
 test:
 	$(GO) test ./... -v -count=1
 
+## test-commit-message: 测试 Git 提交信息校验规则
+test-commit-message:
+	bash scripts/test-commit-message.sh
+
+## setup-git-hooks: 启用仓库内置 Git hooks
+setup-git-hooks:
+	git config core.hooksPath .githooks
+	@echo "Git hooks 已启用。"
+
 ## run-api: 运行 API 服务（开发模式）
 run-api: build-api
 	./$(BINARY_API) -config configs/config.yaml
@@ -267,6 +276,8 @@ help:
 	@echo "  docker-push-all        多架构构建并推送到 Docker Hub + GHCR"
 	@echo "  clean            清理构建产物"
 	@echo "  test             运行所有后端测试"
+	@echo "  test-commit-message 测试 Git 提交信息校验规则"
+	@echo "  setup-git-hooks  启用仓库内置 Git hooks"
 	@echo "  run-api          运行 API 服务"
 	@echo "  run-agent        运行 Agent 服务"
 	@echo "  dev-frontend     前端开发模式（热更新）"

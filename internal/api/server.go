@@ -25,6 +25,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/captcha"
 	"github.com/luoye663/nxpanel/internal/config"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/luoye663/nxpanel/internal/geoaccess"
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
@@ -60,6 +61,7 @@ type Server struct {
 	sslSvc                 *ssl.Service
 	rewriteSvc             *rewrite.Service
 	accessLimitSvc         *accesslimit.Service
+	geoAccessSvc           *geoaccess.Service
 	hotlinkSvc             *hotlink.Service
 	configSvc              *config.Service
 	settingsSvc            *settings.Service

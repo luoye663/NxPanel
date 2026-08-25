@@ -47,6 +47,21 @@ type Service struct {
 	agent               agentTx
 	configReader        configReader
 	panelDir            string
+	geoSyncer           geoAccessSyncer
+}
+
+type geoAccessSyncer interface {
+	IsSiteEnabled(siteID string) bool
+	SyncAfterIPChange(context.Context, string, string) error
+}
+
+func (svc *Service) SetGeoAccessSyncer(syncer geoAccessSyncer) { svc.geoSyncer = syncer }
+
+func (svc *Service) syncGeoIPExceptions(ctx context.Context, siteID, requestID string) error {
+	if svc.geoSyncer == nil || !svc.geoSyncer.IsSiteEnabled(siteID) {
+		return nil
+	}
+	return svc.geoSyncer.SyncAfterIPChange(ctx, siteID, requestID)
 }
 
 func NewService(
@@ -824,6 +839,9 @@ func (svc *Service) CreateIPLimitRule(ctx context.Context, siteID string, req *C
 		_ = svc.ipWhitelistRuleRepo.Delete(rule.ID)
 		return nil, err
 	}
+	if err := svc.syncGeoIPExceptions(ctx, siteID, requestID); err != nil {
+		return nil, err
+	}
 	return ipLimitRuleToResponse(rule), nil
 }
 
@@ -868,6 +886,9 @@ func (svc *Service) UpdateIPLimitRule(ctx context.Context, siteID, ruleID string
 	if err := svc.renderAndApply(ctx, site, requestID, "更新 IP 限制规则: "+rule.Name, nil); err != nil {
 		return nil, err
 	}
+	if err := svc.syncGeoIPExceptions(ctx, siteID, requestID); err != nil {
+		return nil, err
+	}
 	return ipLimitRuleToResponse(rule), nil
 }
 
@@ -890,6 +911,9 @@ func (svc *Service) DeleteIPLimitRule(ctx context.Context, siteID, ruleID string
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if err := svc.renderAndApply(ctx, site, requestID, "删除 IP 限制规则: "+rule.Name, nil); err != nil {
+		return err
+	}
+	if err := svc.syncGeoIPExceptions(ctx, siteID, requestID); err != nil {
 		return err
 	}
 	return nil
@@ -960,6 +984,12 @@ func (svc *Service) buildAccessLimitContent(siteID string) string {
 				buf.WriteString(RenderDenyPathRule(rule.PathPattern))
 			}
 		}
+	}
+
+	if svc.geoSyncer != nil && svc.geoSyncer.IsSiteEnabled(siteID) {
+		buf.WriteString("\n# NXPANEL-GEO-ACCESS-START\n")
+		buf.WriteString(fmt.Sprintf("include %s;\n", filepath.Join(svc.panelDir, "geo-access", "sites", siteID+".conf")))
+		buf.WriteString("# NXPANEL-GEO-ACCESS-END\n")
 	}
 
 	return buf.String()

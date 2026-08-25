@@ -85,12 +85,13 @@ func (s *Server) handleNginxDetect(w http.ResponseWriter, r *http.Request) {
 	_ = s.opRepo.UpdateStatus(opID, "success")
 
 	WriteOK(w, r, map[string]any{
-		"bin":       result.Bin,
-		"version":   result.Version,
-		"conf_path": result.ConfPath,
-		"prefix":    result.Prefix,
-		"test_ok":   result.TestOK,
-		"stderr":    result.Stderr,
+		"bin":          result.Bin,
+		"version":      result.Version,
+		"conf_path":    result.ConfPath,
+		"prefix":       result.Prefix,
+		"test_ok":      result.TestOK,
+		"stderr":       result.Stderr,
+		"capabilities": result.Capabilities,
 	})
 }
 
