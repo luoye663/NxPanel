@@ -13,12 +13,15 @@ type GeoAccessRepo struct {
 func NewGeoAccessRepo(db *sql.DB) *GeoAccessRepo { return &GeoAccessRepo{db: db} }
 
 func (r *GeoAccessRepo) GetSiteSettings(siteID string) (*SiteGeoSettings, error) {
-	item := &SiteGeoSettings{SiteID: siteID, DefaultAction: "allow", ApplyStatus: "disabled"}
+	item := &SiteGeoSettings{SiteID: siteID, DefaultAction: "allow", DefaultStatusCode: 403,
+		DefaultResponseType: "text", ApplyStatus: "disabled"}
 	var enabled int
-	err := r.db.QueryRow(`SELECT site_id, enabled, default_action, desired_hash, applied_hash, apply_status,
+	err := r.db.QueryRow(`SELECT site_id, enabled, default_action, default_status_code, default_response_type,
+		default_response_body, desired_hash, applied_hash, apply_status,
 		last_error, created_at, updated_at FROM site_geo_settings WHERE site_id = ?`, siteID).
-		Scan(&item.SiteID, &enabled, &item.DefaultAction, &item.DesiredHash, &item.AppliedHash,
-			&item.ApplyStatus, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
+		Scan(&item.SiteID, &enabled, &item.DefaultAction, &item.DefaultStatusCode, &item.DefaultResponseType,
+			&item.DefaultResponseBody, &item.DesiredHash, &item.AppliedHash, &item.ApplyStatus,
+			&item.LastError, &item.CreatedAt, &item.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return item, nil
 	}
@@ -32,12 +35,16 @@ func (r *GeoAccessRepo) GetSiteSettings(siteID string) (*SiteGeoSettings, error)
 func (r *GeoAccessRepo) SaveSiteSettings(item *SiteGeoSettings) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.db.Exec(`INSERT INTO site_geo_settings
-		(site_id, enabled, default_action, desired_hash, applied_hash, apply_status, last_error, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(site_id, enabled, default_action, default_status_code, default_response_type, default_response_body,
+		desired_hash, applied_hash, apply_status, last_error, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(site_id) DO UPDATE SET enabled=excluded.enabled, default_action=excluded.default_action,
+		default_status_code=excluded.default_status_code, default_response_type=excluded.default_response_type,
+		default_response_body=excluded.default_response_body,
 		desired_hash=excluded.desired_hash, applied_hash=excluded.applied_hash, apply_status=excluded.apply_status,
 		last_error=excluded.last_error, updated_at=excluded.updated_at`, item.SiteID, boolToInt(item.Enabled),
-		item.DefaultAction, item.DesiredHash, item.AppliedHash, item.ApplyStatus, item.LastError, now, now)
+		item.DefaultAction, item.DefaultStatusCode, item.DefaultResponseType, item.DefaultResponseBody,
+		item.DesiredHash, item.AppliedHash, item.ApplyStatus, item.LastError, now, now)
 	if err != nil {
 		return fmt.Errorf("保存站点地域设置失败: %w", err)
 	}
@@ -45,7 +52,8 @@ func (r *GeoAccessRepo) SaveSiteSettings(item *SiteGeoSettings) error {
 }
 
 func (r *GeoAccessRepo) ListEnabledSiteSettings() ([]*SiteGeoSettings, error) {
-	rows, err := r.db.Query(`SELECT site_id, enabled, default_action, desired_hash, applied_hash, apply_status,
+	rows, err := r.db.Query(`SELECT site_id, enabled, default_action, default_status_code, default_response_type,
+		default_response_body, desired_hash, applied_hash, apply_status,
 		last_error, created_at, updated_at FROM site_geo_settings WHERE enabled=1 ORDER BY site_id`)
 	if err != nil {
 		return nil, fmt.Errorf("查询启用地域设置失败: %w", err)
@@ -55,7 +63,8 @@ func (r *GeoAccessRepo) ListEnabledSiteSettings() ([]*SiteGeoSettings, error) {
 	for rows.Next() {
 		item := &SiteGeoSettings{}
 		var enabled int
-		if err := rows.Scan(&item.SiteID, &enabled, &item.DefaultAction, &item.DesiredHash, &item.AppliedHash,
+		if err := rows.Scan(&item.SiteID, &enabled, &item.DefaultAction, &item.DefaultStatusCode,
+			&item.DefaultResponseType, &item.DefaultResponseBody, &item.DesiredHash, &item.AppliedHash,
 			&item.ApplyStatus, &item.LastError, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}

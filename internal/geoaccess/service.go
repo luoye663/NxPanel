@@ -265,15 +265,19 @@ func (s *Service) UpdateSiteAccess(ctx context.Context, siteID string, req Updat
 	if _, err := s.requireSite(siteID); err != nil {
 		return nil, err
 	}
-	if !validAction(req.DefaultAction) {
-		return nil, app.NewAppError(app.ErrValidationFailed, "默认动作无效", nil)
+	action, statusCode, responseType, responseBody, normalizeErr := normalizeDefaultResponse(req)
+	if normalizeErr != nil {
+		return nil, app.NewAppError(app.ErrValidationFailed, normalizeErr.Error(), nil)
 	}
 	old, err := s.repo.GetSiteSettings(siteID)
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	updated := *old
-	updated.DefaultAction = req.DefaultAction
+	updated.DefaultAction = action
+	updated.DefaultStatusCode = statusCode
+	updated.DefaultResponseType = responseType
+	updated.DefaultResponseBody = responseBody
 	if old.Enabled {
 		updated.ApplyStatus = "pending"
 	}
@@ -287,6 +291,48 @@ func (s *Service) UpdateSiteAccess(ctx context.Context, siteID string, req Updat
 		}
 	}
 	return s.GetSiteAccess(siteID)
+}
+
+func normalizeDefaultResponse(req UpdateSiteAccessRequest) (string, int, string, string, error) {
+	action := strings.TrimSpace(req.DefaultAction)
+	statusCode := req.DefaultStatusCode
+	responseType := strings.TrimSpace(req.DefaultResponseType)
+	responseBody := req.DefaultResponseBody
+
+	// Accept the initial geo-access API values so an in-flight older SPA can save safely.
+	switch action {
+	case ActionDeny403:
+		action = ActionRespond
+		if statusCode == 0 {
+			statusCode = 403
+		}
+	case ActionDeny444:
+		action = ActionRespond
+		statusCode = 444
+	}
+	if !validDefaultAction(action) {
+		return "", 0, "", "", fmt.Errorf("默认动作无效")
+	}
+	if statusCode == 0 {
+		statusCode = 403
+	}
+	if statusCode < 400 || statusCode > 599 {
+		return "", 0, "", "", fmt.Errorf("返回状态码必须在 400 到 599 之间")
+	}
+	if responseType == "" {
+		responseType = ResponseText
+	}
+	if responseType != ResponseHTML && responseType != ResponseText {
+		return "", 0, "", "", fmt.Errorf("返回内容类型必须是 html 或 text")
+	}
+	if len([]byte(responseBody)) > maxBodyBytes {
+		return "", 0, "", "", fmt.Errorf("返回内容不能超过 64 KiB")
+	}
+	if statusCode == 444 {
+		responseType = ResponseText
+		responseBody = ""
+	}
+	return action, statusCode, responseType, responseBody, nil
 }
 
 func (s *Service) EnableSite(ctx context.Context, siteID, requestID string) (*SiteAccessResponse, error) {
@@ -648,7 +694,7 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 	if err != nil {
 		return app.NewAppError(app.ErrValidationFailed, err.Error(), nil)
 	}
-	changes := make([]agentclient.FileChangeRequest, 0, len(rendered.Sites)*3+5)
+	changes := make([]agentclient.FileChangeRequest, 0, len(rendered.Sites)*4+6)
 	if len(settings) == 0 {
 		changes = append(changes, agentclient.FileChangeRequest{Type: "remove", Path: rendered.GlobalPath})
 	} else {
@@ -659,6 +705,11 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 		siteRender := rendered.Sites[setting.SiteID]
 		changes = append(changes, fileWrite(siteRender.SitePath, siteRender.SiteContent, 0644),
 			fileWrite(siteRender.AllowPath, siteRender.AllowBody, 0644), fileWrite(siteRender.DenyPath, siteRender.DenyBody, 0644))
+		if siteRender.HasResponse {
+			changes = append(changes, fileWrite(siteRender.ResponsePath, siteRender.ResponseBody, 0644))
+		} else {
+			changes = append(changes, agentclient.FileChangeRequest{Type: "remove", Path: siteRender.ResponsePath})
+		}
 		site, _ := s.sites.GetByID(setting.SiteID)
 		if site != nil && site.Status == "enabled" {
 			reload = true
@@ -712,7 +763,8 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 			changes = append(changes,
 				agentclient.FileChangeRequest{Type: "remove", Path: filepath.Join(s.panelDir, "geo-access", "sites", siteID+".conf")},
 				agentclient.FileChangeRequest{Type: "remove", Path: filepath.Join(s.panelDir, "geo-access", "ip", siteID+"-allow.conf")},
-				agentclient.FileChangeRequest{Type: "remove", Path: filepath.Join(s.panelDir, "geo-access", "ip", siteID+"-deny.conf")})
+				agentclient.FileChangeRequest{Type: "remove", Path: filepath.Join(s.panelDir, "geo-access", "ip", siteID+"-deny.conf")},
+				agentclient.FileChangeRequest{Type: "remove", Path: filepath.Join(s.panelDir, "geo-access", "responses", siteID+".body")})
 		}
 		if site.Status == "enabled" {
 			reload = true

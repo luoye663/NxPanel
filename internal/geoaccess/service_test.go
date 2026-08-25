@@ -172,3 +172,83 @@ server {
 	}
 	t.Fatal("reconcile transaction did not repair the site access-limit marker")
 }
+
+func TestNormalizeDefaultResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		req        UpdateSiteAccessRequest
+		wantAction string
+		wantStatus int
+		wantType   string
+		wantBody   string
+		wantErr    bool
+	}{
+		{name: "html", req: UpdateSiteAccessRequest{DefaultAction: ActionRespond, DefaultStatusCode: 451, DefaultResponseType: ResponseHTML, DefaultResponseBody: "<h1>x</h1>"}, wantAction: ActionRespond, wantStatus: 451, wantType: ResponseHTML, wantBody: "<h1>x</h1>"},
+		{name: "empty body", req: UpdateSiteAccessRequest{DefaultAction: ActionRespond, DefaultStatusCode: 403, DefaultResponseType: ResponseText}, wantAction: ActionRespond, wantStatus: 403, wantType: ResponseText},
+		{name: "legacy 403", req: UpdateSiteAccessRequest{DefaultAction: ActionDeny403}, wantAction: ActionRespond, wantStatus: 403, wantType: ResponseText},
+		{name: "444 clears body", req: UpdateSiteAccessRequest{DefaultAction: ActionRespond, DefaultStatusCode: 444, DefaultResponseType: ResponseHTML, DefaultResponseBody: "ignored"}, wantAction: ActionRespond, wantStatus: 444, wantType: ResponseText},
+		{name: "low status", req: UpdateSiteAccessRequest{DefaultAction: ActionRespond, DefaultStatusCode: 399, DefaultResponseType: ResponseText}, wantErr: true},
+		{name: "too large", req: UpdateSiteAccessRequest{DefaultAction: ActionRespond, DefaultStatusCode: 403, DefaultResponseType: ResponseText, DefaultResponseBody: strings.Repeat("界", maxBodyBytes/3+1)}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			action, status, responseType, body, err := normalizeDefaultResponse(tt.req)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !tt.wantErr && (action != tt.wantAction || status != tt.wantStatus || responseType != tt.wantType || body != tt.wantBody) {
+				t.Fatalf("unexpected normalized response: %q %d %q %q", action, status, responseType, body)
+			}
+		})
+	}
+}
+
+func TestUpdateEnabledSiteWritesAndRemovesResponseArtifact(t *testing.T) {
+	mainConfig := `#NXPANEL-SITE-START site_id=site_geo_service primary_domain=example.com
+server {
+    #NXPANEL-ACCESS-LIMIT-START
+    include /panel/access-limit/example.com.conf;
+    #NXPANEL-ACCESS-LIMIT-END
+}
+#NXPANEL-SITE-END
+`
+	service, _, agent := newGeoServiceTest(t, mainConfig)
+	if _, err := service.EnableSite(context.Background(), "site_geo_service", "request-enable"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.UpdateSiteAccess(context.Background(), "site_geo_service", UpdateSiteAccessRequest{
+		DefaultAction: ActionRespond, DefaultStatusCode: 451, DefaultResponseType: ResponseHTML,
+		DefaultResponseBody: "<h1>Unavailable</h1>",
+	}, "request-response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DefaultStatusCode != 451 || result.DefaultResponseType != ResponseHTML {
+		t.Fatalf("unexpected saved response: %#v", result)
+	}
+	responsePath := "/panel/geo-access/responses/site_geo_service.body"
+	var wroteResponse bool
+	for _, change := range agent.last.Changes {
+		if change.Path == responsePath && change.Type == "write" {
+			body, decodeErr := base64.StdEncoding.DecodeString(change.ContentBase64)
+			if decodeErr != nil || string(body) != "<h1>Unavailable</h1>" {
+				t.Fatalf("unexpected response artifact: %q err=%v", body, decodeErr)
+			}
+			wroteResponse = true
+		}
+	}
+	if !wroteResponse {
+		t.Fatal("custom response was not written in the apply transaction")
+	}
+	if _, err := service.UpdateSiteAccess(context.Background(), "site_geo_service", UpdateSiteAccessRequest{
+		DefaultAction: ActionAllow, DefaultStatusCode: 403, DefaultResponseType: ResponseText,
+	}, "request-allow"); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range agent.last.Changes {
+		if change.Path == responsePath && change.Type == "remove" {
+			return
+		}
+	}
+	t.Fatal("switching to allow did not remove the response artifact")
+}

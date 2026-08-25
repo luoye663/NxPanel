@@ -343,15 +343,18 @@ type SiteIPWhitelistRule struct {
 }
 
 type SiteGeoSettings struct {
-	SiteID        string
-	Enabled       bool
-	DefaultAction string
-	DesiredHash   string
-	AppliedHash   string
-	ApplyStatus   string
-	LastError     string
-	CreatedAt     string
-	UpdatedAt     string
+	SiteID              string
+	Enabled             bool
+	DefaultAction       string
+	DefaultStatusCode   int
+	DefaultResponseType string
+	DefaultResponseBody string
+	DesiredHash         string
+	AppliedHash         string
+	ApplyStatus         string
+	LastError           string
+	CreatedAt           string
+	UpdatedAt           string
 }
 
 type SiteGeoRule struct {

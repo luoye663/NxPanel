@@ -14,11 +14,15 @@ func TestGeoAccessRepoMultipleOrderedRules(t *testing.T) {
 	}
 	store := NewGeoAccessRepo(database)
 	settings, err := store.GetSiteSettings("site_geo")
-	if err != nil || settings.Enabled || settings.DefaultAction != "allow" {
+	if err != nil || settings.Enabled || settings.DefaultAction != "allow" ||
+		settings.DefaultStatusCode != 403 || settings.DefaultResponseType != "text" {
 		t.Fatalf("unexpected defaults: %#v err=%v", settings, err)
 	}
 	settings.Enabled = true
-	settings.DefaultAction = "deny_403"
+	settings.DefaultAction = "respond"
+	settings.DefaultStatusCode = 451
+	settings.DefaultResponseType = "html"
+	settings.DefaultResponseBody = "<h1>Unavailable</h1>"
 	settings.ApplyStatus = "pending"
 	if err := store.SaveSiteSettings(settings); err != nil {
 		t.Fatal(err)

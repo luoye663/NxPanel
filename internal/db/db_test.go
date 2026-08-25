@@ -128,6 +128,67 @@ func TestRunMigrations_Idempotent(t *testing.T) {
 	}
 }
 
+func TestGeoUnmatchedResponseMigrationPreservesLegacyActions(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, migration := range migrations {
+		if migration.Version > 7 {
+			break
+		}
+		if _, err := database.Exec(migration.SQL); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.Version, err)
+		}
+		if _, err := database.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, migration.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct{ id, action string }{
+		{"geo_allow", "allow"}, {"geo_403", "deny_403"}, {"geo_444", "deny_444"},
+	} {
+		if _, err := database.Exec(`INSERT INTO sites
+			(id, primary_domain, domains_json, status, root_path, access_log_path, error_log_path,
+			config_path, enabled_path, rewrite_path)
+			VALUES (?, ?, '[]', 'disabled', '/tmp', '/tmp/access.log', '/tmp/error.log',
+			?, ?, ?)`, item.id, item.id+".example.com", "/tmp/"+item.id+".conf",
+			"/tmp/"+item.id+".enabled", "/tmp/"+item.id+".rewrite"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Exec(`INSERT INTO site_geo_settings (site_id, default_action) VALUES (?, ?)`, item.id, item.action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RunMigrations(database); err != nil {
+		t.Fatal(err)
+	}
+	wants := map[string]struct {
+		action string
+		status int
+	}{
+		"geo_allow": {"allow", 403},
+		"geo_403":   {"respond", 403},
+		"geo_444":   {"respond", 444},
+	}
+	for id, want := range wants {
+		var action, responseType, body string
+		var status int
+		if err := database.QueryRow(`SELECT default_action, default_status_code, default_response_type,
+			default_response_body FROM site_geo_settings WHERE site_id=?`, id).
+			Scan(&action, &status, &responseType, &body); err != nil {
+			t.Fatal(err)
+		}
+		if action != want.action || status != want.status || responseType != "text" || body != "" {
+			t.Fatalf("unexpected migrated row %s: %q %d %q %q", id, action, status, responseType, body)
+		}
+	}
+}
+
 // TestMigrationCreatesAllTables 验证迁移创建了所有预期的表
 func TestMigrationCreatesAllTables(t *testing.T) {
 	db, err := Open(":memory:")

@@ -4,9 +4,13 @@ import "github.com/luoye663/nxpanel/internal/db/repo"
 
 const (
 	ActionAllow   = "allow"
+	ActionRespond = "respond"
 	ActionDeny403 = "deny_403"
 	ActionDeny444 = "deny_444"
+	ResponseHTML  = "html"
+	ResponseText  = "text"
 	maxRules      = 64
+	maxBodyBytes  = 64 * 1024
 )
 
 type GeoIPSettingsResponse struct {
@@ -35,17 +39,23 @@ type GeoIPStatusResponse struct {
 }
 
 type SiteAccessResponse struct {
-	SiteID        string `json:"site_id"`
-	Enabled       bool   `json:"enabled"`
-	DefaultAction string `json:"default_action"`
-	DesiredHash   string `json:"desired_hash"`
-	AppliedHash   string `json:"applied_hash"`
-	ApplyStatus   string `json:"apply_status"`
-	LastError     string `json:"last_error,omitempty"`
+	SiteID              string `json:"site_id"`
+	Enabled             bool   `json:"enabled"`
+	DefaultAction       string `json:"default_action"`
+	DefaultStatusCode   int    `json:"default_status_code"`
+	DefaultResponseType string `json:"default_response_type"`
+	DefaultResponseBody string `json:"default_response_body"`
+	DesiredHash         string `json:"desired_hash"`
+	AppliedHash         string `json:"applied_hash"`
+	ApplyStatus         string `json:"apply_status"`
+	LastError           string `json:"last_error,omitempty"`
 }
 
 type UpdateSiteAccessRequest struct {
-	DefaultAction string `json:"default_action"`
+	DefaultAction       string `json:"default_action"`
+	DefaultStatusCode   int    `json:"default_status_code"`
+	DefaultResponseType string `json:"default_response_type"`
+	DefaultResponseBody string `json:"default_response_body"`
 }
 
 type RuleResponse struct {
@@ -80,7 +90,9 @@ type ReorderRulesRequest struct {
 
 func siteSettingsResponse(item *repo.SiteGeoSettings) *SiteAccessResponse {
 	return &SiteAccessResponse{SiteID: item.SiteID, Enabled: item.Enabled, DefaultAction: item.DefaultAction,
-		DesiredHash: item.DesiredHash, AppliedHash: item.AppliedHash, ApplyStatus: item.ApplyStatus, LastError: item.LastError}
+		DefaultStatusCode: item.DefaultStatusCode, DefaultResponseType: item.DefaultResponseType,
+		DefaultResponseBody: item.DefaultResponseBody, DesiredHash: item.DesiredHash,
+		AppliedHash: item.AppliedHash, ApplyStatus: item.ApplyStatus, LastError: item.LastError}
 }
 
 func ruleResponse(item *repo.SiteGeoRule) *RuleResponse {

@@ -78,3 +78,54 @@ func TestRenderConfigurationDoesNothingWithoutEnabledSites(t *testing.T) {
 		t.Fatalf("disabled feature generated config: %#v", rendered)
 	}
 }
+
+func TestRenderConfigurationCustomUnmatchedResponse(t *testing.T) {
+	settings := []*repo.SiteGeoSettings{{SiteID: "site-response", Enabled: true, DefaultAction: ActionRespond,
+		DefaultStatusCode: 451, DefaultResponseType: ResponseHTML, DefaultResponseBody: "<h1>Blocked</h1>"}}
+	rules := map[string][]*repo.SiteGeoRule{"site-response": {
+		{CountriesJSON: `["CN"]`, Action: ActionDeny403, Enabled: true},
+	}}
+	cache := &countryCache{BuildEpoch: 1, Networks: map[string][]string{"CN": {"1.0.1.0/24"}}}
+	rendered, err := renderConfiguration("/panel", nil, cache, settings, rules, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := rendered.Sites["site-response"]
+	if !site.HasResponse || site.ResponseBody != "<h1>Blocked</h1>" || site.ResponsePath != "/panel/geo-access/responses/site-response.body" {
+		t.Fatalf("unexpected response artifact: %#v", site)
+	}
+	for _, want := range []string{
+		"default deny_default;",
+		"1.0.1.0/24 deny_403;",
+		"if ($nx_geo_action_",
+		"rewrite ^(?!/__nxpanel_geo_(?:response|body)_",
+		"error_page 404 =451 /__nxpanel_geo_body_",
+		"log_not_found off;",
+		"root /panel/geo-access/missing;",
+		"default_type text/html;",
+		"charset utf-8;",
+		"internal;",
+	} {
+		combined := rendered.GlobalContent + site.SiteContent
+		if !strings.Contains(combined, want) {
+			t.Errorf("rendered config missing %q:\n%s", want, combined)
+		}
+	}
+	if strings.Contains(site.SiteContent, "return 451") {
+		t.Fatal("custom body response must be served through the isolated internal location")
+	}
+}
+
+func TestRenderConfigurationUnmatched444HasNoResponseArtifact(t *testing.T) {
+	settings := []*repo.SiteGeoSettings{{SiteID: "site-444", Enabled: true, DefaultAction: ActionRespond,
+		DefaultStatusCode: 444, DefaultResponseType: ResponseHTML, DefaultResponseBody: "ignored"}}
+	rendered, err := renderConfiguration("/panel", nil, &countryCache{Networks: map[string][]string{}}, settings, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := rendered.Sites["site-444"]
+	if site.HasResponse || !strings.Contains(rendered.GlobalContent, "default deny_444;") ||
+		strings.Contains(site.SiteContent, "__nxpanel_geo_response_") {
+		t.Fatalf("444 must close directly without a response artifact: %#v\n%s", site, site.SiteContent)
+	}
+}

@@ -1,6 +1,8 @@
 import { del, get, http, post, put } from './client'
 
 export type GeoAction = 'allow' | 'deny_403' | 'deny_444'
+export type GeoDefaultAction = 'allow' | 'respond'
+export type GeoResponseType = 'html' | 'text'
 
 export interface GeoIPSettings {
   account_id: string
@@ -23,7 +25,10 @@ export interface GeoIPStatus {
 export interface SiteGeoAccess {
   site_id: string
   enabled: boolean
-  default_action: GeoAction
+  default_action: GeoDefaultAction
+  default_status_code: number
+  default_response_type: GeoResponseType
+  default_response_body: string
   desired_hash: string
   applied_hash: string
   apply_status: 'disabled' | 'pending' | 'applied' | 'error'
@@ -67,7 +72,7 @@ export function uploadGeoIPDatabase(file: File): Promise<GeoIPStatus> {
 }
 
 export function getSiteGeoAccess(siteId: string): Promise<SiteGeoAccess> { return get(`/sites/${siteId}/geo-access`) }
-export function updateSiteGeoAccess(siteId: string, defaultAction: GeoAction): Promise<SiteGeoAccess> { return put(`/sites/${siteId}/geo-access`, { default_action: defaultAction }) }
+export function updateSiteGeoAccess(siteId: string, data: Pick<SiteGeoAccess, 'default_action' | 'default_status_code' | 'default_response_type' | 'default_response_body'>): Promise<SiteGeoAccess> { return put(`/sites/${siteId}/geo-access`, data) }
 export function enableSiteGeoAccess(siteId: string): Promise<SiteGeoAccess> { return post(`/sites/${siteId}/geo-access/enable`) }
 export function disableSiteGeoAccess(siteId: string): Promise<SiteGeoAccess> { return post(`/sites/${siteId}/geo-access/disable`) }
 export function listGeoRules(siteId: string): Promise<GeoRule[]> { return get(`/sites/${siteId}/geo-rules`) }
