@@ -8,6 +8,7 @@ export interface NginxDetectResponse {
   prefix: string
   test_ok: boolean
   stderr: string
+  capabilities: Record<'geo' | 'map' | 'realip', boolean>
 }
 
 export interface NginxTestResponse {

@@ -342,6 +342,46 @@ type SiteIPWhitelistRule struct {
 	UpdatedAt string
 }
 
+type SiteGeoSettings struct {
+	SiteID        string
+	Enabled       bool
+	DefaultAction string
+	DesiredHash   string
+	AppliedHash   string
+	ApplyStatus   string
+	LastError     string
+	CreatedAt     string
+	UpdatedAt     string
+}
+
+type SiteGeoRule struct {
+	ID            string
+	SiteID        string
+	Name          string
+	CountriesJSON string
+	Action        string
+	Enabled       bool
+	SortOrder     int
+	CreatedAt     string
+	UpdatedAt     string
+}
+
+type GeoIPSettings struct {
+	AccountID           string
+	LicenseKeyEncrypted string
+	AutoUpdate          bool
+	TrustedProxiesJSON  string
+	ActiveDBPath        string
+	ActiveCachePath     string
+	Checksum            string
+	BuildEpoch          int64
+	CountriesJSON       string
+	LastAttemptAt       string
+	LastSuccessAt       string
+	LastError           string
+	UpdatedAt           string
+}
+
 type LoginAudit struct {
 	ID              int
 	Username        string

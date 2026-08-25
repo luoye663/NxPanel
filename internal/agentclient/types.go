@@ -73,14 +73,15 @@ type NginxDetectRequest struct {
 
 // NginxDetectResponse Nginx 检测响应
 type NginxDetectResponse struct {
-	Bin      string `json:"bin"`       // 二进制路径
-	Version  string `json:"version"`   // 版本号
-	ConfPath string `json:"conf_path"` // 主配置文件路径
-	Prefix   string `json:"prefix"`    // Nginx prefix 路径
-	TestOK   bool   `json:"test_ok"`   // nginx -t 是否通过
-	Stderr   string `json:"stderr"`    // nginx -t 的 stderr
-	WebUser  string `json:"web_user"`  // Nginx 运行用户
-	WebGroup string `json:"web_group"` // Nginx 运行组
+	Bin          string          `json:"bin"`       // 二进制路径
+	Version      string          `json:"version"`   // 版本号
+	ConfPath     string          `json:"conf_path"` // 主配置文件路径
+	Prefix       string          `json:"prefix"`    // Nginx prefix 路径
+	TestOK       bool            `json:"test_ok"`   // nginx -t 是否通过
+	Stderr       string          `json:"stderr"`    // nginx -t 的 stderr
+	WebUser      string          `json:"web_user"`  // Nginx 运行用户
+	WebGroup     string          `json:"web_group"` // Nginx 运行组
+	Capabilities map[string]bool `json:"capabilities"`
 }
 
 // NginxTestResponse nginx -t 测试响应

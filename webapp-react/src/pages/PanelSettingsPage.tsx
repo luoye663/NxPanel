@@ -16,6 +16,7 @@ import { PasswordSection } from '@/components/security/PasswordSection'
 import { RuntimeSecuritySettings } from '@/components/security/RuntimeSecuritySettings'
 import { TLSSettings } from '@/components/security/TLSSettings'
 import { TwoFASection } from '@/components/security/TwoFASection'
+import { GeoIPSettingsPanel } from '@/components/security/GeoIPSettings'
 import type { CaptchaProvider, SecuritySettingsFormValues } from '@/components/security/types'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
@@ -137,6 +138,7 @@ export function PanelSettingsPage() {
           <Tabs.Tab value="branding">品牌设置</Tabs.Tab>
           <Tabs.Tab value="account">账户安全</Tabs.Tab>
           <Tabs.Tab value="security">安全配置</Tabs.Tab>
+          <Tabs.Tab value="geoip">GeoIP</Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="branding">
@@ -177,6 +179,10 @@ export function PanelSettingsPage() {
             <Grid.Col span={{ base: 12, lg: 6 }}><CaptchaSettings form={securityForm} secretMasked={securityQuery.data?.captcha_secret_key_masked || ''} saving={securityMutation.isPending} onSave={saveSecurity} /></Grid.Col>
             <Grid.Col span={12}><TLSSettings form={securityForm} saving={securityMutation.isPending} onSave={saveSecurity} /></Grid.Col>
           </Grid>
+        </Tabs.Panel>
+
+        <Tabs.Panel value="geoip">
+          <GeoIPSettingsPanel />
         </Tabs.Panel>
       </Tabs>
     </PageShell>

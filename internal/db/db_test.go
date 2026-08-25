@@ -375,7 +375,8 @@ func TestProxyUpstreamMigrationV5ToV6SurvivesDiskReopen(t *testing.T) {
 	if err := database.QueryRow(`SELECT upstream_id, upstream_url, upstream_scheme FROM site_proxy WHERE id='proxy_disk'`).Scan(&upstreamID, &url, &scheme); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 || upstreamID.Valid || url != "https://service_api:8443" || scheme != "http" {
+	latestVersion := migrations[len(migrations)-1].Version
+	if version != latestVersion || upstreamID.Valid || url != "https://service_api:8443" || scheme != "http" {
 		t.Fatalf("reopened migration state: version=%d id=%v url=%q scheme=%q", version, upstreamID, url, scheme)
 	}
 }

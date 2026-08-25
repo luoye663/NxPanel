@@ -302,14 +302,15 @@ func isNginxReloadPIDError(result CmdResult, err error) bool {
 
 // DetectResult 保存检测到的 Nginx 信息
 type DetectResult struct {
-	Bin      string `json:"bin"`       // 二进制路径
-	Version  string `json:"version"`   // 版本号（如 "nginx/1.24.0"）
-	ConfPath string `json:"conf_path"` // 主配置文件路径
-	Prefix   string `json:"prefix"`    // Nginx prefix 路径
-	TestOK   bool   `json:"test_ok"`   // nginx -t 是否通过
-	Stderr   string `json:"stderr"`    // nginx -t 的 stderr 输出
-	WebUser  string `json:"web_user"`  // Nginx 运行用户
-	WebGroup string `json:"web_group"` // Nginx 运行组
+	Bin          string          `json:"bin"`       // 二进制路径
+	Version      string          `json:"version"`   // 版本号（如 "nginx/1.24.0"）
+	ConfPath     string          `json:"conf_path"` // 主配置文件路径
+	Prefix       string          `json:"prefix"`    // Nginx prefix 路径
+	TestOK       bool            `json:"test_ok"`   // nginx -t 是否通过
+	Stderr       string          `json:"stderr"`    // nginx -t 的 stderr 输出
+	WebUser      string          `json:"web_user"`  // Nginx 运行用户
+	WebGroup     string          `json:"web_group"` // Nginx 运行组
+	Capabilities map[string]bool `json:"capabilities"`
 }
 
 // Detect 检测 Nginx 安装情况
@@ -392,15 +393,25 @@ func (e *NginxExecutor) Detect(ctx context.Context, nginxBin string) (*DetectRes
 	}
 
 	return &DetectResult{
-		Bin:      bin,
-		Version:  version,
-		ConfPath: confPath,
-		Prefix:   prefix,
-		TestOK:   testOK,
-		Stderr:   testResult.Stderr,
-		WebUser:  webUser,
-		WebGroup: webGroup,
+		Bin:          bin,
+		Version:      version,
+		ConfPath:     confPath,
+		Prefix:       prefix,
+		TestOK:       testOK,
+		Stderr:       testResult.Stderr,
+		WebUser:      webUser,
+		WebGroup:     webGroup,
+		Capabilities: detectNginxCapabilities(vResult.Stdout + "\n" + vResult.Stderr),
 	}, nil
+}
+
+func detectNginxCapabilities(versionOutput string) map[string]bool {
+	lower := strings.ToLower(versionOutput)
+	return map[string]bool{
+		"geo":    !strings.Contains(lower, "--without-http_geo_module"),
+		"map":    !strings.Contains(lower, "--without-http_map_module"),
+		"realip": strings.Contains(lower, "--with-http_realip_module") || strings.Contains(lower, "openresty"),
+	}
 }
 
 // detectWebUser 从 nginx.conf 解析 web_user，找不到则尝试常见默认用户

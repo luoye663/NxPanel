@@ -328,10 +328,20 @@ func TestNginxExecutor_Detect_Success(t *testing.T) {
 	if !result.TestOK {
 		t.Error("TestOK 应为 true")
 	}
+	if !result.Capabilities["geo"] || !result.Capabilities["map"] {
+		t.Fatalf("默认构建应支持 geo/map: %#v", result.Capabilities)
+	}
 
 	// 验证 executor 内部状态已更新
 	if executor.GetBin() != fakeBin {
 		t.Errorf("executor.Bin 未更新")
+	}
+}
+
+func TestDetectNginxCapabilities(t *testing.T) {
+	got := detectNginxCapabilities("nginx version: nginx/1.27.0 --without-http_geo_module --with-http_realip_module")
+	if got["geo"] || !got["map"] || !got["realip"] {
+		t.Fatalf("unexpected capabilities: %#v", got)
 	}
 }
 
