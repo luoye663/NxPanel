@@ -40,6 +40,8 @@ for type in feat fix docs style refactor perf test build ci chore revert; do
 done
 
 expect_valid "breaking change" "feat(api)!: 调整公开接口"
+expect_valid "full-width colon" "fix(web)： 修复页面"
+expect_valid "full-width colon with breaking change" "feat(api)!： 调整公开接口"
 expect_valid "scope characters" "fix(api/v1-test_name.part): 修复接口"
 expect_valid "body is unrestricted" $'docs(readme): 更新说明\n\n这里是正文。'
 expect_valid "merge commit" "Merge branch 'dev' into main"
@@ -52,7 +54,7 @@ expect_invalid "unknown type" "bug(web): 修复页面"
 expect_invalid "uppercase type" "Fix(web): 修复页面"
 expect_invalid "uppercase scope" "fix(Web): 修复页面"
 expect_invalid "empty scope" "fix(): 修复页面"
-expect_invalid "full-width colon" "fix(web)：修复页面"
+expect_invalid "full-width colon without separator space" "fix(web)：修复页面"
 expect_invalid "missing separator space" "fix(web):修复页面"
 expect_invalid "multiple separator spaces" "fix(web):  修复页面"
 expect_invalid "empty subject" "fix(web): "

@@ -50,6 +50,7 @@ cd webapp-react && pnpm build
 
 - Enable the repository hooks once after cloning with `make setup-git-hooks`.
 - Use `type(scope): subject` for commit titles; use `type(scope)!: subject` for breaking changes.
+- A full-width colon is temporarily accepted, for example `fix(web)： correct the label`; it must still be followed by one space.
 - The scope is required and uses lowercase letters, digits, `.`, `_`, `/`, or `-`.
 - Allowed types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`.
 - For example: `fix(web): correct the failure timeout label`.
@@ -116,6 +117,7 @@ cd webapp-react && pnpm build
 
 - 克隆仓库后执行一次 `make setup-git-hooks`，启用仓库内置 Git hooks。
 - commit 标题使用 `type(scope): 内容`；破坏性变更使用 `type(scope)!: 内容`。
+- 临时兼容中文全角冒号，例如 `fix(web)： 修复描述`；冒号后仍须保留一个空格。
 - 功能区 scope 必填，只能使用小写英文字母、数字、`.`、`_`、`/` 或 `-`。
 - type 允许 `feat`、`fix`、`docs`、`style`、`refactor`、`perf`、`test`、`build`、`ci`、`chore` 和 `revert`。
 - 例如：`fix(web): 修复失败超时输入框描述`。
