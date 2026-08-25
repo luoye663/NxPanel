@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly allowed_types="feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
-readonly conventional_pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\([a-z0-9][a-z0-9._/-]*\)!?: [^[:space:]].*$'
+readonly conventional_pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\([a-z0-9][a-z0-9._/-]*\)!?(:|：) [^[:space:]].*$'
 
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <commit-message-file>" >&2
@@ -34,6 +34,7 @@ Invalid commit message:
 
 Expected:
   type(scope): subject
+  type(scope)： subject
   type(scope)!: breaking change subject
 
 Example:
@@ -41,6 +42,6 @@ Example:
 
 Allowed types: $allowed_types
 The scope is required and must use lowercase letters, digits, '.', '_', '/', or '-'.
-Use an ASCII colon followed by exactly one space, and provide a non-empty subject.
+Use an ASCII or full-width colon followed by exactly one space, and provide a non-empty subject.
 EOF
 exit 1
