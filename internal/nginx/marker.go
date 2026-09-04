@@ -222,6 +222,8 @@ func optionalMarkerAnchor(content []byte, name string) (string, error) {
 		return MarkerNameRewrite, nil
 	case MarkerNameAccessLimit:
 		return existingOptionalAnchor(content, MarkerNameHotlink, MarkerNameRewrite), nil
+	case MarkerNameWAF:
+		return existingOptionalAnchor(content, MarkerNameAccessLimit, existingOptionalAnchor(content, MarkerNameHotlink, MarkerNameRewrite)), nil
 	case MarkerNameACMEChallenge:
 		return MarkerNameDocument, nil
 	case MarkerNameMainLocation:

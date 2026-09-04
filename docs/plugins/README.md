@@ -5,6 +5,7 @@
 ## 按角色阅读
 
 - 面板管理员：先阅读 [插件系统使用教程](administrator-guide.md)。
+- WAF 管理员：继续阅读 [Web 防火墙使用教程](waf-guide.md)。
 - 插件开发者：阅读 [插件开发教程](developer-guide.md)。
 - 前后端联调：查阅 [Plugin API v1 参考](api-reference.md)。
 - 官方仓库维护者：阅读 [插件服务端与 TUF 发布教程](catalog-publishing-guide.md)。
@@ -55,5 +56,8 @@ make dev-frontend
 
 - 插件核心与 TUF 客户端：`internal/plugin/`
 - 插件 API：`internal/api/plugin_handler.go`
+- WAF 领域模型：`internal/waf/`
+- WAF 控制面：`internal/wafcontrol/`
+- WAF Agent Provider：`internal/agent/waf_*.go`
 - 插件前端：`webapp-react/src/components/plugins/`、`webapp-react/src/pages/PluginCenterPage.tsx`
 - 官方插件服务、管理后台与发布工具：`/root/nxPanle-plugin-server`

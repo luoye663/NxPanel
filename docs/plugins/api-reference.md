@@ -80,11 +80,11 @@
 
 ### POST `/plugins/{plugin_id}/enable`
 
-实例化 WASM、运行健康检查并启用贡献点。
+实例化 WASM、运行健康检查并启用贡献点。WAF 插件还会触发固定原生 Provider 的指纹检查、安装和激活。
 
 ### POST `/plugins/{plugin_id}/disable`
 
-关闭 WASM 实例。
+关闭 WASM 实例。存在已启用 WAF 站点时，停用 WAF 插件会被拒绝。
 
 ### DELETE `/plugins/{plugin_id}`
 
@@ -202,3 +202,11 @@ Bridge 响应统一为：
 ```
 
 普通插件的方法通过稳定的 `nxp_invoke` JSON ABI 调用；宿主仍会按 contribution 的 `rpc_methods` 白名单、1 MiB 请求/响应上限和调用超时执行。插件不能借此绕过 Host capability 权限检查。
+
+内置 WAF 方法：
+
+- `waf.overview`
+- `waf.events.list`
+- `waf.rules.check`
+- `waf.site.get`
+- `waf.site.save`

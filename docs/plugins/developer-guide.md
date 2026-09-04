@@ -95,7 +95,7 @@ iframe 使用 `sandbox="allow-scripts"`，没有 `allow-same-origin`。插件 UI
 
 当前宿主以普通 `<script src>` 加载入口，因此入口文件应使用普通脚本语法；不要在顶层使用 `import` / `export`。需要打包依赖时，请先用前端构建工具输出单文件 IIFE。
 
-通用 RPC 通过 `nxp_invoke` JSON ABI 调用插件，并受 contribution 的 `rpc_methods` 白名单约束。
+通用 RPC 通过 `nxp_invoke` JSON ABI 调用插件，并受 contribution 的 `rpc_methods` 白名单约束。`native_waf` renderer 和 `waf.*` RPC 只供 nxPanel 内置 WAF 使用。
 
 ## 4. 编写 manifest
 
@@ -156,7 +156,7 @@ iframe 使用 `sandbox="allow-scripts"`，没有 `allow-same-origin`。插件 UI
 - `files` 必须精确列出除 `manifest.json` 外的所有普通文件；
 - 包不能包含符号链接、硬链接或其他特殊文件；
 - contribution point 只能是 `global_page` 或 `site_detail_tab`；
-- renderer 当前只能是 `iframe`。
+- renderer 只能是 `iframe` 或保留给内置功能的 `native_waf`。
 
 ## 5. 权限
 
@@ -171,6 +171,7 @@ http.fetch
 scheduled_tasks.manage
 operations.write
 notifications.show
+native.waf.modsecurity
 ```
 
 “可被 manifest 识别”不代表对应 Host 方法已经注册。当前通用 broker 已注册 `kv.get`、`kv.put`、`kv.delete`、`events.publish` 和 `http.fetch`，分别要求 `plugin.kv`、`plugin.events` 和 `http.fetch`。其他权限只在相应受控能力接入后生效。不要声明未使用的权限。

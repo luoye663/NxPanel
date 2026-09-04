@@ -171,7 +171,7 @@ export interface PluginContribution {
   icon?: string
   route?: string
   ui_entry?: string
-  renderer?: 'iframe'
+  renderer?: 'iframe' | 'native_waf'
   rpc_methods?: string[]
 }
 
@@ -179,6 +179,59 @@ export interface PluginRPCRequest {
   method: string
   payload?: unknown
   context?: Record<string, unknown>
+}
+
+export interface WAFOverview {
+  installed: boolean
+  enabled: boolean
+  engine_version?: string
+  connector_version?: string
+  rules_version?: string
+  rules_channel?: string
+  health?: PluginHealth
+  runtime_fingerprint?: string
+  events_24h?: number
+  blocked_24h?: number
+  observed_24h?: number
+  protected_sites?: number
+  last_rule_check_at?: string
+  last_error?: string
+}
+
+export interface WAFSiteConfig {
+  site_id: string
+  enabled: boolean
+  mode: 'DetectionOnly' | 'On'
+  paranoia_level: 1 | 2 | 3 | 4
+  inbound_threshold: number
+  outbound_threshold: number
+  response_status: number
+  request_body_limit: number
+  response_body_limit: number
+  exclusions?: WAFExclusion[]
+  updated_at?: string
+}
+
+export interface WAFExclusion {
+  id?: string
+  kind: 'rule' | 'path' | 'parameter' | 'ip'
+  value: string
+  rule_ids?: number[]
+}
+
+export interface WAFEvent {
+  id: string
+  occurred_at: string
+  site_id?: string
+  site_name?: string
+  client_ip: string
+  method: string
+  uri: string
+  status: number
+  rule_id?: number
+  category?: string
+  score?: number
+  action: 'blocked' | 'observed' | string
 }
 
 function asItems<T>(value: { items?: T[] } | T[]): T[] {

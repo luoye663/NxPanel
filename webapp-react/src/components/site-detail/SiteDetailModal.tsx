@@ -19,6 +19,7 @@ import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
 import { usePluginContributions } from '@/api/pluginHooks'
 import { PluginSandbox } from '@/components/plugins/PluginSandbox'
+import { WAFSitePanel } from '@/components/plugins/WAFSitePanel'
 
 interface SiteDetailModalProps {
   siteId: string | null
@@ -81,6 +82,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
   function renderActiveTab() {
     if (!site) return null
     if (activeContribution) {
+      if (activeContribution.renderer === 'native_waf') return <WAFSitePanel pluginId={activeContribution.plugin_id} siteId={site.id} />
       return <PluginSandbox pluginId={activeContribution.plugin_id} entry={activeContribution.ui_entry || 'main.js'} allowedRPCMethods={activeContribution.rpc_methods} title={activeContribution.label} context={{ site_id: site.id }} />
     }
     if (activeTab === 'basic') return <SiteBasicTab site={site} />

@@ -19,6 +19,7 @@ const (
 	MarkerNameExtraLocations = "EXTRA-LOCATIONS"
 	MarkerNameInclude        = "INCLUDE"
 	MarkerNameAccessLimit    = "ACCESS-LIMIT"
+	MarkerNameWAF            = "WAF"
 	MarkerNameACMEChallenge  = "ACME-CHALLENGE"
 )
 
@@ -52,6 +53,8 @@ const (
 	MarkerIncludeEnd          = "#NXPANEL-INCLUDE-END"
 	MarkerAccessLimitStart    = "#NXPANEL-ACCESS-LIMIT-START"
 	MarkerAccessLimitEnd      = "#NXPANEL-ACCESS-LIMIT-END"
+	MarkerWAFStart            = "#NXPANEL-WAF-START"
+	MarkerWAFEnd              = "#NXPANEL-WAF-END"
 	MarkerACMEChallengeStart  = "#NXPANEL-ACME-CHALLENGE-START"
 	MarkerACMEChallengeEnd    = "#NXPANEL-ACME-CHALLENGE-END"
 )

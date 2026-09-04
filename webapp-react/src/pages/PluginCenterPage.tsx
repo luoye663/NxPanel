@@ -1,6 +1,6 @@
 import { Alert, Badge, Button, Checkbox, Code, FileButton, Group, Loader, Modal, Paper, Select, SimpleGrid, Stack, Tabs, Text, ThemeIcon, Title } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
-import { IconAlertTriangle, IconBox, IconCheck, IconCode, IconDownload, IconPlugConnected, IconRefresh, IconShieldCheck, IconTrash, IconUpload } from '@tabler/icons-react'
+import { IconAlertTriangle, IconBox, IconCheck, IconCode, IconDownload, IconPlugConnected, IconRefresh, IconShieldCheck, IconShieldLock, IconTrash, IconUpload } from '@tabler/icons-react'
 import { useEffect, useMemo, useState } from 'react'
 import { getPluginInstallAuthorizationIssue, type DeveloperPackageInspection, type PluginAuthorizationSummary, type PluginCatalogItem, type PluginEntitlementDeniedReason, type PluginInstallation, type PluginPermission } from '@/api/plugins'
 import { useInspectDeveloperPackage, useInstallDeveloperPackage, useInstallPlugin, useInstalledPlugins, usePluginCatalog, usePluginDeveloperMode, usePluginRepositoryStatus, useRefreshPluginCatalog, useSetPluginDeveloperMode, useTogglePlugin, useUninstallPlugin, useUpdatePlugin } from '@/api/pluginHooks'
@@ -34,7 +34,7 @@ function PermissionApprovalModal({ plugin, update, opened, onClose, onApprove, l
 }
 
 function PluginIdentity({ plugin, developer = false }: { plugin: PluginCatalogItem; developer?: boolean }) {
-  return <Group align="flex-start" wrap="nowrap"><ThemeIcon size={38} variant="light" color={developer ? 'orange' : 'blue'}>{developer ? <IconCode size={22} /> : <IconBox size={22} />}</ThemeIcon><div className="pluginIdentityCopy"><Title order={3} size="h5">{plugin.name}</Title><Text size="xs" c="dimmed">{plugin.publisher} · {plugin.version}</Text></div></Group>
+  return <Group align="flex-start" wrap="nowrap"><ThemeIcon size={38} variant="light" color={developer ? 'orange' : plugin.id.includes('waf') ? 'red' : 'blue'}>{developer ? <IconCode size={22} /> : plugin.id.includes('waf') ? <IconShieldLock size={22} /> : <IconBox size={22} />}</ThemeIcon><div className="pluginIdentityCopy"><Title order={3} size="h5">{plugin.name}</Title><Text size="xs" c="dimmed">{plugin.publisher} · {plugin.version}</Text></div></Group>
 }
 
 function OfficialPluginCard({ plugin, installation, onInstall, onUpdate, onToggle, onUninstall, busy }: { plugin: PluginCatalogItem; installation?: PluginInstallation; onInstall: () => void; onUpdate: () => void; onToggle: () => void; onUninstall: () => void; busy: boolean }) {

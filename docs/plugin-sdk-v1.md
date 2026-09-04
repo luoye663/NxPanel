@@ -31,7 +31,7 @@ nxPanel plugins are `.nxp` tar+gzip packages containing `manifest.json`, a WASM 
 
 The WASM module must export `nxp_health() -> i32`; zero means healthy. Enabling a plugin instantiates the module only after this check succeeds.
 
-UI contributions use `global_page` or `site_detail_tab`, select `renderer: "iframe"`, and declare the exact `rpc_methods` the host may bridge.
+UI contributions use `global_page` or `site_detail_tab`, select `renderer: "iframe"`, and declare the exact `rpc_methods` the host may bridge. The built-in WAF uses `renderer: "native_waf"` and permission `native.waf.modsecurity`.
 
 ## Distribution trust
 

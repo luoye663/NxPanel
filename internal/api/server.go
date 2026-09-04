@@ -42,6 +42,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/twofa"
 	"github.com/luoye663/nxpanel/internal/upgrade"
 	"github.com/luoye663/nxpanel/internal/upstream"
+	"github.com/luoye663/nxpanel/internal/wafcontrol"
 )
 
 type Server struct {
@@ -82,6 +83,7 @@ type Server struct {
 	upstreamSvc            *upstream.Service
 	pluginSvc              *plugin.Service
 	pluginHandler          *PluginHandler
+	wafSvc                 *wafcontrol.Service
 	router                 *chi.Mux
 	rootCtx                context.Context
 	rootCancel             context.CancelFunc

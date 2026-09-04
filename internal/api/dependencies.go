@@ -37,6 +37,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/twofa"
 	"github.com/luoye663/nxpanel/internal/upgrade"
 	"github.com/luoye663/nxpanel/internal/upstream"
+	"github.com/luoye663/nxpanel/internal/wafcontrol"
 )
 
 type repos struct {
@@ -220,6 +221,10 @@ func (s *Server) initAgentBackedServices(r repos) error {
 		s.db, r.site, r.proxy, r.ssl, r.rewrite,
 		s.opRepo, s.agentClient, s.cfg,
 	)
+	s.wafSvc = wafcontrol.NewService(s.db, r.site, s.agentClient)
+	if s.pluginHandler != nil {
+		s.pluginHandler.nativeAdapter = &wafPluginAdapter{server: s}
+	}
 	s.proxySvc = proxy.NewService(r.site, r.proxy, r.upstream, r.authAccount, s.opRepo, s.backupRepo, s.agentClient, s.cfg)
 	sslAgent := &sslAgentAdapter{client: s.agentClient}
 	s.sslSvc = ssl.NewService(r.site, r.ssl, r.certificate, s.opRepo, sslAgent, s.cfg)

@@ -26,6 +26,15 @@ func (s *Server) setupRoutes() {
 	s.router.Post("/internal/v1/nginx/reopen", s.handleNginxReopen)
 	s.router.Post("/internal/v1/nginx/logs/rotate-run", s.handleNginxLogRotateRun)
 
+	// 固定 WAF Provider（不提供通用原生命令或任意文件接口）
+	s.router.Post("/internal/v1/waf/runtime/detect", s.handleWAFRuntimeDetect)
+	s.router.Post("/internal/v1/waf/provider/install", s.handleWAFProviderInstall)
+	s.router.Post("/internal/v1/waf/provider/activate", s.handleWAFProviderActivate)
+	s.router.Post("/internal/v1/waf/sites/apply", s.handleWAFSiteApply)
+	s.router.Post("/internal/v1/waf/audit/list", s.handleWAFAuditList)
+	s.router.Post("/internal/v1/waf/audit/read", s.handleWAFAuditRead)
+	s.router.Post("/internal/v1/waf/audit/cleanup", s.handleWAFAuditCleanup)
+
 	// 配置操作
 	s.router.Post("/internal/v1/config/reload", s.handleConfigReload)
 	s.router.Post("/internal/v1/config/write-back", s.handleConfigWriteBack)

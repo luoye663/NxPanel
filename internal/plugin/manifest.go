@@ -19,10 +19,10 @@ var pluginIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62})(?:\.[a-z0
 var allowedPermissions = map[string]struct{}{
 	"panel.sites.read": {}, "plugin.kv": {}, "plugin.events": {}, "plugin.secrets": {},
 	"http.fetch": {}, "scheduled_tasks.manage": {}, "operations.write": {},
-	"notifications.show": {},
+	"notifications.show": {}, "native.waf.modsecurity": {},
 }
 
-var allowedProviders = map[string]struct{}{}
+var allowedProviders = map[string]struct{}{"waf.modsecurity.v1": {}}
 
 type Manifest struct {
 	SchemaVersion    int            `json:"schema_version"`
@@ -158,7 +158,7 @@ func (m *Manifest) Validate() error {
 				return fmt.Errorf("contribution %q references an undeclared UI entry", contribution.ID)
 			}
 		}
-		if contribution.Renderer != "" && contribution.Renderer != "iframe" {
+		if contribution.Renderer != "" && contribution.Renderer != "iframe" && contribution.Renderer != "native_waf" {
 			return fmt.Errorf("invalid renderer for contribution %q", contribution.ID)
 		}
 	}
