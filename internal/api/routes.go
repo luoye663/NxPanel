@@ -251,6 +251,11 @@ func (s *Server) setupRoutes() {
 			r.Get("/task-logs", s.handleTaskLogTail)
 			r.Delete("/task-logs", s.handleTaskLogClear)
 
+			// Official signed plugin runtime and isolated UI bridge.
+			if s.pluginHandler != nil {
+				RegisterPluginRoutes(r, s.pluginHandler)
+			}
+
 			// Scheduled Tasks（统一计划任务中心）
 			r.Get("/scheduled-tasks/definitions", s.handleScheduledTaskDefinitions)
 			r.Get("/scheduled-tasks", s.handleScheduledTaskList)

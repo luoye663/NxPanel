@@ -24,10 +24,20 @@ GHCR_USERNAME ?= $(GITHUB_ACTOR)
 # 版本号（可通过 -ldflags 注入）
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
 BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION)
+OFFICIAL_PLUGIN_METADATA_URL ?=
+OFFICIAL_PLUGIN_TARGETS_URL ?=
+OFFICIAL_PLUGIN_SERVICE_URL ?=
+OFFICIAL_PLUGIN_ROOT_B64 ?=
+OFFICIAL_PLUGIN_ALLOW_LOOPBACK_HTTP ?= 0
+RELEASE_BUILD ?= 0
+PLUGIN_LDFLAGS = -X github.com/luoye663/nxpanel/internal/plugin.OfficialMetadataURL=$(OFFICIAL_PLUGIN_METADATA_URL) -X github.com/luoye663/nxpanel/internal/plugin.OfficialTargetsURL=$(OFFICIAL_PLUGIN_TARGETS_URL) -X github.com/luoye663/nxpanel/internal/plugin.OfficialServiceURL=$(OFFICIAL_PLUGIN_SERVICE_URL) -X github.com/luoye663/nxpanel/internal/plugin.OfficialBootstrapRootB64=$(OFFICIAL_PLUGIN_ROOT_B64) -X github.com/luoye663/nxpanel/internal/plugin.OfficialAllowLoopbackHTTP=$(OFFICIAL_PLUGIN_ALLOW_LOOPBACK_HTTP) -X github.com/luoye663/nxpanel/internal/plugin.OfficialPanelVersion=$(VERSION)
+LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) $(PLUGIN_LDFLAGS)
 
+# 本地调试
+PLUGIN_SERVER_URL ?= http://127.0.0.1:18900
+PLUGIN_ROOT_FILE ?= /root/nxPanle-plugin-server/.dev/repository/metadata/1.root.json
 # 构建目标
-.PHONY: all build build-api build-agent build-frontend clean test test-commit-message setup-git-hooks run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
+.PHONY: all build build-api build-agent check-plugin-release-config build-frontend clean test test-commit-message setup-git-hooks run-api run-api-plugin-dev run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
 
 # 默认目标：构建全部（含前端）
 all: build-frontend build
@@ -35,7 +45,10 @@ all: build-frontend build
 ## build: 构建 API 和 Agent 二进制（需先 build-frontend）
 build: build-api build-agent
 
-build-api:
+check-plugin-release-config:
+	@if [ "$(RELEASE_BUILD)" = "1" ]; then test -n "$(OFFICIAL_PLUGIN_METADATA_URL)" -a -n "$(OFFICIAL_PLUGIN_TARGETS_URL)" -a -n "$(OFFICIAL_PLUGIN_SERVICE_URL)" -a -n "$(OFFICIAL_PLUGIN_ROOT_B64)" || { echo "正式构建缺少官方插件 metadata、targets、service URL 或 bootstrap root" >&2; exit 1; }; fi
+
+build-api: check-plugin-release-config
 	@echo "构建 nxpanel-api..."
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_API) ./cmd/nxpanel-api
 
@@ -177,6 +190,13 @@ setup-git-hooks:
 ## run-api: 运行 API 服务（开发模式）
 run-api: build-api
 	./$(BINARY_API) -config configs/config.yaml
+
+## run-api-plugin-dev: 注入本地插件服务和开发 TUF root 后启动 API
+run-api-plugin-dev:
+	@test -n "$(PLUGIN_SERVER_URL)" || { echo "PLUGIN_SERVER_URL 必填" >&2; exit 1; }
+	@test -n "$(PLUGIN_ROOT_FILE)" -a -f "$(PLUGIN_ROOT_FILE)" || { echo "PLUGIN_ROOT_FILE 必须是可读的 root.json" >&2; exit 1; }
+	@case "$(PLUGIN_SERVER_URL)" in http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*) ;; *) echo "本地 HTTP 调试仅允许 loopback PLUGIN_SERVER_URL" >&2; exit 1;; esac
+	$(MAKE) run-api OFFICIAL_PLUGIN_METADATA_URL=$(PLUGIN_SERVER_URL)/tuf/metadata OFFICIAL_PLUGIN_TARGETS_URL=$(PLUGIN_SERVER_URL)/tuf/targets OFFICIAL_PLUGIN_SERVICE_URL=$(PLUGIN_SERVER_URL) OFFICIAL_PLUGIN_ROOT_B64=$$(base64 < "$(PLUGIN_ROOT_FILE)" | tr -d '\n') OFFICIAL_PLUGIN_ALLOW_LOOPBACK_HTTP=1
 
 ## run-agent: 运行 Agent 服务（开发模式）
 run-agent: build-agent

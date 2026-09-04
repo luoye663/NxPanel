@@ -29,6 +29,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
+	"github.com/luoye663/nxpanel/internal/plugin"
 	"github.com/luoye663/nxpanel/internal/proxy"
 	"github.com/luoye663/nxpanel/internal/rewrite"
 	"github.com/luoye663/nxpanel/internal/scheduledtask"
@@ -79,6 +80,8 @@ type Server struct {
 	scheduledTaskEngine    *scheduledtask.Engine
 	upgradeSvc             *upgrade.Service
 	upstreamSvc            *upstream.Service
+	pluginSvc              *plugin.Service
+	pluginHandler          *PluginHandler
 	router                 *chi.Mux
 	rootCtx                context.Context
 	rootCancel             context.CancelFunc
@@ -172,6 +175,9 @@ func (s *Server) Close() {
 		}
 		if s.twofaSvc != nil {
 			s.twofaSvc.Stop()
+		}
+		if s.pluginSvc != nil {
+			_ = s.pluginSvc.Close(context.Background())
 		}
 		s.backgroundWG.Wait()
 		if s.agentClient != nil {

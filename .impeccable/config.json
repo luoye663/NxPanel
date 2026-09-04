@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "codex-grid-background",
+        "value": "*",
+        "files": [
+          "webapp-react/src/styles/global.css"
+        ],
+        "createdAt": "2026-09-04T16:10:16.932Z",
+        "reason": "Codex review: grid is confined to the realtime SVG chart plotting surface with axes and data grid lines; domain-appropriate measurement canvas."
+      }
+    ]
+  }
+}

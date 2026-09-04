@@ -92,6 +92,102 @@ a {
   user-select: none;
 }
 
+.pluginCatalogItem {
+  min-height: 250px;
+}
+
+.pluginIdentityCopy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pluginInstalledRow {
+  background: #ffffff;
+}
+
+.pluginReviewGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 24px;
+  margin: 0;
+}
+
+.pluginReviewGrid > div {
+  min-width: 0;
+}
+
+.pluginReviewGrid dt {
+  margin-bottom: 3px;
+  color: var(--mantine-color-gray-6);
+  font-size: var(--mantine-font-size-xs);
+}
+
+.pluginReviewGrid dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+
+.pluginReviewWide {
+  grid-column: 1 / -1;
+}
+
+.pluginDigest {
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+
+.pluginDeviceChallenge {
+  background: var(--mantine-color-blue-0);
+}
+
+.pluginDeviceCode {
+  padding: 8px 14px;
+  font-size: clamp(1.25rem, 4vw, 1.75rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.pluginAuthorizationRow {
+  background: #ffffff;
+}
+
+.pluginSandboxRoot,
+.pluginSandboxFrameWrap {
+  width: 100%;
+}
+
+.pluginSandboxFrameWrap {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--nx-border);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.pluginSandboxLoading {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background: #ffffff;
+}
+
+.pluginSandboxFrame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+.pluginMetricValue {
+  font-variant-numeric: tabular-nums;
+}
+
+.pluginFingerprint {
+  overflow-wrap: anywhere;
+}
+
 .dashboardStatusCard .mantine-Card-root {
   overflow: hidden;
 }
@@ -1116,6 +1212,31 @@ a {
 }
 
 @media (max-width: 48rem) {
+  .pluginCatalogItem {
+    min-height: 0;
+  }
+
+  .pluginReviewGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .pluginReviewWide {
+    grid-column: auto;
+  }
+
+  .pluginInstalledHeader,
+  .pluginInstalledToolbar,
+  .pluginDeveloperModeRow,
+  .pluginAuthorizationRowInner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pluginSandboxFrameWrap,
+  .pluginSandboxFrame {
+    min-height: 520px;
+  }
+
   .sectionCardHeader {
     flex-direction: column;
   }

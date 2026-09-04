@@ -17,6 +17,8 @@ import { SiteSSLTab } from '@/components/site-detail/SiteSSLTab'
 import { siteDetailKeys, useSiteDetail } from '@/hooks/useSiteDetail'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
+import { usePluginContributions } from '@/api/pluginHooks'
+import { PluginSandbox } from '@/components/plugins/PluginSandbox'
 
 interface SiteDetailModalProps {
   siteId: string | null
@@ -27,7 +29,7 @@ interface SiteDetailModalProps {
 
 function toSiteDetailTab(value?: string): SiteDetailTab {
   const allowed: SiteDetailTab[] = ['basic', 'document', 'proxy', 'access-limit', 'hotlink', 'ssl', 'rewrite', 'config', 'files', 'logs', 'operations']
-  return allowed.includes(value as SiteDetailTab) ? value as SiteDetailTab : 'basic'
+  return allowed.includes(value as SiteDetailTab) || value?.startsWith('plugin:') ? value as SiteDetailTab : 'basic'
 }
 
 export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDetailModalProps) {
@@ -39,6 +41,10 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
   const site = detailQuery.data
   const activeMeta = getSiteDetailTabMeta(activeTab)
   const enableMutation = useMutation({ mutationFn: () => enableSite(siteId!) })
+  const contributionQuery = usePluginContributions()
+  const activeContribution = activeTab.startsWith('plugin:')
+    ? (contributionQuery.data || []).find((item) => item.point === 'site_detail_tab' && item.id === activeTab.slice('plugin:'.length))
+    : undefined
 
   useEffect(() => {
     if (opened) setActiveTab(toSiteDetailTab(initialTab))
@@ -47,6 +53,10 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
   useEffect(() => {
     if (site) setActiveTab((current) => fallbackSiteDetailTab(site, current))
   }, [site])
+
+  useEffect(() => {
+    if (contributionQuery.isSuccess && activeTab.startsWith('plugin:') && !activeContribution) setActiveTab('basic')
+  }, [activeContribution, activeTab, contributionQuery.isSuccess])
 
   function closeAndReset() {
     setActiveTab('basic')
@@ -70,6 +80,9 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
 
   function renderActiveTab() {
     if (!site) return null
+    if (activeContribution) {
+      return <PluginSandbox pluginId={activeContribution.plugin_id} entry={activeContribution.ui_entry || 'main.js'} allowedRPCMethods={activeContribution.rpc_methods} title={activeContribution.label} context={{ site_id: site.id }} />
+    }
     if (activeTab === 'basic') return <SiteBasicTab site={site} />
     if (activeTab === 'document') return <SiteDocumentTab site={site} />
     if (activeTab === 'config') return <SiteConfigTab site={site} />
@@ -87,7 +100,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
     <Modal
       opened={opened}
       onClose={closeAndReset}
-      title={`网站详情-${activeMeta.label}`}
+      title={`网站详情-${activeContribution?.label || activeMeta.label}`}
       size="min(1080px, 86vw)"
       fullScreen={mobile}
       closeOnClickOutside={false}

@@ -3,10 +3,11 @@ import { useMediaQuery } from '@mantine/hooks'
 import { IconCode, IconCopy, IconExternalLink, IconFileDescription, IconFileText, IconFolder, IconKey, IconListDetails, IconLock, IconNotebook, IconRoute, IconSettings, IconShield } from '@tabler/icons-react'
 import type { ReactNode } from 'react'
 import type { SiteDetail } from '@/api/types'
+import { usePluginContributions } from '@/api/pluginHooks'
 import { StatusBadge } from '@/components/common/StatusBadge'
 import { notifyError, notifySuccess } from '@/utils/notify'
 
-export type SiteDetailTab = 'basic' | 'document' | 'proxy' | 'access-limit' | 'hotlink' | 'ssl' | 'rewrite' | 'config' | 'files' | 'logs' | 'operations'
+export type SiteDetailTab = 'basic' | 'document' | 'proxy' | 'access-limit' | 'hotlink' | 'ssl' | 'rewrite' | 'config' | 'files' | 'logs' | 'operations' | `plugin:${string}`
 
 interface SiteTabItem {
   value: SiteDetailTab
@@ -53,9 +54,17 @@ export function getSiteDetailTabMeta(tab: SiteDetailTab): Pick<SiteTabItem, 'lab
 
 export function SiteDetailShell({ site, activeTab, onTabChange, children, actions }: SiteDetailShellProps) {
   const mobile = useMediaQuery('(max-width: 48rem)')
+  const contributionQuery = usePluginContributions()
+  const pluginTabs: SiteTabItem[] = (contributionQuery.data || []).filter((item) => item.point === 'site_detail_tab').map((item) => ({
+    value: `plugin:${item.id}`,
+    label: item.label,
+    description: item.description || `由插件 ${item.plugin_id} 提供的站点功能。`,
+    icon: <IconShield size={16} />,
+  }))
+  const availableTabs = [...tabItems, ...pluginTabs]
   const primaryDomain = site.primary_domain || ''
-  const activeMeta = getSiteDetailTabMeta(activeTab)
-  const selectData = tabItems.map((item) => ({
+  const activeMeta = availableTabs.find((item) => item.value === activeTab) || getSiteDetailTabMeta(activeTab)
+  const selectData = availableTabs.map((item) => ({
     value: item.value,
     label: item.importedDisabled && site.is_imported ? `${item.label}（旧站点不可用）` : item.label,
     disabled: item.importedDisabled && site.is_imported,
@@ -120,7 +129,7 @@ export function SiteDetailShell({ site, activeTab, onTabChange, children, action
         <div className="siteDetailLayout">
           <ScrollArea className="siteDetailNav">
             <Stack gap={6}>
-              {tabItems.map((item) => {
+              {availableTabs.map((item) => {
                 const disabled = Boolean(item.importedDisabled && site.is_imported)
                 return (
                   <Button

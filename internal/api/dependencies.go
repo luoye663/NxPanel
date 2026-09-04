@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
+	"github.com/luoye663/nxpanel/internal/plugin"
 	"github.com/luoye663/nxpanel/internal/proxy"
 	"github.com/luoye663/nxpanel/internal/rewrite"
 	"github.com/luoye663/nxpanel/internal/scheduledtask"
@@ -124,6 +126,36 @@ func newServerBase(cfg *app.Config, db *sql.DB) *Server {
 		rootCancel:             rootCancel,
 	}
 	server.setGateState(cfg.API.LoginPath, cfg.API.PublicHealth)
+	var catalog plugin.Catalog
+	if repositoryCfg, err := plugin.OfficialRepositoryConfig(cfg.DataDir); err == nil {
+		if c, openErr := plugin.OpenTUFRepository(repositoryCfg); openErr == nil {
+			catalog = c
+			server.backgroundWG.Add(1)
+			go func() {
+				defer server.backgroundWG.Done()
+				maintenanceLoop(server.rootCtx, 6*time.Hour, func(ctx context.Context) {
+					if refreshErr := c.Refresh(ctx); refreshErr != nil {
+						slog.Warn("刷新官方插件仓库失败", "error", refreshErr)
+					}
+				})
+			}()
+		} else {
+			slog.Warn("官方插件仓库信任配置无效", "error", openErr)
+		}
+	} else if !errors.Is(err, plugin.ErrRepositoryNotConfigured) {
+		slog.Warn("官方插件仓库构建配置无效", "error", err)
+	}
+	var officialService *plugin.OfficialServiceClient
+	if serviceClient, err := plugin.OfficialServiceConfig(); err == nil {
+		officialService = serviceClient
+	} else if !errors.Is(err, plugin.ErrRepositoryNotConfigured) {
+		slog.Warn("官方插件服务构建配置无效", "error", err)
+	}
+	server.pluginSvc = plugin.NewServiceWithOfficialClient(db, cfg.DataDir, catalog, nil, officialService)
+	server.pluginHandler = NewPluginHandler(server.pluginSvc)
+	if err := server.pluginSvc.RestoreEnabled(server.rootCtx); err != nil {
+		slog.Warn("恢复已启用插件失败", "error", err)
+	}
 	server.SetNeedsSetup(!adminExists)
 	return server
 }

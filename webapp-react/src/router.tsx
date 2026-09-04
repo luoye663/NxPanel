@@ -18,6 +18,8 @@ const FileManagerPage = lazy(() => import('@/pages/FileManagerPage').then((modul
 const SiteAccessAnalysisPage = lazy(() => import('@/pages/SiteAccessAnalysisPage').then((module) => ({ default: module.SiteAccessAnalysisPage })))
 const SiteBackupPage = lazy(() => import('@/pages/SiteBackupPage').then((module) => ({ default: module.SiteBackupPage })))
 const ScheduledTasksPage = lazy(() => import('@/pages/ScheduledTasksPage').then((module) => ({ default: module.ScheduledTasksPage })))
+const PluginCenterPage = lazy(() => import('@/pages/PluginCenterPage').then((module) => ({ default: module.PluginCenterPage })))
+const PluginHostPage = lazy(() => import('@/pages/PluginHostPage').then((module) => ({ default: module.PluginHostPage })))
 
 export const router = createBrowserRouter([
   ...(hasGatePath ? [{
@@ -75,6 +77,14 @@ export const router = createBrowserRouter([
       {
         path: '/panel-settings',
         element: withPageSuspense(<PanelSettingsPage />),
+      },
+      {
+        path: '/plugins',
+        element: withPageSuspense(<PluginCenterPage />),
+      },
+      {
+        path: '/plugins/:pluginId/*',
+        element: withPageSuspense(<PluginHostPage />),
       },
       {
         path: '/twofa-setup',

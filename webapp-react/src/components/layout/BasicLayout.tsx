@@ -5,15 +5,18 @@ import {
   IconExternalLink,
   IconFolder,
   IconPalette,
+  IconPuzzle,
   IconLogout,
   IconCalendarTime,
   IconRefresh,
   IconServer,
+  IconShield,
   IconSettings,
   IconWorld,
 } from '@tabler/icons-react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { useSystemOverview, useUpgradeCheckMutation, useUpgradeStatus } from '@/api/hooks'
+import { usePluginContributions } from '@/api/pluginHooks'
 import { useAuth } from '@/auth/AuthProvider'
 import { useBranding } from '@/branding/BrandingProvider'
 import { notifyError, notifySuccess } from '@/utils/notify'
@@ -25,6 +28,7 @@ const menuItems = [
   { path: '/nginx', label: 'Nginx 管理', icon: IconServer },
   { path: '/scheduled-tasks', label: '计划任务', icon: IconCalendarTime },
   { path: '/logs', label: '日志', icon: IconSettings },
+  { path: '/plugins', label: '插件中心', icon: IconPuzzle },
   { path: '/panel-settings', label: '面板设置', icon: IconPalette },
 ]
 const upgradeCheckInterval = 6 * 60 * 60 * 1000
@@ -46,9 +50,14 @@ export function BasicLayout() {
   const systemOverviewQuery = useSystemOverview()
   const upgradeQuery = useUpgradeStatus(upgradeCheckInterval)
   const upgradeCheckMutation = useUpgradeCheckMutation()
+  const pluginContributionsQuery = usePluginContributions()
   const systemOverview = systemOverviewQuery.data
   const upgradeInfo = upgradeQuery.data
-  const activeItem = menuItems.find((item) => item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path))
+  const pluginMenuItems = (pluginContributionsQuery.data || [])
+    .filter((item) => item.point === 'global_page')
+    .map((item) => ({ path: `/plugins/${encodeURIComponent(item.plugin_id)}/${(item.route || '').replace(/^\//, '')}`, label: item.label, icon: item.icon === 'shield' ? IconShield : IconPuzzle }))
+  const allMenuItems = [...pluginMenuItems, ...menuItems]
+  const activeItem = allMenuItems.find((item) => item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path))
   const agentAvailable = systemOverview?.agent.available
   const agentStatusLabel = agentAvailable === undefined ? '未知' : agentAvailable ? '可用' : '不可用'
   const agentStatusColor = agentAvailable === undefined ? 'gray' : agentAvailable ? 'green' : 'red'
@@ -178,7 +187,7 @@ export function BasicLayout() {
           </div>
         </Group>
 
-        {menuItems.map((item) => {
+        {allMenuItems.map((item) => {
           const active = item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path)
           const Icon = item.icon
           return (
