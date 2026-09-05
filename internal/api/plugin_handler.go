@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/luoye663/nxpanel/internal/api/middleware"
@@ -40,7 +41,7 @@ func RegisterPluginRoutes(r chi.Router, h *PluginHandler) {
 	r.Get("/plugins/repository/status", h.repositoryStatus)
 	r.Get("/plugins/developer-mode", h.developerMode)
 	r.Put("/plugins/developer-mode", h.setDeveloperMode)
-	r.Post("/plugins/developer/packages/inspect", h.inspectDeveloperPackage)
+	r.With(middleware.UploadReadDeadline(300*time.Second)).Post("/plugins/developer/packages/inspect", h.inspectDeveloperPackage)
 	r.Post("/plugins/developer/packages/install", h.installDeveloperPackage)
 	r.Get("/plugins/authorizations", h.authorizations)
 	r.Post("/plugins/authorizations/device", h.startDeviceAuthorization)
@@ -107,7 +108,19 @@ func (h *PluginHandler) catalog(w http.ResponseWriter, r *http.Request) {
 		byID[item.ID] = item
 	}
 	out := make([]pluginCatalogDTO, 0, len(entries))
+	latest := make(map[string]plugin.CatalogEntry)
+	order := make([]string, 0)
 	for _, entry := range entries {
+		previous, exists := latest[entry.ID]
+		if !exists {
+			order = append(order, entry.ID)
+		}
+		if !exists || plugin.CompareVersions(entry.Version, previous.Version) > 0 {
+			latest[entry.ID] = entry
+		}
+	}
+	for _, id := range order {
+		entry := latest[id]
 		d := pluginCatalogDTO{CatalogEntry: entry, Compatible: true}
 		if item, ok := byID[entry.ID]; ok {
 			d.InstalledVersion = item.ActiveVersion
@@ -117,7 +130,7 @@ func (h *PluginHandler) catalog(w http.ResponseWriter, r *http.Request) {
 			} else {
 				d.State = "disabled"
 			}
-			d.UpdateAvailable = item.ActiveVersion != entry.Version
+			d.UpdateAvailable = item.Source != "developer" && plugin.CompareVersions(entry.Version, item.ActiveVersion) > 0
 		}
 		out = append(out, d)
 	}
@@ -429,7 +442,10 @@ func (h *PluginHandler) respond(w http.ResponseWriter, r *http.Request, data any
 	status, code := http.StatusInternalServerError, app.ErrInternalError
 	details := map[string]any(nil)
 	var serviceErr *plugin.ServiceError
+	var bodyErr *http.MaxBytesError
 	switch {
+	case errors.As(err, &bodyErr), errors.Is(err, plugin.ErrPackageTooLarge):
+		status, code = http.StatusRequestEntityTooLarge, app.ErrBadRequest
 	case errors.As(err, &serviceErr) && serviceErr.Code == "authorization_required":
 		status, code, details = http.StatusConflict, "PLUGIN_AUTHORIZATION_REQUIRED", serviceErr.Details
 	case errors.As(err, &serviceErr) && serviceErr.Status == http.StatusForbidden:

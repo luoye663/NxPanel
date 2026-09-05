@@ -46,7 +46,7 @@ func (b *SQLCapabilityBroker) Call(ctx context.Context, pluginID, method string,
 		return nil, errors.New("host capability denied")
 	}
 	var allowed int
-	err := b.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_permissions WHERE plugin_id=? AND permission=?`, pluginID, permission).Scan(&allowed)
+	err := b.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_permissions p JOIN plugin_installations i ON i.plugin_id=p.plugin_id WHERE p.plugin_id=? AND p.permission=? AND i.enabled=1`, pluginID, permission).Scan(&allowed)
 	if err != nil || allowed != 1 {
 		return nil, errors.New("plugin permission denied")
 	}

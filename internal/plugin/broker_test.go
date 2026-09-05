@@ -24,6 +24,12 @@ func TestCapabilityBrokerEnforcesPermissionAndKVQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := NewCapabilityBroker(database)
+	if _, err := b.Call(context.Background(), manifest.ID, "kv.get", json.RawMessage(`{"key":"config"}`)); err == nil {
+		t.Fatal("disabled plugin used a retained permission")
+	}
+	if err := NewRepository(database).SetEnabled(context.Background(), manifest.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	stored, err := b.Call(context.Background(), manifest.ID, "kv.put", json.RawMessage(`{"key":"config","value":{"enabled":true}}`))
 	if err != nil || string(stored) != `{"stored":true}` {
 		t.Fatalf("put = %s, %v", stored, err)

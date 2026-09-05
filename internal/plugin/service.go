@@ -216,6 +216,9 @@ func (s *Service) fetchOfficialPackage(ctx context.Context, entry CatalogEntry, 
 			bearer, err = s.authorizations.AccessToken(ctx, boundID)
 		}
 		if err != nil {
+			if errors.Is(err, ErrReauthorizationRequired) {
+				return s.authorizationRequired(ctx, entry)
+			}
 			return err
 		}
 	}
@@ -223,12 +226,11 @@ func (s *Service) fetchOfficialPackage(ctx context.Context, entry CatalogEntry, 
 	if err != nil {
 		var serviceErr *ServiceError
 		if errors.As(err, &serviceErr) && (serviceErr.Code == "authorization_required" || serviceErr.Code == "token_expired") {
-			if boundID != "" && serviceErr.Code == "token_expired" {
+			if boundID != "" {
 				_ = s.authorizations.MarkInvalid(ctx, boundID)
 			}
 			serviceErr.Code = "authorization_required"
-			accounts, _ := s.authorizations.List(ctx)
-			serviceErr.Details = map[string]any{"plugin_id": entry.ID, "version": entry.Version, "authorizations": accounts}
+			return s.authorizationRequired(ctx, entry)
 		}
 		return err
 	}
@@ -239,6 +241,11 @@ func (s *Service) fetchOfficialPackage(ctx context.Context, entry CatalogEntry, 
 		return errors.New("official catalog does not support authorized downloads")
 	}
 	return fetcher.FetchResolved(ctx, entry, resolved, destination)
+}
+
+func (s *Service) authorizationRequired(ctx context.Context, entry CatalogEntry) error {
+	accounts, _ := s.authorizations.List(ctx)
+	return &ServiceError{Status: 401, Code: "authorization_required", Message: "plugin authorization is required", Details: map[string]any{"plugin_id": entry.ID, "version": entry.Version, "authorizations": accounts}}
 }
 
 func panelVersion() string { return "nxpanel/" + strings.TrimSpace(OfficialPanelVersion) }
@@ -371,6 +378,9 @@ func (s *Service) BindAuthorization(ctx context.Context, pluginID, version, auth
 	}
 	token, err := s.authorizations.AccessToken(ctx, authorizationID)
 	if err != nil {
+		if errors.Is(err, ErrReauthorizationRequired) {
+			return s.authorizationRequired(ctx, entry)
+		}
 		return err
 	}
 	instance, err := s.authorizations.InstanceID(ctx)
@@ -379,6 +389,11 @@ func (s *Service) BindAuthorization(ctx context.Context, pluginID, version, auth
 	}
 	resolved, err := s.official.ResolveDownload(ctx, DownloadResolveRequest{PluginID: entry.ID, Version: entry.Version, Target: entry.Package, InstanceUUID: instance, PanelVersion: panelVersion(), Runtime: "wasm-v1"}, token)
 	if err != nil {
+		var serviceErr *ServiceError
+		if errors.As(err, &serviceErr) && (serviceErr.Code == "authorization_required" || serviceErr.Code == "token_expired") {
+			_ = s.authorizations.MarkInvalid(ctx, authorizationID)
+			return s.authorizationRequired(ctx, entry)
+		}
 		return err
 	}
 	if resolved.Target != entry.Package || resolved.SHA256 != entry.PackageSHA256 || resolved.Length != entry.Size || resolved.ExpiresAt.IsZero() || !resolved.ExpiresAt.After(time.Now().UTC()) {

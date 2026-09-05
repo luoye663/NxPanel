@@ -21,6 +21,8 @@ type PackageLimits struct {
 
 var DefaultPackageLimits = PackageLimits{CompressedBytes: 64 << 20, ExpandedBytes: 256 << 20, Entries: 10_000}
 
+var ErrPackageTooLarge = errors.New("plugin package exceeds compressed size limit")
+
 func VerifyPackage(ctx context.Context, packagePath, expectedSHA256, destination string, limits PackageLimits) (*Manifest, error) {
 	if limits.CompressedBytes <= 0 || limits.ExpandedBytes <= 0 || limits.Entries <= 0 {
 		limits = DefaultPackageLimits
@@ -35,7 +37,7 @@ func VerifyPackage(ctx context.Context, packagePath, expectedSHA256, destination
 		return nil, err
 	}
 	if stat.Size() > limits.CompressedBytes {
-		return nil, errors.New("plugin package exceeds compressed size limit")
+		return nil, ErrPackageTooLarge
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

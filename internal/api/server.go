@@ -338,7 +338,7 @@ func (s *Server) setupMiddleware() {
 		s.cfg.API.Ingress.MaxTrackedIPs,
 	)))
 	s.router.Use(middleware.SecurityHeaders)
-	s.router.Use(middleware.MaxBodySizeExcept(2*1024*1024, "/api/v1/files/upload", "/files/upload"))
+	s.router.Use(middleware.MaxBodySizeExcept(2*1024*1024, "/api/v1/files/upload", "/files/upload", "/plugins/developer/packages/inspect"))
 	s.router.Use(middleware.Recoverer)
 	s.router.Use(chiMiddleware.Logger)
 	s.router.Use(middleware.Authenticate(s.authSvc))

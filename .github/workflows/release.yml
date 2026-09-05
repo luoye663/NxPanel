@@ -157,6 +157,19 @@ jobs:
             exit 1
           fi
 
+      - name: Validate official plugin build parameters
+        env:
+          OFFICIAL_PLUGIN_METADATA_URL: ${{ vars.OFFICIAL_PLUGIN_METADATA_URL }}
+          OFFICIAL_PLUGIN_ROOT_B64: ${{ vars.OFFICIAL_PLUGIN_ROOT_B64 }}
+          OFFICIAL_PLUGIN_SERVICE_URL: ${{ vars.OFFICIAL_PLUGIN_SERVICE_URL }}
+          OFFICIAL_PLUGIN_TARGETS_URL: ${{ vars.OFFICIAL_PLUGIN_TARGETS_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$OFFICIAL_PLUGIN_METADATA_URL" || -z "$OFFICIAL_PLUGIN_TARGETS_URL" || -z "$OFFICIAL_PLUGIN_SERVICE_URL" || -z "$OFFICIAL_PLUGIN_ROOT_B64" ]]; then
+            echo "Release requires OFFICIAL_PLUGIN_METADATA_URL, OFFICIAL_PLUGIN_TARGETS_URL, OFFICIAL_PLUGIN_SERVICE_URL, and OFFICIAL_PLUGIN_ROOT_B64 repository variables." >&2
+            exit 1
+          fi
+
   binary:
     name: Build release package
     needs: validate
@@ -193,6 +206,10 @@ jobs:
       - name: Build release package
         env:
           BUILD_TIME: ${{ needs.validate.outputs.build_time }}
+          OFFICIAL_PLUGIN_METADATA_URL: ${{ vars.OFFICIAL_PLUGIN_METADATA_URL }}
+          OFFICIAL_PLUGIN_ROOT_B64: ${{ vars.OFFICIAL_PLUGIN_ROOT_B64 }}
+          OFFICIAL_PLUGIN_SERVICE_URL: ${{ vars.OFFICIAL_PLUGIN_SERVICE_URL }}
+          OFFICIAL_PLUGIN_TARGETS_URL: ${{ vars.OFFICIAL_PLUGIN_TARGETS_URL }}
           VERSION: ${{ needs.validate.outputs.version }}
         run: make release VERSION="$VERSION" BUILD_TIME="$BUILD_TIME"
 
@@ -284,6 +301,11 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.validate.outputs.version }}
+            RELEASE_BUILD=1
+            OFFICIAL_PLUGIN_METADATA_URL=${{ vars.OFFICIAL_PLUGIN_METADATA_URL }}
+            OFFICIAL_PLUGIN_TARGETS_URL=${{ vars.OFFICIAL_PLUGIN_TARGETS_URL }}
+            OFFICIAL_PLUGIN_SERVICE_URL=${{ vars.OFFICIAL_PLUGIN_SERVICE_URL }}
+            OFFICIAL_PLUGIN_ROOT_B64=${{ vars.OFFICIAL_PLUGIN_ROOT_B64 }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.variant }}

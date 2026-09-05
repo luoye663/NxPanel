@@ -102,8 +102,8 @@ export type PluginAuthorizationStatus = 'active' | 'reauthorization_required'
 export interface PluginAuthorizationSummary {
   authorization_id: string
   account_id: string
-  display_name: string
-  email_masked?: string
+  account_label: string
+  account_email?: string
   status: PluginAuthorizationStatus
   access_expires_at?: string
   refresh_expires_at?: string
@@ -116,7 +116,7 @@ export interface PluginAuthorizationChallenge {
   verification_uri: string
   verification_uri_complete?: string
   expires_at: string
-  interval: number
+  interval_seconds: number
 }
 
 export type PluginAuthorizationPollStatus = 'pending' | 'slow_down' | 'authorized' | 'denied' | 'expired'
@@ -125,7 +125,7 @@ export interface PluginAuthorizationPollResult {
   status: PluginAuthorizationPollStatus
   authorization?: PluginAuthorizationSummary
   message?: string
-  interval?: number
+  interval_seconds?: number
 }
 
 export interface PluginAuthorizationRequiredDetails {
@@ -301,8 +301,8 @@ export function pollPluginAuthorizationDevice(attemptId: string): Promise<Plugin
   return post(`/plugins/authorizations/device/${encodeURIComponent(attemptId)}/poll`)
 }
 
-export function bindPluginAuthorization(pluginId: string, authorizationId: string): Promise<PluginAuthorizationSummary> {
-  return put(`/plugins/${encodeURIComponent(pluginId)}/authorization`, { authorization_id: authorizationId })
+export function bindPluginAuthorization(pluginId: string, version: string, authorizationId: string): Promise<{ bound: boolean }> {
+  return put(`/plugins/${encodeURIComponent(pluginId)}/authorization`, { version, authorization_id: authorizationId })
 }
 
 export function deletePluginAuthorization(authorizationId: string): Promise<void> {

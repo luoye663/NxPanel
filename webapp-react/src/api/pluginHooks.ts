@@ -143,7 +143,7 @@ export function usePollPluginAuthorizationDevice(attemptId: string | null, inter
     enabled: Boolean(attemptId),
     refetchInterval: (query) => {
       const status = query.state.data?.status
-      return status === 'authorized' || status === 'denied' || status === 'expired' ? false : Math.max(2, query.state.data?.interval || intervalSeconds) * 1000
+      return status === 'authorized' || status === 'denied' || status === 'expired' ? false : Math.max(2, query.state.data?.interval_seconds || intervalSeconds) * 1000
     },
     retry: false,
   })
@@ -152,7 +152,7 @@ export function usePollPluginAuthorizationDevice(attemptId: string | null, inter
 export function useBindPluginAuthorization() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ pluginId, authorizationId }: { pluginId: string; authorizationId: string }) => bindPluginAuthorization(pluginId, authorizationId),
+    mutationFn: ({ pluginId, version, authorizationId }: { pluginId: string; version: string; authorizationId: string }) => bindPluginAuthorization(pluginId, version, authorizationId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.authorizations })
       await queryClient.invalidateQueries({ queryKey: pluginQueryKeys.installed })

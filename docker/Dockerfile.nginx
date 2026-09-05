@@ -31,6 +31,7 @@ ARG OFFICIAL_PLUGIN_METADATA_URL
 ARG OFFICIAL_PLUGIN_TARGETS_URL
 ARG OFFICIAL_PLUGIN_SERVICE_URL
 ARG OFFICIAL_PLUGIN_ROOT_B64
+ARG RELEASE_BUILD=0
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG TARGETOS
 ARG TARGETARCH
@@ -52,7 +53,12 @@ COPY --from=frontend-builder /app/web/dist ./web/dist/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    test -n "${OFFICIAL_PLUGIN_METADATA_URL}" -a -n "${OFFICIAL_PLUGIN_TARGETS_URL}" -a -n "${OFFICIAL_PLUGIN_SERVICE_URL}" -a -n "${OFFICIAL_PLUGIN_ROOT_B64}" \
+    if [ "${RELEASE_BUILD}" = "1" ]; then \
+      test -n "${OFFICIAL_PLUGIN_METADATA_URL}" \
+      && test -n "${OFFICIAL_PLUGIN_TARGETS_URL}" \
+      && test -n "${OFFICIAL_PLUGIN_SERVICE_URL}" \
+      && test -n "${OFFICIAL_PLUGIN_ROOT_B64}"; \
+    fi \
  && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/plugin.OfficialPanelVersion=${VERSION} -X github.com/luoye663/nxpanel/internal/plugin.OfficialMetadataURL=${OFFICIAL_PLUGIN_METADATA_URL} -X github.com/luoye663/nxpanel/internal/plugin.OfficialTargetsURL=${OFFICIAL_PLUGIN_TARGETS_URL} -X github.com/luoye663/nxpanel/internal/plugin.OfficialServiceURL=${OFFICIAL_PLUGIN_SERVICE_URL} -X github.com/luoye663/nxpanel/internal/plugin.OfficialBootstrapRootB64=${OFFICIAL_PLUGIN_ROOT_B64}" \

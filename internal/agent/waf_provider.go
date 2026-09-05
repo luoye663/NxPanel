@@ -307,8 +307,11 @@ func (s *Server) handleWAFSiteApply(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusConflict, "patch site WAF marker: "+err.Error())
 		return
 	}
+	if err := s.prepareWAFAuditDirectory(req.Policy.Audit.StorageDir); err != nil {
+		writeAgentError(w, http.StatusInternalServerError, "prepare WAF audit directory: "+err.Error())
+		return
+	}
 	changes := []FileChange{
-		{Type: "mkdir", Path: req.Policy.Audit.StorageDir, Perm: 0750},
 		{Type: "write", Path: path, Content: content, Perm: 0640},
 		{Type: "write", Path: req.SiteConfigPath, Content: updatedSiteConfig, Perm: 0644},
 	}
@@ -317,6 +320,49 @@ func (s *Server) handleWAFSiteApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeAgentOK(w, map[string]any{"applied": true, "include_path": path})
+}
+
+// Only the site directory is worker-owned. Its parent remains agent-owned,
+// allowing traversal by the worker group without granting rename/delete access.
+func (s *Server) prepareWAFAuditDirectory(dir string) error {
+	if s.cfg.Nginx.WebUser == "" || s.cfg.Nginx.WebGroup == "" {
+		return errors.New("nginx worker user and group must be configured")
+	}
+	uid, err := resolveUser(s.cfg.Nginx.WebUser)
+	if err != nil {
+		return err
+	}
+	gid, err := resolveGroup(s.cfg.Nginx.WebGroup)
+	if err != nil {
+		return err
+	}
+	for _, path := range []string{filepath.Dir(dir), dir} {
+		_, err := s.policy.Validate(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(path, 0750); err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("WAF audit directory cannot use symlinks")
+		}
+		owner := os.Geteuid()
+		if path == dir {
+			owner = uid
+		}
+		if err := os.Chown(path, owner, gid); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0750); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) applyWAFChanges(ctx context.Context, operationID string, changes []FileChange, validateNginx bool) error {

@@ -25,3 +25,14 @@ func TestParseCatalogIndexRejectsDuplicateTarget(t *testing.T) {
 		t.Fatal("duplicate target accepted")
 	}
 }
+
+func TestCatalogUsesSemanticVersionOrdering(t *testing.T) {
+	idx := &CatalogIndex{Plugins: []CatalogPlugin{{ID: "com.example.test", Versions: []CatalogVersion{{Version: "1.9.0"}, {Version: "1.10.0-rc.1"}, {Version: "1.10.0"}}}}}
+	entries := flattenCatalog(idx)
+	if entries[0].Version != "1.10.0" || entries[1].Version != "1.10.0-rc.1" {
+		t.Fatalf("versions: %+v", entries)
+	}
+	if CompareVersions("v1.10.0", "1.10.0") != 0 {
+		t.Fatal("optional v prefix differs")
+	}
+}

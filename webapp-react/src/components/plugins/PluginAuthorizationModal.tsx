@@ -31,7 +31,7 @@ const deniedMessages: Record<PluginEntitlementDeniedReason, string> = {
 }
 
 function accountName(account: PluginAuthorizationSummary) {
-  return account.display_name || account.email_masked || account.account_id
+  return account.account_label || account.account_email || account.account_id
 }
 
 function AuthorizationRow({ account, busy, onUse, onDelete }: { account: PluginAuthorizationSummary; busy: boolean; onUse: () => void; onDelete: () => void }) {
@@ -41,7 +41,7 @@ function AuthorizationRow({ account, busy, onUse, onDelete }: { account: PluginA
       <Group justify="space-between" align="center" wrap="nowrap" className="pluginAuthorizationRowInner">
         <div className="pluginIdentityCopy">
           <Group gap="xs"><Text fw={600}>{accountName(account)}</Text><Badge variant="light" color={usable ? 'green' : 'orange'}>{usable ? '可用' : '需要重新登录'}</Badge></Group>
-          {account.email_masked && account.email_masked !== account.display_name ? <Text size="xs" c="dimmed">{account.email_masked}</Text> : null}
+          {account.account_email && account.account_email !== account.account_label ? <Text size="xs" c="dimmed">{account.account_email}</Text> : null}
         </div>
         <Group gap="xs" wrap="nowrap">
           <Button size="xs" variant="default" disabled={!usable || busy} onClick={onUse}>使用此账户</Button>
@@ -78,7 +78,7 @@ export function PluginAuthorizationModal({ opened, request, suggestedAuthorizati
     completedAttempt.current = ''
     try {
       const next = await createMutation.mutateAsync({ pluginId: request.plugin.id, version: request.plugin.version })
-      setIntervalSeconds(next.interval || 5)
+      setIntervalSeconds(next.interval_seconds || 5)
       setAttemptId(next.attempt_id)
     }
     catch (error) {
@@ -91,7 +91,7 @@ export function PluginAuthorizationModal({ opened, request, suggestedAuthorizati
     setContinuing(true)
     setAccountError(undefined)
     try {
-      await bindMutation.mutateAsync({ pluginId: request.plugin.id, authorizationId })
+      await bindMutation.mutateAsync({ pluginId: request.plugin.id, version: request.plugin.version, authorizationId })
       await onAuthorized()
     }
     catch (error) {

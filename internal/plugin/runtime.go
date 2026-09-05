@@ -66,16 +66,20 @@ func NewWASMRuntimeWithBroker(ctx context.Context, broker CapabilityBroker) *WAS
 }
 
 func (r *WASMRuntime) Validate(ctx context.Context, _ *Manifest, modulePath string) error {
+	// Inspection executes untrusted start/health functions before permission
+	// approval. Never share installed modules or their capability broker.
+	isolated := NewWASMRuntime(ctx)
+	defer isolated.Close(context.Background())
 	wasm, err := os.ReadFile(modulePath)
 	if err != nil {
 		return err
 	}
-	compiled, err := r.runtime.CompileModule(ctx, wasm)
+	compiled, err := isolated.runtime.CompileModule(ctx, wasm)
 	if err != nil {
 		return fmt.Errorf("compile WASM: %w", err)
 	}
 	defer compiled.Close(ctx)
-	module, err := r.runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig())
+	module, err := isolated.runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
 		return fmt.Errorf("instantiate WASM: %w", err)
 	}

@@ -41,6 +41,8 @@ pub extern "C" fn nxp_health() -> i32 {
 
 运行时内存上限为 64 MiB；校验和启停生命周期调用的超时为 30 秒。
 
+包检查在独立的 WASM 实例中执行启动函数和 `nxp_health`，不开放宿主能力，也不能导入已安装插件。健康检查必须不依赖 KV、网络等宿主副作用；正常 RPC 的能力调用必须同时满足插件已启用和权限已批准。
+
 ## 3. 编写隔离 UI
 
 `ui/main.js` 需要接收宿主通过 `window.postMessage` 转交的 `MessagePort`：

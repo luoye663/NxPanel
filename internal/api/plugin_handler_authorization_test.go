@@ -41,3 +41,34 @@ func TestPluginAuthorizationErrorsUsePanelSafeStatusCodes(t *testing.T) {
 		})
 	}
 }
+
+func TestPluginAuthorizationWireFieldNames(t *testing.T) {
+	raw, err := json.Marshal(struct {
+		Authorization plugin.AuthorizationSummary `json:"authorization"`
+		Challenge     plugin.DeviceAttempt        `json:"challenge"`
+	}{
+		Authorization: plugin.AuthorizationSummary{ID: "auth-1", AccountID: "acct-1", DisplayName: "Example", EmailMasked: "e***@example.com"},
+		Challenge:     plugin.DeviceAttempt{AttemptID: "attempt-1", Interval: 7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["authorization"]["account_label"] != "Example" || wire["authorization"]["account_email"] != "e***@example.com" {
+		t.Fatalf("authorization wire=%s", raw)
+	}
+	if wire["challenge"]["interval_seconds"] != float64(7) {
+		t.Fatalf("challenge wire=%s", raw)
+	}
+	for _, legacy := range []string{"display_name", "email_masked", "interval"} {
+		if _, ok := wire["authorization"][legacy]; ok {
+			t.Fatalf("legacy field %q in authorization wire=%s", legacy, raw)
+		}
+		if _, ok := wire["challenge"][legacy]; ok {
+			t.Fatalf("legacy field %q in challenge wire=%s", legacy, raw)
+		}
+	}
+}

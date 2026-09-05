@@ -32,6 +32,13 @@ OFFICIAL_PLUGIN_ALLOW_LOOPBACK_HTTP ?= 0
 RELEASE_BUILD ?= 0
 PLUGIN_LDFLAGS = -X github.com/luoye663/nxpanel/internal/plugin.OfficialMetadataURL=$(OFFICIAL_PLUGIN_METADATA_URL) -X github.com/luoye663/nxpanel/internal/plugin.OfficialTargetsURL=$(OFFICIAL_PLUGIN_TARGETS_URL) -X github.com/luoye663/nxpanel/internal/plugin.OfficialServiceURL=$(OFFICIAL_PLUGIN_SERVICE_URL) -X github.com/luoye663/nxpanel/internal/plugin.OfficialBootstrapRootB64=$(OFFICIAL_PLUGIN_ROOT_B64) -X github.com/luoye663/nxpanel/internal/plugin.OfficialAllowLoopbackHTTP=$(OFFICIAL_PLUGIN_ALLOW_LOOPBACK_HTTP) -X github.com/luoye663/nxpanel/internal/plugin.OfficialPanelVersion=$(VERSION)
 LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) $(PLUGIN_LDFLAGS)
+export OFFICIAL_PLUGIN_METADATA_URL OFFICIAL_PLUGIN_TARGETS_URL OFFICIAL_PLUGIN_SERVICE_URL OFFICIAL_PLUGIN_ROOT_B64
+DOCKER_PLUGIN_BUILD_ARGS = \
+	--build-arg RELEASE_BUILD="$(RELEASE_BUILD)" \
+	--build-arg OFFICIAL_PLUGIN_METADATA_URL \
+	--build-arg OFFICIAL_PLUGIN_TARGETS_URL \
+	--build-arg OFFICIAL_PLUGIN_SERVICE_URL \
+	--build-arg OFFICIAL_PLUGIN_ROOT_B64
 
 # 本地调试
 PLUGIN_SERVER_URL ?= http://127.0.0.1:18900
@@ -46,13 +53,13 @@ all: build-frontend build
 build: build-api build-agent
 
 check-plugin-release-config:
-	@if [ "$(RELEASE_BUILD)" = "1" ]; then test -n "$(OFFICIAL_PLUGIN_METADATA_URL)" -a -n "$(OFFICIAL_PLUGIN_TARGETS_URL)" -a -n "$(OFFICIAL_PLUGIN_SERVICE_URL)" -a -n "$(OFFICIAL_PLUGIN_ROOT_B64)" || { echo "正式构建缺少官方插件 metadata、targets、service URL 或 bootstrap root" >&2; exit 1; }; fi
+	@if [ "$(RELEASE_BUILD)" = "1" ]; then test -n "$(OFFICIAL_PLUGIN_METADATA_URL)" && test -n "$(OFFICIAL_PLUGIN_TARGETS_URL)" && test -n "$(OFFICIAL_PLUGIN_SERVICE_URL)" && test -n "$(OFFICIAL_PLUGIN_ROOT_B64)" || { echo "正式构建缺少官方插件 metadata、targets、service URL 或 bootstrap root" >&2; exit 1; }; fi
 
 build-api: check-plugin-release-config
 	@echo "构建 nxpanel-api..."
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_API) ./cmd/nxpanel-api
 
-build-agent:
+build-agent: check-plugin-release-config
 	@echo "构建 nxpanel-agent..."
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_AGENT) ./cmd/nxpanel-agent
 
@@ -66,12 +73,12 @@ build-all: build-frontend build
 
 ## docker-build-nginx: 构建 nginx 变体镜像（独享模式，含 nginx+agent+api）
 docker-build-nginx:
-	docker build -f docker/Dockerfile.nginx --build-arg VERSION=$(VERSION) \
+	docker build -f docker/Dockerfile.nginx --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-t nxpanel:nginx-$(VERSION) -t nxpanel:nginx-latest .
 
 ## docker-build-openresty: 构建 openresty 变体镜像（独享模式，含 openresty+agent+api）
 docker-build-openresty:
-	docker build -f docker/Dockerfile.openresty --build-arg VERSION=$(VERSION) \
+	docker build -f docker/Dockerfile.openresty --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-t nxpanel:openresty-$(VERSION) -t nxpanel:openresty-latest .
 
 ## docker-build: 构建两个变体镜像（本地，单架构）
@@ -79,10 +86,10 @@ docker-build: docker-build-nginx docker-build-openresty
 
 ## docker-multiarch: 多架构构建（amd64+arm64），需 docker buildx；仅加载到本地
 docker-multiarch:
-	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.nginx -t $(DOCKER_NS):nginx-$(VERSION) -t $(DOCKER_NS):nginx-latest \
 		--load .
-	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.openresty -t $(DOCKER_NS):openresty-$(VERSION) -t $(DOCKER_NS):openresty-latest \
 		--load .
 
@@ -106,11 +113,11 @@ docker-push: docker-push-dockerhub
 ## docker-push-dockerhub: 构建指定平台并只推送到 Docker Hub（默认 linux/amd64）
 docker-push-dockerhub:
 	@echo "==> 构建并推送 nginx 变体到 Docker Hub（$(DOCKERHUB_PLATFORM)）"
-	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.nginx \
 		-t $(DOCKERHUB_NS):nginx-$(VERSION) -t $(DOCKERHUB_NS):nginx-latest .
 	@echo "==> 构建并推送 openresty 变体到 Docker Hub（$(DOCKERHUB_PLATFORM)）"
-	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.openresty \
 		-t $(DOCKERHUB_NS):openresty-$(VERSION) -t $(DOCKERHUB_NS):openresty-latest .
 	@echo "==> Docker Hub 推送完成"
@@ -131,11 +138,11 @@ docker-push-dockerhub-multiarch:
 ##   需要：docker login ghcr.io
 docker-push-ghcr:
 	@echo "==> 构建并推送 nginx 变体到 GHCR（$(GHCR_PLATFORM)）"
-	docker buildx build --push --platform $(GHCR_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(GHCR_PLATFORM) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.nginx \
 		-t $(DOCKER_NS):nginx-$(VERSION) -t $(DOCKER_NS):nginx-latest .
 	@echo "==> 构建并推送 openresty 变体到 GHCR（$(GHCR_PLATFORM)）"
-	docker buildx build --push --platform $(GHCR_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(GHCR_PLATFORM) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.openresty \
 		-t $(DOCKER_NS):openresty-$(VERSION) -t $(DOCKER_NS):openresty-latest .
 	@echo "==> GHCR 推送完成"
@@ -156,12 +163,12 @@ docker-push-ghcr-multiarch:
 ##   需要：docker login docker.io && docker login ghcr.io
 docker-push-all:
 	@echo "==> 构建并推送 nginx 变体到 Docker Hub + GHCR（$(DOCKER_PLATFORMS)）"
-	docker buildx build --push --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKER_PLATFORMS) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.nginx \
 		-t $(DOCKERHUB_NS):nginx-$(VERSION) -t $(DOCKERHUB_NS):nginx-latest \
 		-t $(DOCKER_NS):nginx-$(VERSION) -t $(DOCKER_NS):nginx-latest .
 	@echo "==> 构建并推送 openresty 变体到 Docker Hub + GHCR（$(DOCKER_PLATFORMS)）"
-	docker buildx build --push --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKER_PLATFORMS) --build-arg VERSION="$(VERSION)" $(DOCKER_PLUGIN_BUILD_ARGS) \
 		-f docker/Dockerfile.openresty \
 		-t $(DOCKERHUB_NS):openresty-$(VERSION) -t $(DOCKERHUB_NS):openresty-latest \
 		-t $(DOCKER_NS):openresty-$(VERSION) -t $(DOCKER_NS):openresty-latest .
@@ -227,8 +234,9 @@ vet:
 tidy:
 	$(GO) mod tidy
 
-## release: 生成发布包
-release: build-frontend build
+## release: 生成正式发布包（必须配置官方插件仓库）
+release: build-frontend
+	@$(MAKE) build RELEASE_BUILD=1
 	@echo "生成发布包..."
 	@rm -rf release/
 	@mkdir -p release/nxpanel/bin release/nxpanel/web release/nxpanel/configs/templates release/nxpanel/configs/nginx release/nxpanel/scripts

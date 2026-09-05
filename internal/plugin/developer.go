@@ -130,7 +130,7 @@ func (d *DeveloperManager) Inspect(ctx context.Context, filename string, src io.
 		return nil, errors.Join(copyErr, closeErr)
 	}
 	if written > DefaultPackageLimits.CompressedBytes {
-		return nil, errors.New("plugin package exceeds compressed size limit")
+		return nil, ErrPackageTooLarge
 	}
 	unpacked := filepath.Join(stageRoot, "unpacked")
 	manifest, err := VerifyPackage(ctx, packagePath, "", unpacked, DefaultPackageLimits)

@@ -1,6 +1,6 @@
 # 插件服务端与 TUF 发布教程
 
-官方插件仓库、商业授权服务、用户与权益管理以及发布工具不属于 nxPanel 面板进程。它们位于独立项目 `/root/nxPanle-plugin-server`，正式产品名和 Go module 使用 `nxpanel-plugin-server`。nxPanel 只保留 TUF 客户端、下载授权客户端和插件运行时。
+官方插件仓库、插件授权服务、用户与权益管理以及发布工具不属于 nxPanel 面板进程。它们位于独立项目 `/root/nxPanle-plugin-server`，正式产品名和 Go module 使用 `nxpanel-plugin-server`。nxPanel 只保留 TUF 客户端、下载授权客户端和插件运行时。
 
 ## 服务端职责
 
@@ -48,6 +48,17 @@ pluginctl repository verify
 ```
 
 Root 采用离线 2-of-3 Ed25519 阈值；Targets、Snapshot、Timestamp 使用相互独立的在线密钥。默认过期时间为 Root 365 天、Targets 30 天、Snapshot 7 天、Timestamp 24 小时。Root 轮换必须生成连续版本，并同时满足旧 Root 和新 Root 的签名阈值。
+
+## 正式构建配置
+
+GitHub 正式发布前，在仓库的 Actions variables 中配置以下四个公开构建参数；二进制发布包和 nginx、OpenResty 镜像使用同一组值：
+
+- `OFFICIAL_PLUGIN_METADATA_URL`：TUF metadata 基础地址；
+- `OFFICIAL_PLUGIN_TARGETS_URL`：TUF targets 基础地址；
+- `OFFICIAL_PLUGIN_SERVICE_URL`：插件服务基础地址；
+- `OFFICIAL_PLUGIN_ROOT_B64`：可信 TUF bootstrap Root JSON 的单行 Base64。
+
+Release 工作流和 `make release` 都以正式构建模式运行，缺少任一参数会在构建前失败。本地普通二进制或 Docker 构建允许不配置官方仓库，此时官方目录不可用；需要验证正式构建门禁时可显式传入上述参数并设置 `RELEASE_BUILD=1`。
 
 ## 下载和授权协议
 

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,8 +19,9 @@ import (
 const authorizationAAD = "nxpanel/plugin-authorization/v1"
 
 var (
-	ErrAuthorizationNotFound = errors.New("plugin authorization not found")
-	ErrDeviceAttemptNotFound = errors.New("device authorization attempt is invalid or expired")
+	ErrAuthorizationNotFound   = errors.New("plugin authorization not found")
+	ErrDeviceAttemptNotFound   = errors.New("device authorization attempt is invalid or expired")
+	ErrReauthorizationRequired = errors.New("plugin reauthorization required")
 )
 
 type AuthorizationSummary struct {
@@ -59,6 +61,7 @@ type AuthorizationManager struct {
 	keyPath string
 	mu      sync.Mutex
 	attempt map[string]DeviceAttempt
+	refresh [64]sync.Mutex
 }
 
 func NewAuthorizationManager(db *sql.DB, dataDir string, client *OfficialServiceClient) *AuthorizationManager {
@@ -254,38 +257,55 @@ func (m *AuthorizationManager) Tokens(ctx context.Context, id string) (*authoriz
 	}
 	key, err := os.ReadFile(m.keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("plugin authorization key unavailable; reauthorize account: %w", err)
+		_ = m.markInvalid(ctx, id)
+		return nil, fmt.Errorf("%w: authorization key unavailable: %v", ErrReauthorizationRequired, err)
 	}
 	access, err := decryptAuthorization(key, accessNonce, accessCipher, id+":access")
 	if err != nil {
-		return nil, err
+		_ = m.markInvalid(ctx, id)
+		return nil, fmt.Errorf("%w: decrypt access token: %v", ErrReauthorizationRequired, err)
 	}
 	refresh, err := decryptAuthorization(key, refreshNonce, refreshCipher, id+":refresh")
 	if err != nil {
-		return nil, err
+		_ = m.markInvalid(ctx, id)
+		return nil, fmt.Errorf("%w: decrypt refresh token: %v", ErrReauthorizationRequired, err)
+	}
+	if len(access) == 0 || len(refresh) == 0 {
+		_ = m.markInvalid(ctx, id)
+		return nil, fmt.Errorf("%w: stored authorization credentials are incomplete", ErrReauthorizationRequired)
 	}
 	t.AccessToken, t.RefreshToken = string(access), string(refresh)
 	return &t, nil
 }
 
 func (m *AuthorizationManager) AccessToken(ctx context.Context, id string) (string, error) {
+	refreshLock := m.refreshLock(id)
+	refreshLock.Lock()
+	defer refreshLock.Unlock()
+
 	t, err := m.Tokens(ctx, id)
 	if err != nil {
 		return "", err
 	}
 	if t.Status != "active" {
-		return "", errors.New("plugin authorization requires login")
+		return "", fmt.Errorf("%w: authorization status is %s", ErrReauthorizationRequired, t.Status)
 	}
 	if time.Now().UTC().Add(30 * time.Second).Before(t.AccessExpiresAt) {
 		return t.AccessToken, nil
 	}
 	if !time.Now().UTC().Before(t.RefreshExpiresAt) {
 		_ = m.markInvalid(ctx, id)
-		return "", errors.New("plugin authorization refresh token expired")
+		return "", fmt.Errorf("%w: refresh token expired", ErrReauthorizationRequired)
+	}
+	if m.client == nil {
+		return "", ErrRepositoryNotConfigured
 	}
 	refreshed, err := m.client.Refresh(ctx, t.RefreshToken)
 	if err != nil {
-		_ = m.markInvalid(ctx, id)
+		if refreshCredentialsInvalid(err) {
+			_ = m.markInvalid(ctx, id)
+			return "", fmt.Errorf("%w: refresh token rejected: %v", ErrReauthorizationRequired, err)
+		}
 		return "", err
 	}
 	refreshed.AuthorizationID = id
@@ -295,7 +315,29 @@ func (m *AuthorizationManager) AccessToken(ctx context.Context, id string) (stri
 	return refreshed.AccessToken, nil
 }
 
+func (m *AuthorizationManager) refreshLock(id string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return &m.refresh[h.Sum32()%uint32(len(m.refresh))]
+}
+
+func refreshCredentialsInvalid(err error) bool {
+	var oauth *OAuthError
+	if !errors.As(err, &oauth) {
+		return false
+	}
+	switch oauth.Code {
+	case "invalid_grant", "invalid_token", "token_expired", "revoked_token":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *AuthorizationManager) Revoke(ctx context.Context, id string) error {
+	lock := m.refreshLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	t, err := m.Tokens(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrAuthorizationNotFound) {

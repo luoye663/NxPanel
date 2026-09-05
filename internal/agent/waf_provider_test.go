@@ -3,11 +3,69 @@ package agent
 import (
 	"context"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luoye663/nxpanel/internal/app"
 )
+
+func TestWAFAuditDirectoryOwnershipAndSymlinkRejection(t *testing.T) {
+	worker, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		if nobody, lookupErr := user.Lookup("nobody"); lookupErr == nil {
+			worker = nobody
+		}
+	}
+	group, err := user.LookupGroupId(worker.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	cfg := &app.Config{Nginx: app.NginxConfig{WebUser: worker.Username, WebGroup: group.Name}}
+	s := &Server{cfg: cfg, policy: NewPathPolicy([]string{root})}
+	dir := filepath.Join(root, "audit", "site_1")
+	if err := s.prepareWAFAuditDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	uid, _ := strconv.Atoi(worker.Uid)
+	gid, _ := strconv.Atoi(worker.Gid)
+	for _, path := range []string{filepath.Dir(dir), dir} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat := info.Sys().(*syscall.Stat_t)
+		wantUID := os.Geteuid()
+		if path == dir {
+			wantUID = uid
+		}
+		if int(stat.Uid) != wantUID || int(stat.Gid) != gid || info.Mode().Perm() != 0750 {
+			t.Fatalf("wrong ownership/permissions: %s %+v", path, stat)
+		}
+	}
+	// Existing directories must be repaired as well.
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.prepareWAFAuditDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "audit", "site_link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.prepareWAFAuditDirectory(link); err == nil {
+		t.Fatal("symlink audit directory accepted")
+	}
+}
 
 func TestReplaceWAFLoadModuleBlock(t *testing.T) {
 	original := []byte("user nginx;\nevents {}\nhttp {}\n")

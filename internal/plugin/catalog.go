@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/theupdateframework/go-tuf/v2/metadata"
 	tufconfig "github.com/theupdateframework/go-tuf/v2/metadata/config"
 	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
@@ -524,7 +526,7 @@ func parseCatalogIndex(data []byte) (*CatalogIndex, error) {
 		}
 		versions := map[string]bool{}
 		for _, v := range p.Versions {
-			if v.Version == "" || v.Length < 0 || v.Length > DefaultPackageLimits.CompressedBytes || !isTargetPath(v.Target) || versions[v.Version] || targets[v.Target] {
+			if !semver.IsValid(normalizeVersion(v.Version)) || v.Length < 0 || v.Length > DefaultPackageLimits.CompressedBytes || !isTargetPath(v.Target) || versions[v.Version] || targets[v.Target] {
 				return nil, fmt.Errorf("plugin %s has invalid catalog version", p.ID)
 			}
 			if _, err := hex.DecodeString(v.SHA256); err != nil || len(v.SHA256) != sha256.Size*2 {
@@ -545,11 +547,18 @@ func flattenCatalog(idx *CatalogIndex) []CatalogEntry {
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].ID == out[j].ID {
-			return out[i].Version > out[j].Version
+			return CompareVersions(out[i].Version, out[j].Version) > 0
 		}
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func normalizeVersion(version string) string { return "v" + strings.TrimPrefix(version, "v") }
+
+// CompareVersions compares manifest/catalog semantic versions with optional v prefixes.
+func CompareVersions(a, b string) int {
+	return semver.Compare(normalizeVersion(a), normalizeVersion(b))
 }
 func verifyCatalogTarget(e CatalogEntry, info *metadata.TargetFiles) error {
 	if info == nil || info.Length != e.Size {
