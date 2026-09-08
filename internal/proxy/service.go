@@ -26,18 +26,21 @@ import (
 
 // Service 反向代理业务服务
 type Service struct {
-	siteRepo         *repo.SiteRepo
-	proxyRepo        *repo.ProxyRepo
-	upstreamRepo     *repo.UpstreamRepo
-	accountRepo      *repo.AuthAccountRepo
-	opRepo           proxyOperationStore
-	backupRepo       proxyBackupStore
-	agent            proxyAgent
-	panelDir         string // /opt/nxpanel/nginx
-	webUser          string
-	webGroup         string
-	dangerousCARoots []string
-	writeMu          sync.Mutex
+	siteRepo            *repo.SiteRepo
+	proxyRepo           *repo.ProxyRepo
+	upstreamRepo        *repo.UpstreamRepo
+	accountRepo         *repo.AuthAccountRepo
+	opRepo              proxyOperationStore
+	backupRepo          proxyBackupStore
+	agent               proxyAgent
+	panelDir            string // /opt/nxpanel/nginx
+	webUser             string
+	webGroup            string
+	dangerousCARoots    []string
+	writeMu             sync.Mutex
+	accessPolicyManaged func(string) bool
+	accessPolicyPrepare AccessPolicyPrepare
+	accessPolicyGuard   func(string, bool) error
 }
 
 type proxyBackupStore interface {
@@ -225,6 +228,12 @@ func (svc *Service) Get(siteID, proxyID string) (*ProxyResponse, error) {
 func (svc *Service) Create(ctx context.Context, siteID string, req *CreateProxyRequest, requestID string) (*ProxyResponse, string, error) {
 	svc.writeMu.Lock()
 	defer svc.writeMu.Unlock()
+	if err := svc.guardAccessPolicyWrite(siteID, false); err != nil {
+		return nil, "", err
+	}
+	if err := svc.rejectLegacyAuth(siteID, req.AuthEnabled, req.AuthAccountIDs); err != nil {
+		return nil, "", err
+	}
 
 	if err := validateCreateRequest(req); err != nil {
 		return nil, "", err
@@ -315,6 +324,12 @@ func (svc *Service) Create(ctx context.Context, siteID string, req *CreateProxyR
 func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *UpdateProxyRequest, requestID string) (*ProxyResponse, string, error) {
 	svc.writeMu.Lock()
 	defer svc.writeMu.Unlock()
+	if err := svc.guardAccessPolicyWrite(siteID, false); err != nil {
+		return nil, "", err
+	}
+	if err := svc.rejectLegacyAuth(siteID, req.AuthEnabled, req.AuthAccountIDs); err != nil {
+		return nil, "", err
+	}
 
 	if err := validateUpdateRequest(req); err != nil {
 		return nil, "", err
@@ -349,6 +364,13 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 	if err != nil {
 		return nil, "", err
 	}
+	managedAuth := svc.accessPolicyOwnsAuth(siteID)
+	if managedAuth {
+		accountIDs, err = svc.proxyRepo.GetAccountIDs(existing.ID)
+		if err != nil {
+			return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
+		}
+	}
 
 	// 保存旧的缓存状态，用于判断是否需要清理
 	oldProxy := *existing
@@ -374,7 +396,9 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 	existing.CacheEnabled = req.CacheEnabled
 	existing.CacheType = req.CacheType
 	existing.CacheTime = req.CacheTime
-	existing.AuthEnabled = req.AuthEnabled
+	if !managedAuth {
+		existing.AuthEnabled = req.AuthEnabled
+	}
 	if existing.AuthHtpasswdPath == "" {
 		existing.AuthHtpasswdPath = proxyHtpasswdPath(svc.panelDir, existing.ID)
 	}
@@ -395,7 +419,7 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 		return nil, "", desiredSyncError(app.ErrInternalError, "读取代理配置失败: "+err.Error(), "", "not_attempted")
 	}
 	extraFiles := map[string]string{}
-	if existing.AuthEnabled {
+	if existing.AuthEnabled && !managedAuth {
 		extraFiles[existing.AuthHtpasswdPath] = renderHtpasswd(accounts)
 	}
 	opID, err := svc.applyNginxConfig(ctx, site, allProxies, "proxy.update", requestID, extraFiles)
@@ -426,6 +450,9 @@ func (svc *Service) Update(ctx context.Context, siteID, proxyID string, req *Upd
 func (svc *Service) Delete(ctx context.Context, siteID, proxyID string, requestID string) (string, error) {
 	svc.writeMu.Lock()
 	defer svc.writeMu.Unlock()
+	if err := svc.guardAccessPolicyWrite(siteID, false); err != nil {
+		return "", err
+	}
 
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
@@ -481,6 +508,9 @@ func (svc *Service) Delete(ctx context.Context, siteID, proxyID string, requestI
 func (svc *Service) Sync(ctx context.Context, siteID, requestID string) (string, error) {
 	svc.writeMu.Lock()
 	defer svc.writeMu.Unlock()
+	if err := svc.guardAccessPolicyWrite(siteID, true); err != nil {
+		return "", err
+	}
 
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
@@ -495,7 +525,7 @@ func (svc *Service) Sync(ctx context.Context, siteID, requestID string) (string,
 	}
 	extraFiles := make(map[string]string)
 	for _, proxy := range proxies {
-		if !proxy.AuthEnabled {
+		if !proxy.AuthEnabled || svc.accessPolicyOwnsAuth(siteID) {
 			continue
 		}
 		if proxy.AuthHtpasswdPath == "" {
@@ -554,7 +584,7 @@ func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxi
 			CacheType:                  p.CacheType,
 			CacheTime:                  p.CacheTime,
 			CachePath:                  site.RootPath + "/.cache/proxy",
-			AuthEnabled:                p.AuthEnabled,
+			AuthEnabled:                p.AuthEnabled && !svc.accessPolicyOwnsAuth(site.ID),
 			AuthHtpasswdPath:           p.AuthHtpasswdPath,
 		})
 	}
@@ -640,6 +670,13 @@ func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxi
 		})
 	}
 
+	var finishPolicy func(error) error
+	if svc.accessPolicyOwnsAuth(site.ID) && svc.accessPolicyPrepare != nil {
+		changes, finishPolicy, err = svc.accessPolicyPrepare(ctx, site, proxies, changes)
+		if err != nil {
+			return opID, svc.failConfigApply(ctx, opID, app.ErrInternalError, fmt.Errorf("准备访问策略失败: %w", err), "not_attempted")
+		}
+	}
 	// 通过 agent 写入文件
 	result, agentErr := svc.agent.ApplyTransaction(ctx, &agentclient.TransactionRequest{
 		OperationID: opID,
@@ -647,6 +684,15 @@ func (svc *Service) applyNginxConfig(ctx context.Context, site *repo.Site, proxi
 		TestNginx:   true,
 		ReloadNginx: site.Status == "enabled",
 	})
+	if finishPolicy != nil {
+		policyErr := agentErr
+		if policyErr == nil && result == nil {
+			policyErr = fmt.Errorf("Agent 返回空事务结果")
+		}
+		if finishErr := finishPolicy(policyErr); finishErr != nil && agentErr == nil {
+			return opID, svc.failConfigApply(ctx, opID, app.ErrInternalError, fmt.Errorf("保存访问策略应用状态失败: %w", finishErr), "applied")
+		}
+	}
 	if agentErr != nil {
 		return opID, svc.failConfigApply(ctx, opID, app.ErrAgentUnavailable, fmt.Errorf("文件事务失败: %w", agentErr), "unknown")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -42,26 +43,32 @@ type agentClient interface {
 	SSLInspectFiles(ctx context.Context, req *agentclient.SSLInspectFilesRequest) (*agentclient.SSLInspectResponse, error)
 }
 
+type AccessPolicyBackupHooks interface {
+	WithBackup(context.Context, string, func([]string) error) error
+	RestoreBackup(context.Context, string, io.Reader, func([]string) error) error
+}
+
 type Service struct {
-	siteRepo         siteRepo
-	backupRepo       *repo.SiteBackupRepo
-	scheduleRepo     *repo.SiteBackupScheduleRepo
-	sslRepo          sslRepo
-	opRepo           opRepo
-	agent            agentClient
-	panelDir         string
-	taskLogDir       string
-	hub              *sse.Hub
-	scheduledTaskSvc ScheduledTaskService
-	tasksMu          sync.RWMutex
-	tasks            map[string]*TaskResponse
-	rootCtx          context.Context
-	rootCancel       context.CancelFunc
-	jobSlots         chan struct{}
-	jobsMu           sync.Mutex
-	jobsClosing      bool
-	jobsWG           sync.WaitGroup
-	closeOnce        sync.Once
+	accessPolicyHooks AccessPolicyBackupHooks
+	siteRepo          siteRepo
+	backupRepo        *repo.SiteBackupRepo
+	scheduleRepo      *repo.SiteBackupScheduleRepo
+	sslRepo           sslRepo
+	opRepo            opRepo
+	agent             agentClient
+	panelDir          string
+	taskLogDir        string
+	hub               *sse.Hub
+	scheduledTaskSvc  ScheduledTaskService
+	tasksMu           sync.RWMutex
+	tasks             map[string]*TaskResponse
+	rootCtx           context.Context
+	rootCancel        context.CancelFunc
+	jobSlots          chan struct{}
+	jobsMu            sync.Mutex
+	jobsClosing       bool
+	jobsWG            sync.WaitGroup
+	closeOnce         sync.Once
 }
 
 type BackupResponse struct {
@@ -215,10 +222,20 @@ func (svc *Service) Create(ctx context.Context, siteID string, req *CreateReques
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	opID := svc.createOperation("site.backup.create", site, requestID, fmt.Sprintf("创建站点备份 %s", name))
-	resp, err := svc.agent.SiteBackupCreate(ctx, &agentclient.SiteBackupCreateRequest{
-		SiteID: site.ID, PrimaryDomain: site.PrimaryDomain, BackupType: backupType, OutputPath: backupPath,
-		ConfigPaths: svc.configPaths(site), RootPath: site.RootPath, SSLPaths: svc.sslPaths(site.ID),
-	})
+	var resp *agentclient.SiteBackupCreateResponse
+	create := func(extra []string) error {
+		var callErr error
+		resp, callErr = svc.agent.SiteBackupCreate(ctx, &agentclient.SiteBackupCreateRequest{
+			SiteID: site.ID, PrimaryDomain: site.PrimaryDomain, BackupType: backupType, OutputPath: backupPath,
+			ConfigPaths: appendPolicyConfigPaths(svc.configPaths(site), extra), RootPath: site.RootPath, SSLPaths: svc.sslPaths(site.ID),
+		})
+		return callErr
+	}
+	if svc.accessPolicyHooks != nil && (backupType == "config" || backupType == "full") {
+		err = svc.accessPolicyHooks.WithBackup(ctx, siteID, create)
+	} else {
+		err = create(nil)
+	}
 	if err != nil {
 		_ = svc.backupRepo.MarkFinished(backupID, "failed", err.Error(), 0)
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, err.Error(), "")
@@ -284,10 +301,30 @@ func (svc *Service) Restore(ctx context.Context, siteID, backupID string, req *R
 		return app.NewAppError(app.ErrValidationFailed, "至少选择一个恢复范围", nil)
 	}
 	opID := svc.createOperation("site.backup.restore", site, requestID, fmt.Sprintf("恢复站点备份 %s", backup.Name))
-	err = svc.agent.SiteBackupRestore(ctx, &agentclient.SiteBackupRestoreRequest{
-		SiteID: site.ID, BackupPath: backup.BackupPath, RestoreConfig: restoreConfig, RestoreRoot: restoreRoot, RestoreSSL: restoreSSL,
-		ConfigPaths: svc.configPaths(site), RootPath: site.RootPath, SSLPaths: svc.sslPaths(site.ID), ReloadNginx: site.Status == "enabled",
-	})
+	restore := func(extra []string) error {
+		return svc.agent.SiteBackupRestore(ctx, &agentclient.SiteBackupRestoreRequest{
+			SiteID: site.ID, BackupPath: backup.BackupPath, RestoreConfig: restoreConfig, RestoreRoot: restoreRoot, RestoreSSL: restoreSSL,
+			ConfigPaths: appendPolicyConfigPaths(svc.configPaths(site), extra), RootPath: site.RootPath, SSLPaths: svc.sslPaths(site.ID), ReloadNginx: site.Status == "enabled",
+		})
+	}
+	if restoreConfig && svc.accessPolicyHooks != nil {
+		var response *http.Response
+		response, err = svc.agent.SiteBackupDownload(ctx, backup.BackupPath)
+		if err == nil {
+			if response == nil || response.Body == nil {
+				err = fmt.Errorf("备份下载返回空响应")
+			} else {
+				if response.StatusCode != http.StatusOK {
+					err = fmt.Errorf("读取备份失败: HTTP %d", response.StatusCode)
+				} else {
+					err = svc.accessPolicyHooks.RestoreBackup(ctx, siteID, response.Body, restore)
+				}
+				response.Body.Close()
+			}
+		}
+	} else {
+		err = restore(nil)
+	}
 	if err != nil {
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, err.Error(), "")
 		return app.NewAppError(app.ErrAgentUnavailable, "恢复站点备份失败: "+err.Error(), nil)
@@ -686,4 +723,22 @@ func marshalTask(task *TaskResponse) string {
 
 func toResponse(backup *repo.SiteBackup) *BackupResponse {
 	return &BackupResponse{ID: backup.ID, SiteID: backup.SiteID, BackupType: backup.BackupType, Name: backup.Name, SizeBytes: backup.SizeBytes, Status: backup.Status, Message: backup.Message, CreatedAt: backup.CreatedAt, UpdatedAt: backup.UpdatedAt, FinishedAt: backup.FinishedAt}
+}
+
+// SetAccessPolicyHooks is wired once during dependency initialization.
+func (svc *Service) SetAccessPolicyHooks(hooks AccessPolicyBackupHooks) {
+	svc.accessPolicyHooks = hooks
+}
+
+// Preserve historical compressed config positions; reserve four positions before
+// appending policy dependencies so rule edits cannot remap archive entries.
+func appendPolicyConfigPaths(existing, extra []string) []string {
+	if len(extra) == 0 {
+		return existing
+	}
+	result := append([]string{}, existing...)
+	for len(result) < 4 {
+		result = append(result, "")
+	}
+	return append(result, extra...)
 }

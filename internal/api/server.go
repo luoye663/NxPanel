@@ -17,6 +17,7 @@ import (
 
 	"github.com/luoye663/nxpanel/internal/accessanalysis"
 	"github.com/luoye663/nxpanel/internal/accesslimit"
+	"github.com/luoye663/nxpanel/internal/accesspolicy"
 	"github.com/luoye663/nxpanel/internal/acme"
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/api/middleware"
@@ -63,6 +64,7 @@ type Server struct {
 	sslSvc                 *ssl.Service
 	rewriteSvc             *rewrite.Service
 	accessLimitSvc         *accesslimit.Service
+	accessPolicySvc        *accesspolicy.Service
 	geoAccessSvc           *geoaccess.Service
 	hotlinkSvc             *hotlink.Service
 	configSvc              *config.Service

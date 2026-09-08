@@ -20,15 +20,18 @@ import (
 )
 
 type Service struct {
-	db          *sql.DB
-	siteRepo    *repo.SiteRepo
-	proxyRepo   *repo.ProxyRepo
-	sslRepo     *repo.SSLRepo
-	rewriteRepo *repo.RewriteRepo
-	opRepo      *repo.OperationRepo
-	agent       *agentclient.Client
-	cfg         *app.Config
-	settingsSvc SettingsServiceProvider
+	prepareAccessPolicyCreate func(*repo.Site, []agentclient.FileChangeRequest) ([]agentclient.FileChangeRequest, error)
+	finishAccessPolicyCreate  func(string) error
+	deleteAccessPolicyFiles   func(string) []agentclient.FileChangeRequest
+	db                        *sql.DB
+	siteRepo                  *repo.SiteRepo
+	proxyRepo                 *repo.ProxyRepo
+	sslRepo                   *repo.SSLRepo
+	rewriteRepo               *repo.RewriteRepo
+	opRepo                    *repo.OperationRepo
+	agent                     *agentclient.Client
+	cfg                       *app.Config
+	settingsSvc               SettingsServiceProvider
 
 	// rootsFn 返回 Agent 当前的有效白名单根目录，默认走 agent.FilesRoots。
 	// 可在测试中注入以便脱离真实 Agent。
@@ -71,6 +74,13 @@ func NewService(
 
 func (svc *Service) SetSettingsProvider(p SettingsServiceProvider) {
 	svc.settingsSvc = p
+}
+
+// SetAccessPolicyHooks is configured once during dependency initialization.
+func (svc *Service) SetAccessPolicyHooks(prepare func(*repo.Site, []agentclient.FileChangeRequest) ([]agentclient.FileChangeRequest, error), finish func(string) error, deleteFiles func(string) []agentclient.FileChangeRequest) {
+	svc.prepareAccessPolicyCreate = prepare
+	svc.finishAccessPolicyCreate = finish
+	svc.deleteAccessPolicyFiles = deleteFiles
 }
 
 func (svc *Service) Create(ctx context.Context, req *CreateSiteRequest, requestID string) (*repo.Site, string, error) {
@@ -251,6 +261,14 @@ func (svc *Service) Create(ctx context.Context, req *CreateSiteRequest, requestI
 		}
 	}
 
+	if svc.prepareAccessPolicyCreate != nil {
+		changes, err = svc.prepareAccessPolicyCreate(site, changes)
+		if err != nil {
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
+			return nil, "", app.NewAppError(app.ErrInternalError, "初始化访问策略失败: "+err.Error(), nil)
+		}
+	}
+
 	_, agentErr := svc.agent.ApplyTransaction(ctx, &agentclient.TransactionRequest{
 		OperationID: opID,
 		Changes:     changes,
@@ -266,6 +284,13 @@ func (svc *Service) Create(ctx context.Context, req *CreateSiteRequest, requestI
 		slog.Error("创建站点数据库记录失败", "error", err)
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
 		return nil, "", app.NewAppError(app.ErrInternalError, "创建站点失败: "+err.Error(), nil)
+	}
+
+	if svc.finishAccessPolicyCreate != nil {
+		if err := svc.finishAccessPolicyCreate(site.ID); err != nil {
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
+			return nil, "", app.NewAppError(app.ErrInternalError, "站点配置已创建，但访问策略元数据初始化失败，请检查后同步: "+err.Error(), nil)
+		}
 	}
 
 	_ = svc.opRepo.UpdateStatus(opID, "success")
@@ -703,6 +728,10 @@ func (svc *Service) Delete(ctx context.Context, siteID string, req *DeleteSiteRe
 		if strings.TrimSpace(site.ErrorLogPath) != "" {
 			changes = append(changes, agentclient.FileChangeRequest{Type: "remove", Path: site.ErrorLogPath})
 		}
+	}
+
+	if svc.deleteAccessPolicyFiles != nil {
+		changes = append(changes, svc.deleteAccessPolicyFiles(siteID)...)
 	}
 
 	_, agentErr := svc.agent.ApplyTransaction(ctx, &agentclient.TransactionRequest{

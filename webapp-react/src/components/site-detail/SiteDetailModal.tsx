@@ -2,6 +2,7 @@ import { Alert, Button, Group, Loader, Modal, Stack } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { useBlocker } from 'react-router-dom'
 import { enableSite } from '@/api/sites'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SiteAccessLimitTab } from '@/components/site-detail/SiteAccessLimitTab'
@@ -36,6 +37,9 @@ function toSiteDetailTab(value?: string): SiteDetailTab {
 export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDetailModalProps) {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<SiteDetailTab>(toSiteDetailTab(initialTab))
+  const [policyDirty, setPolicyDirty] = useState(false)
+  const [policySource, setPolicySource] = useState<string | undefined>()
+  const navigation = useBlocker(policyDirty)
   const [enableOpened, enableHandlers] = useDisclosure(false)
   const mobile = useMediaQuery('(max-width: 48rem)')
   const detailQuery = useSiteDetail(siteId, opened)
@@ -46,6 +50,12 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
   const activeContribution = activeTab.startsWith('plugin:')
     ? (contributionQuery.data || []).find((item) => item.point === 'site_detail_tab' && item.id === activeTab.slice('plugin:'.length))
     : undefined
+
+  useEffect(() => {
+    if (navigation.state !== 'blocked') return
+    if (window.confirm('访问策略尚未保存。放弃草稿并离开此页面？')) navigation.proceed()
+    else navigation.reset()
+  }, [navigation])
 
   useEffect(() => {
     if (opened) setActiveTab(toSiteDetailTab(initialTab))
@@ -60,8 +70,18 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
   }, [activeContribution, activeTab, contributionQuery.isSuccess])
 
   function closeAndReset() {
+    if (policyDirty && !window.confirm('访问策略尚未保存。放弃草稿并关闭详情？')) return
+    setPolicyDirty(false)
     setActiveTab('basic')
     onClose()
+  }
+
+  function changeTab(tab: SiteDetailTab) {
+    if (tab === activeTab) return
+    if (policyDirty && !window.confirm('访问策略尚未保存。放弃草稿并切换页面？')) return
+    setPolicyDirty(false)
+    setPolicySource(undefined)
+    setActiveTab(tab)
   }
 
   async function handleEnable() {
@@ -88,10 +108,10 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
     if (activeTab === 'basic') return <SiteBasicTab site={site} />
     if (activeTab === 'document') return <SiteDocumentTab site={site} />
     if (activeTab === 'config') return <SiteConfigTab site={site} />
-    if (activeTab === 'proxy') return <SiteProxyTab site={site} />
+    if (activeTab === 'proxy') return <SiteProxyTab site={site} onOpenAccessPolicy={(sourceId) => { setPolicySource(sourceId); setActiveTab('access-limit') }} />
     if (activeTab === 'rewrite') return <SiteRewriteTab site={site} />
-    if (activeTab === 'access-limit') return <SiteAccessLimitTab site={site} initialTab="auth" />
-    if (activeTab === 'hotlink') return <SiteAccessLimitTab site={site} initialTab="hotlink" singleTab />
+    if (activeTab === 'access-limit') return <SiteAccessLimitTab key="access-limit" site={site} initialTab="auth" focusSource={policySource} onDirtyChange={setPolicyDirty} />
+    if (activeTab === 'hotlink') return <SiteAccessLimitTab key="hotlink" site={site} initialTab="hotlink" singleTab onDirtyChange={setPolicyDirty} />
     if (activeTab === 'ssl') return <SiteSSLTab site={site} />
     if (activeTab === 'files') return <SiteFilesTab site={site} />
     if (activeTab === 'logs') return <SiteLogsTab site={site} />
@@ -123,7 +143,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
           <SiteDetailShell
             site={site}
             activeTab={activeTab}
-            onTabChange={(tab) => setActiveTab(fallbackSiteDetailTab(site, tab))}
+            onTabChange={(tab) => changeTab(fallbackSiteDetailTab(site, tab))}
             actions={site.status !== 'enabled' ? <Button color="green" loading={enableMutation.isPending} onClick={enableHandlers.open}>启用</Button> : null}
           >
             {renderActiveTab()}
