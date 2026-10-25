@@ -294,7 +294,8 @@ func TestRender_SSLForceHTTPS(t *testing.T) {
 	assertContains(t, got, "ssl_session_timeout 10m;")
 	assertContains(t, got, "Strict-Transport-Security")
 	assertContains(t, got, "error_page 497")
-	assertContains(t, got, "if ($scheme = http) {")
+	assertContains(t, got, "if ($nxpanel_https_redirect = http) {")
+	assertContains(t, got, "if ($uri ~ ^/\\.well-known/acme-challenge/) {")
 	assertContains(t, got, "return 301 https://$host$request_uri;")
 	assertContains(t, got, "root /www/wwwroot/secure.example.com;")
 	assertContains(t, got, "#NXPANEL-SSL-START")
@@ -376,7 +377,7 @@ func TestRender_SSLWithProxy(t *testing.T) {
 		t.Fatalf("Render 失败: %v", err)
 	}
 
-	assertContains(t, got, "if ($scheme = http) {")
+	assertContains(t, got, "if ($nxpanel_https_redirect = http) {")
 	assertContains(t, got, "return 301 https://$host$request_uri;")
 	assertContains(t, got, "listen 443 ssl;")
 	assertContains(t, got, "ssl_protocols TLSv1.2 TLSv1.3;")

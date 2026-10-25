@@ -2,7 +2,10 @@ package repo
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -94,14 +97,14 @@ func (r *ACMERepo) ListOrdersBySiteID(siteID string) ([]*ACMEOrder, error) {
 func (r *ACMERepo) ListExpiringOrders(beforeDate string) ([]*ACMEOrder, error) {
 	rows, err := r.db.Query(
 		`SELECT id, site_id, domains_json, challenge_type, email,
-			status, certificate_id,
-			error_type, error_detail,
-			verification_url, verification_content,
-			log_text, auto_renew, last_renewed_at,
+			status, COALESCE(certificate_id, ''),
+			COALESCE(error_type, ''), COALESCE(error_detail, ''),
+			COALESCE(verification_url, ''), COALESCE(verification_content, ''),
+			COALESCE(log_text, ''), auto_renew, last_renewed_at,
 			created_at, updated_at, expires_at
 		FROM acme_orders
-		WHERE status = 'success' AND auto_renew = 1 AND expires_at IS NOT NULL AND expires_at < ?`,
-		beforeDate,
+		WHERE status = 'success' AND COALESCE(error_type, '') = ''
+		ORDER BY created_at DESC, rowid DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("查询即将过期 ACME 订单失败: %w", err)
@@ -109,6 +112,7 @@ func (r *ACMERepo) ListExpiringOrders(beforeDate string) ([]*ACMEOrder, error) {
 	defer rows.Close()
 
 	var orders []*ACMEOrder
+	seen := make(map[string]bool)
 	for rows.Next() {
 		o := &ACMEOrder{}
 		if err := rows.Scan(
@@ -121,7 +125,27 @@ func (r *ACMERepo) ListExpiringOrders(beforeDate string) ([]*ACMEOrder, error) {
 		); err != nil {
 			return nil, fmt.Errorf("扫描 ACME 订单行失败: %w", err)
 		}
-		orders = append(orders, o)
+		var domains []string
+		if err := json.Unmarshal([]byte(o.DomainsJSON), &domains); err != nil {
+			return nil, fmt.Errorf("解析 ACME 订单域名 %s: %w", o.ID, err)
+		}
+		unique := make(map[string]bool)
+		for _, domain := range domains {
+			unique[strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")] = true
+		}
+		domains = domains[:0]
+		for domain := range unique {
+			domains = append(domains, domain)
+		}
+		sort.Strings(domains)
+		key := o.SiteID + "\x00" + strings.Join(domains, "\x00")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if o.AutoRenew && o.ExpiresAt != nil && *o.ExpiresAt < beforeDate {
+			orders = append(orders, o)
+		}
 	}
 	return orders, rows.Err()
 }
@@ -187,10 +211,19 @@ func (r *ACMERepo) UpdateOrderLog(id, logText string) error {
 }
 
 func (r *ACMERepo) UpdateOrderSuccess(id, certID, expiresAt string) error {
+	return r.updateOrderCertificate(id, certID, expiresAt, "", "")
+}
+
+// UpdateOrderIssued keeps an interrupted deployment distinguishable from success.
+func (r *ACMERepo) UpdateOrderIssued(id, certID, expiresAt string) error {
+	return r.updateOrderCertificate(id, certID, expiresAt, "deployment_pending", "证书已保存，自动部署尚未完成，可手动部署")
+}
+
+func (r *ACMERepo) updateOrderCertificate(id, certID, expiresAt, errorType, errorDetail string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := r.db.Exec(
-		`UPDATE acme_orders SET status = 'success', certificate_id = ?, expires_at = ?, updated_at = ? WHERE id = ?`,
-		certID, expiresAt, now, id,
+		`UPDATE acme_orders SET status = 'success', certificate_id = ?, expires_at = ?, error_type = ?, error_detail = ?, updated_at = ? WHERE id = ?`,
+		certID, expiresAt, errorType, errorDetail, now, id,
 	)
 	if err != nil {
 		return fmt.Errorf("更新 ACME 订单成功状态失败: %w", err)
@@ -294,4 +327,29 @@ func (r *ACMERepo) DeleteEmail(email string) error {
 		return fmt.Errorf("删除 ACME 邮箱失败: %w", err)
 	}
 	return nil
+}
+
+// CompleteRenewal retires the old order only after the replacement is deployed.
+func (r *ACMERepo) CompleteRenewal(oldID, newID string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := tx.Exec(`UPDATE acme_orders SET auto_renew = (SELECT auto_renew FROM acme_orders WHERE id = ?), updated_at = ? WHERE id = ? AND status = 'success' AND error_type = ''`, oldID, now, newID)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("新续签订单状态不正确: %s", newID)
+	}
+	result, err = tx.Exec(`UPDATE acme_orders SET auto_renew = 0, last_renewed_at = ?, updated_at = ? WHERE id = ?`, now, now, oldID)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("旧续签订单不存在: %s", oldID)
+	}
+	return tx.Commit()
 }

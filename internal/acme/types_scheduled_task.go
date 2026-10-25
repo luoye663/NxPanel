@@ -183,17 +183,19 @@ func (svc *Service) renewOrderForScheduledTask(ctx context.Context, order *repo.
 		return err
 	}
 	logger.write("info", fmt.Sprintf("开始续签 order_id=%s, site_id=%s, domains=%v", order.ID, order.SiteID, domains))
-	_, err := svc.ApplyCertificate(ctx, &ApplyRequest{SiteID: order.SiteID, Domains: domains, ChallengeType: order.ChallengeType, Email: order.Email}, "scheduled-acme-renewal")
+	done := make(chan error, 1)
+	newID, err := svc.applyCertificate(ctx, &ApplyRequest{SiteID: order.SiteID, Domains: domains, ChallengeType: order.ChallengeType, Email: order.Email}, "scheduled-acme-renewal", applyOptions{previousOrderID: order.ID, autoRenew: &order.AutoRenew, taskCtx: ctx, done: done})
+	if err == nil {
+		logger.write("info", fmt.Sprintf("等待续签结果 order_id=%s, new_order_id=%s", order.ID, newID))
+		// The worker observes task cancellation; wait for its cleanup before releasing the task lock.
+		err = <-done
+	}
 	if err != nil {
 		slog.Error("计划任务 ACME 自动续签失败", "order_id", order.ID, "error", err)
-		logger.write("error", fmt.Sprintf("续签失败 order_id=%s: %v", order.ID, err))
+		logger.write("error", fmt.Sprintf("续签失败 order_id=%s, new_order_id=%s: %v", order.ID, newID, err))
 		return err
 	}
-	if err := svc.acmeRepo.UpdateOrderRenewed(order.ID); err != nil {
-		logger.write("error", fmt.Sprintf("更新旧订单续签时间失败 order_id=%s: %v", order.ID, err))
-		return err
-	}
-	logger.write("info", fmt.Sprintf("续签已提交 order_id=%s, domains=%v", order.ID, domains))
+	logger.write("info", fmt.Sprintf("续签并部署成功 order_id=%s, new_order_id=%s", order.ID, newID))
 	return nil
 }
 
