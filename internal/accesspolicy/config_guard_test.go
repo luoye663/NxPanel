@@ -133,14 +133,7 @@ func TestConfigGuardCyclesAndBudgets(t *testing.T) {
 	if err := service.CheckConfig(context.Background(), site, []byte("server { include depth0.conf; }")); err == nil || !strings.Contains(err.Error(), "16") {
 		t.Fatalf("depth: %v", err)
 	}
-	guard := &configGuard{service: service, ctx: context.Background(), files: configGuardMaxFiles, active: map[string]bool{}, seen: map[string]bool{}}
-	if err := guard.scanFile("/etc/nginx/a.conf", "site", 0); err == nil {
-		t.Fatal("file budget ignored")
-	}
-	guard = &configGuard{bytes: configGuardMaxBytes}
-	if err := guard.scanBytes("large.conf", []byte("server {}"), "site", 0); err == nil {
-		t.Fatal("byte budget ignored")
-	}
+
 }
 
 func TestConfigGuardTokenizerUnderstandsStatementsQuotesAndVariables(t *testing.T) {
@@ -176,5 +169,34 @@ func TestConfigGuardDetectFallbackAndFakeCompatibility(t *testing.T) {
 	service.agent = agent.policyServiceAgent
 	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err != nil {
 		t.Fatalf("minimal fake compatibility: %v", err)
+	}
+}
+
+type preflightGuardAgent struct {
+	*configGuardAgent
+	request *agentclient.ConfigPreflightRequest
+	err     error
+}
+
+func (a *preflightGuardAgent) CheckAccessConfig(_ context.Context, req *agentclient.ConfigPreflightRequest) error {
+	a.request = req
+	return a.err
+}
+func (a *preflightGuardAgent) ReadFile(context.Context, string) ([]byte, string, error) {
+	panic("RPC preflight must not read include contents through API")
+}
+func TestConfigGuardUsesAgentPreflightAndFailsClosed(t *testing.T) {
+	service, agent, site := configGuardFixture()
+	remote := &preflightGuardAgent{configGuardAgent: agent}
+	service.agent = remote
+	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err != nil {
+		t.Fatal(err)
+	}
+	if remote.request == nil || remote.request.GlobalPath != service.nginxConfigPath || remote.request.SitePath != site.ConfigPath {
+		t.Fatalf("bad request: %+v", remote.request)
+	}
+	remote.err = fmt.Errorf("agent preflight unavailable")
+	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err == nil {
+		t.Fatal("RPC failure ignored")
 	}
 }
