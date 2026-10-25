@@ -275,6 +275,9 @@ func (svc *Service) Restore(ctx context.Context, siteID, backupID string, req *R
 	if err != nil {
 		return err
 	}
+	if site.MaintenanceEnabled {
+		return app.NewAppError(app.ErrConflict, "请先恢复访问，再恢复站点备份", nil)
+	}
 	backup, err := svc.loadOwnedBackup(siteID, backupID)
 	if err != nil {
 		return err

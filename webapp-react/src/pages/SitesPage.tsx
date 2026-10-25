@@ -62,7 +62,7 @@ export function SitesPage() {
 
   const columns = useMemo<MRT_ColumnDef<SiteListItem>[]>(() => [
     { accessorKey: 'primary_domain', header: '域名', size: 190, Cell: ({ row }) => <Text fw={600} c="blue.7">{row.original.primary_domain}</Text> },
-    { accessorKey: 'status', header: '状态', size: 120, Cell: ({ row }) => <StatusBadge kind="site" value={row.original.status} /> },
+    { accessorKey: 'status', header: '状态', size: 120, Cell: ({ row }) => row.original.maintenance_pending ? <Badge color="yellow" variant="light">待对账</Badge> : row.original.maintenance_enabled ? <Badge color="orange" variant="light">维护中</Badge> : <StatusBadge kind="site" value={row.original.status} /> },
     { accessorKey: 'ssl_enabled', header: 'SSL', size: 80, Cell: ({ row }) => row.original.ssl_enabled ? <Badge color="green" variant="light">已启用</Badge> : <Text c="dimmed">-</Text> },
     { accessorKey: 'proxy_enabled', header: '反代', size: 80, Cell: ({ row }) => row.original.proxy_enabled ? <Badge color="green" variant="light">已启用</Badge> : <Text c="dimmed">-</Text> },
     { accessorKey: 'root_path', header: '根目录', size: 260, Cell: ({ row }) => <PathCell value={row.original.root_path} maxWidth={260} onClick={() => openDetail(row.original, 'files')} /> },
@@ -167,7 +167,7 @@ export function SitesPage() {
   async function handleCreated(siteId: string) {
     createHandlers.close()
     await refreshSites()
-    setSelectedSite({ id: siteId, primary_domain: '', domains: [], bindings: [], status: '', root_path: '', ssl_enabled: false, proxy_enabled: false, access_log_path: '', error_log_path: '', updated_at: '' })
+    setSelectedSite({ id: siteId, primary_domain: '', domains: [], bindings: [], status: '', maintenance_enabled: false, maintenance_pending: false, root_path: '', ssl_enabled: false, proxy_enabled: false, access_log_path: '', error_log_path: '', updated_at: '' })
     setDetailInitialTab('basic')
     detailHandlers.open()
   }
@@ -211,13 +211,13 @@ export function SitesPage() {
           renderRowActions={({ row }) => (
             <Group gap={4} wrap="nowrap" onClick={(event) => event.stopPropagation()}>
               <Tooltip label={row.original.status === 'enabled' ? '禁用网站' : '启用网站'}>
-                <ActionIcon variant="subtle" color={row.original.status === 'enabled' ? 'yellow' : 'green'} aria-label={row.original.status === 'enabled' ? '禁用网站' : '启用网站'} loading={enableMutation.isPending || disableMutation.isPending} onClick={() => handleToggle(row.original)}>
+                <ActionIcon disabled={row.original.maintenance_enabled || row.original.maintenance_pending} variant="subtle" color={row.original.status === 'enabled' ? 'yellow' : 'green'} aria-label={row.original.status === 'enabled' ? '禁用网站' : '启用网站'} loading={enableMutation.isPending || disableMutation.isPending} onClick={() => handleToggle(row.original)}>
                   {row.original.status === 'enabled' ? <IconWorldOff size={16} /> : <IconWorldCheck size={16} />}
                 </ActionIcon>
               </Tooltip>
               <Tooltip label="基础详情"><ActionIcon variant="subtle" aria-label="查看详情" onClick={() => openDetail(row.original)}><IconEye size={16} /></ActionIcon></Tooltip>
               <Tooltip label="文件入口"><ActionIcon variant="subtle" aria-label="打开文件入口" onClick={() => openDetail(row.original, 'files')}><IconFolder size={16} /></ActionIcon></Tooltip>
-              <Tooltip label="删除网站"><ActionIcon variant="subtle" color="red" aria-label="删除网站" onClick={() => openDelete(row.original)}><IconTrash size={16} /></ActionIcon></Tooltip>
+              <Tooltip label={row.original.maintenance_enabled ? '请先恢复访问' : '删除网站'}><ActionIcon disabled={row.original.maintenance_enabled || row.original.maintenance_pending} variant="subtle" color="red" aria-label="删除网站" onClick={() => openDelete(row.original)}><IconTrash size={16} /></ActionIcon></Tooltip>
             </Group>
           )}
         />

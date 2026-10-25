@@ -16,6 +16,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/nginx"
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
 	"github.com/luoye663/nxpanel/internal/parser"
 )
 
@@ -397,7 +398,10 @@ func (svc *Service) RefreshLogPaths(ctx context.Context, site *repo.Site) (*repo
 	if err != nil {
 		return site, false
 	}
-	accessLog, errorLog := parser.ExtractServerLogPaths(string(content))
+	accessLog, errorLog, locateErr := nginxpatch.ServerLogPaths(string(content), site.PrimaryDomain)
+	if locateErr != nil {
+		return site, false
+	}
 	changed := false
 	if accessLog != site.AccessLogPath {
 		site.AccessLogPath = accessLog
@@ -613,12 +617,20 @@ func (svc *Service) Enable(ctx context.Context, siteID string, req *EnableSiteRe
 }
 
 func (svc *Service) Disable(ctx context.Context, siteID string, req *DisableSiteRequest, requestID string) (string, string, error) {
+	if blocked, err := repo.NewMaintenanceRepo(svc.db).Blocked(ctx, siteID); err != nil {
+		return "", "", err
+	} else if blocked {
+		return "", "", app.NewAppError(app.ErrConflict, "请先恢复访问并完成维护对账，再禁用网站", nil)
+	}
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
 		return "", "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if site == nil {
 		return "", "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if err := svc.checkImportedOwnership(ctx, site); err != nil {
+		return "", "", err
 	}
 	if site.Status == "disabled" {
 		return "", "", app.NewAppError(app.ErrConflict, "站点已经处于禁用状态", nil)
@@ -652,12 +664,20 @@ func (svc *Service) Disable(ctx context.Context, siteID string, req *DisableSite
 }
 
 func (svc *Service) Delete(ctx context.Context, siteID string, req *DeleteSiteRequest, requestID string) (bool, string, error) {
+	if blocked, err := repo.NewMaintenanceRepo(svc.db).Blocked(ctx, siteID); err != nil {
+		return false, "", err
+	} else if blocked {
+		return false, "", app.NewAppError(app.ErrConflict, "请先恢复访问并完成维护对账，再删除网站", nil)
+	}
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
 		return false, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if site == nil {
 		return false, "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if err := svc.checkImportedOwnership(ctx, site); err != nil {
+		return false, "", err
 	}
 
 	opID := app.NewOperationID()
@@ -748,6 +768,10 @@ func (svc *Service) ImportScan(ctx context.Context, requestID string) (*ImportSc
 	}
 
 	parsed := parser.ParseNginxDump(dumpResp.Stdout)
+	serverCounts := map[string]int{}
+	for _, p := range parsed {
+		serverCounts[p.SourceFile]++
+	}
 
 	managedPaths := svc.getManagedConfigPaths()
 
@@ -766,7 +790,11 @@ func (svc *Service) ImportScan(ctx context.Context, requestID string) (*ImportSc
 			continue
 		}
 		warnings := importWarningsForPaths(roots, p.SourceFile, p.RootPath, p.AccessLogPath, p.ErrorLogPath)
+		if serverCounts[p.SourceFile] > 1 {
+			warnings = append(warnings, "此文件包含多个 server：请选择明确目标；同一文件仅纳管一个站点，整站禁用/删除前必须先拆分配置")
+		}
 		items = append(items, ImportScanItem{
+			ServerHash:      nginxpatch.Hash(p.RawBlock),
 			SourceFile:      p.SourceFile,
 			ServerNames:     p.ServerNames,
 			Listen:          p.Listen,
@@ -857,15 +885,9 @@ func (svc *Service) Import(ctx context.Context, req *ImportSiteRequest, requestI
 
 	parsed := parser.ParseNginxDump(dumpResp.Stdout)
 
-	var target *parser.ParsedServer
-	for _, p := range parsed {
-		if p.SourceFile == req.SourceFile {
-			target = p
-			break
-		}
-	}
-	if target == nil {
-		return nil, app.NewAppError(app.ErrNotFound, "未找到配置文件对应的 server block: "+req.SourceFile, nil)
+	target, err := selectImportTarget(parsed, req)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(target.ServerNames) == 0 {

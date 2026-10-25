@@ -22,12 +22,15 @@ type AgentResponse struct {
 
 // FileChangeRequest 文件变更请求
 type FileChangeRequest struct {
-	Type          string `json:"type"`                     // write, remove, symlink, mkdir, truncate
-	Path          string `json:"path"`                     // 目标文件路径
-	Target        string `json:"target,omitempty"`         // symlink 目标
-	ContentBase64 string `json:"content_base64,omitempty"` // base64 编码的内容
-	Perm          uint32 `json:"perm,omitempty"`           // 文件权限
-	RequireMarker string `json:"require_marker,omitempty"` // 要求文件包含的标记
+	Type                  string `json:"type"`                     // write, remove, symlink, mkdir, truncate
+	Path                  string `json:"path"`                     // 目标文件路径
+	Target                string `json:"target,omitempty"`         // symlink 目标
+	ContentBase64         string `json:"content_base64,omitempty"` // base64 编码的内容
+	Perm                  uint32 `json:"perm,omitempty"`           // 文件权限
+	RequireMarker         string `json:"require_marker,omitempty"` // 要求文件包含的标记
+	ExpectedHash          string `json:"expected_hash,omitempty"`
+	MaintenanceTransition bool   `json:"maintenance_transition,omitempty"`
+	FollowSymlink         bool   `json:"follow_symlink,omitempty"`
 }
 
 // TransactionRequest 文件事务请求

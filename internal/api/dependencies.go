@@ -22,6 +22,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/geoaccess"
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
+	"github.com/luoye663/nxpanel/internal/maintenance"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
 	"github.com/luoye663/nxpanel/internal/proxy"
 	"github.com/luoye663/nxpanel/internal/rewrite"
@@ -191,6 +192,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	s.proxySvc = proxy.NewService(r.site, r.proxy, r.upstream, r.authAccount, s.opRepo, s.backupRepo, s.agentClient, s.cfg)
 	sslAgent := &sslAgentAdapter{client: s.agentClient}
 	s.sslSvc = ssl.NewService(r.site, r.ssl, r.certificate, s.opRepo, sslAgent, s.cfg)
+	s.maintenanceSvc = maintenance.NewService(repo.NewMaintenanceRepo(s.db), r.site, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.rewriteSvc = rewrite.NewService(r.site, r.rewrite, s.opRepo, s.agentClient, r.rewriteTemplate)
 	s.accessLimitSvc = accesslimit.NewService(r.site, r.authAccount, r.authRule, r.denyRule, r.ipWhitelistRule, r.proxy, s.opRepo, s.agentClient, s.agentClient, s.cfg.Nginx.PanelDir)
 	geoSvc, err := geoaccess.NewService(r.geoAccess, r.site, r.ipWhitelistRule, s.opRepo, s.agentClient, s.cfg.DataDir, s.cfg.Nginx.PanelDir)

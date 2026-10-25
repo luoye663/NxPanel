@@ -73,17 +73,19 @@ func (s *Server) handleSiteList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		items = append(items, sites.SiteListItem{
-			ID:            site.ID,
-			PrimaryDomain: site.PrimaryDomain,
-			Domains:       domains,
-			Bindings:      bindings,
-			Status:        site.Status,
-			RootPath:      site.RootPath,
-			AccessLogPath: site.AccessLogPath,
-			ErrorLogPath:  site.ErrorLogPath,
-			UpdatedAt:     site.UpdatedAt,
-			SSLEnabled:    sslStatus[site.ID],
-			ProxyEnabled:  proxyStatus[site.ID],
+			MaintenanceEnabled: site.MaintenanceEnabled,
+			MaintenancePending: site.MaintenancePending,
+			ID:                 site.ID,
+			PrimaryDomain:      site.PrimaryDomain,
+			Domains:            domains,
+			Bindings:           bindings,
+			Status:             site.Status,
+			RootPath:           site.RootPath,
+			AccessLogPath:      site.AccessLogPath,
+			ErrorLogPath:       site.ErrorLogPath,
+			UpdatedAt:          site.UpdatedAt,
+			SSLEnabled:         sslStatus[site.ID],
+			ProxyEnabled:       proxyStatus[site.ID],
 		})
 	}
 
@@ -178,6 +180,8 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	detail := sites.SiteDetailResponse{
+		MaintenanceEnabled: site.MaintenanceEnabled,
+		MaintenancePending: site.MaintenancePending,
 		ID:                 site.ID,
 		PrimaryDomain:      site.PrimaryDomain,
 		Domains:            domains,

@@ -49,6 +49,12 @@ func (s *Server) setupRoutes() {
 		// 以下路由需要认证
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireAuth)
+			r.Use(s.guardMaintenanceWrites)
+			r.Get("/sites/{site_id}/maintenance", s.handleMaintenanceGet)
+			r.Put("/sites/{site_id}/maintenance", s.handleMaintenanceUpdate)
+			r.Post("/sites/{site_id}/maintenance/sync", s.handleMaintenanceUpdate)
+			r.Get("/settings/maintenance", s.handleMaintenanceDefaultsGet)
+			r.Put("/settings/maintenance", s.handleMaintenanceDefaultsUpdate)
 
 			// 2FA 管理
 			r.Get("/auth/2fa/status", s.handle2FAStatus)
@@ -204,6 +210,10 @@ func (s *Server) setupRoutes() {
 			r.Post("/sites/import", s.handleSiteImport)
 
 			// Certificates
+			r.Get("/sites/{site_id}/certificates/scan", s.handleCertificateScan)
+			r.Post("/sites/{site_id}/certificates/replace-preview", s.handleCertificateReplacePreview)
+			r.Post("/sites/{site_id}/certificates/replace", s.handleCertificateReplace)
+			r.Post("/certificates/adopt", s.handleCertificateAdopt)
 			r.Get("/certificates", s.handleCertificateList)
 			r.Post("/certificates", s.handleCertificateCreate)
 			r.Delete("/certificates/{cert_id}", s.handleCertificateDelete)

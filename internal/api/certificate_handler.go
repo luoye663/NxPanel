@@ -10,6 +10,53 @@ import (
 	"github.com/luoye663/nxpanel/internal/ssl"
 )
 
+func (s *Server) handleCertificateScan(w http.ResponseWriter, r *http.Request) {
+	result, err := s.sslSvc.ScanCertificate(r.Context(), chi.URLParam(r, "site_id"))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+
+func (s *Server) handleCertificateReplacePreview(w http.ResponseWriter, r *http.Request) {
+	var req ssl.ReplacementRequest
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+	result, err := s.sslSvc.PreviewReplacement(r.Context(), chi.URLParam(r, "site_id"), &req)
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+func (s *Server) handleCertificateReplace(w http.ResponseWriter, r *http.Request) {
+	var req ssl.ReplacementRequest
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+	id, err := s.sslSvc.ReplaceCertificate(r.Context(), chi.URLParam(r, "site_id"), &req, middleware.GetRequestID(r.Context()))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, map[string]string{"operation_id": id})
+}
+
+func (s *Server) handleCertificateAdopt(w http.ResponseWriter, r *http.Request) {
+	var req ssl.AdoptCertificateRequest
+	if !DecodeJSON(w, r, &req) {
+		return
+	}
+	id, opID, err := s.sslSvc.AdoptCertificate(r.Context(), &req, middleware.GetRequestID(r.Context()))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, map[string]string{"certificate_id": id, "operation_id": opID})
+}
+
 func (s *Server) handleCertificateList(w http.ResponseWriter, r *http.Request) {
 	certs, err := s.sslSvc.ListStoreCertificates()
 	if err != nil {
@@ -32,7 +79,7 @@ func (s *Server) handleCertificateCreate(w http.ResponseWriter, r *http.Request)
 	}
 
 	WriteOK(w, r, map[string]any{
-		"certificate": result,
+		"certificate":  result,
 		"operation_id": opID,
 	})
 }

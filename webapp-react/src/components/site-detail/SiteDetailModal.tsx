@@ -14,6 +14,7 @@ import { fallbackSiteDetailTab, getSiteDetailTabMeta, SiteDetailShell, type Site
 import { SiteProxyTab } from '@/components/site-detail/SiteProxyTab'
 import { SiteRewriteTab } from '@/components/site-detail/SiteRewriteTab'
 import { SiteSSLTab } from '@/components/site-detail/SiteSSLTab'
+import { SiteMaintenanceTab } from '@/components/sites/MaintenanceEditor'
 import { siteDetailKeys, useSiteDetail } from '@/hooks/useSiteDetail'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
@@ -26,7 +27,7 @@ interface SiteDetailModalProps {
 }
 
 function toSiteDetailTab(value?: string): SiteDetailTab {
-  const allowed: SiteDetailTab[] = ['basic', 'document', 'proxy', 'access-limit', 'hotlink', 'ssl', 'rewrite', 'config', 'files', 'logs', 'operations']
+  const allowed: SiteDetailTab[] = ['basic', 'document', 'proxy', 'access-limit', 'hotlink', 'ssl', 'rewrite', 'config', 'files', 'logs', 'operations', 'maintenance']
   return allowed.includes(value as SiteDetailTab) ? value as SiteDetailTab : 'basic'
 }
 
@@ -70,6 +71,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
 
   function renderActiveTab() {
     if (!site) return null
+    if (activeTab === 'maintenance') return <SiteMaintenanceTab site={site} />
     if (activeTab === 'basic') return <SiteBasicTab site={site} />
     if (activeTab === 'document') return <SiteDocumentTab site={site} />
     if (activeTab === 'config') return <SiteConfigTab site={site} />
@@ -95,6 +97,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
       classNames={{ content: 'siteDetailModalContent', body: 'siteDetailModalBody' }}
     >
       <Stack gap="md" className="siteDetailModalStack">
+        {site?.maintenance_enabled || site?.maintenance_pending ? <Alert color="orange" title="维护保护已启用">冲突配置表单已锁定，文件写入暂不可用。可在「网站维护」中对账或恢复访问，也可通过「SSL → 证书夹」预览并局部替换证书。</Alert> : null}
         {detailQuery.isLoading ? <Group justify="center" py="xl"><Loader /></Group> : null}
         {detailQuery.isError ? <ErrorAlert error={detailQuery.error} title="加载网站详情失败" /> : null}
         {site?.is_imported && (site.import_warnings?.length || 0) > 0 ? (

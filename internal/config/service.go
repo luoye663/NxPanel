@@ -13,7 +13,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/nginx"
-	"github.com/luoye663/nxpanel/internal/parser"
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
 )
 
 const maxSize = 512 * 1024
@@ -190,9 +190,13 @@ func (svc *Service) Save(ctx context.Context, siteID string, req *SaveRequest, r
 	if isImported {
 		// Imported sites have no marker blocks; extract log paths from raw content.
 		syncWarnings = nil
-		accessLog, errorLog := parser.ExtractServerLogPaths(req.Content)
-		site.AccessLogPath = accessLog
-		site.ErrorLogPath = errorLog
+		accessLog, errorLog, locateErr := nginxpatch.ServerLogPaths(req.Content, site.PrimaryDomain)
+		if locateErr != nil {
+			syncWarnings = append(syncWarnings, "无法唯一定位已纳管 server，保留日志元数据，未选择首个 server")
+		} else {
+			site.AccessLogPath = accessLog
+			site.ErrorLogPath = errorLog
+		}
 	}
 
 	if len(syncWarnings) > 0 {

@@ -323,6 +323,11 @@ func writeSiteBackupMetadata(tw *tar.Writer, metadata siteBackupMetadata, budget
 }
 
 func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRequest) error {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	if err := s.rejectMaintenancePaths(req.ConfigPaths...); err != nil {
+		return err
+	}
 	if req.SiteID == "" || req.BackupPath == "" {
 		return fmt.Errorf("site_id 和 backup_path 不能为空")
 	}

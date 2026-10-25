@@ -63,7 +63,7 @@ func (r *SiteRepo) GetByIDContext(ctx context.Context, id string) (*Site, error)
 			config_path, enabled_path, rewrite_path, access_limit_path,
 			hotlink_path, autoindex_enabled, autoindex_exact_size, autoindex_localtime, autoindex_format, error_page_404, error_page_403,
 			marker_version, last_sync_warning,
-			created_at, updated_at
+			created_at, updated_at, maintenance_enabled, EXISTS(SELECT 1 FROM site_maintenance WHERE site_id=sites.id AND apply_status='pending')
 		FROM sites WHERE id = ?`,
 		id,
 	).Scan(
@@ -73,7 +73,7 @@ func (r *SiteRepo) GetByIDContext(ctx context.Context, id string) (*Site, error)
 		&s.ConfigPath, &s.EnabledPath, &s.RewritePath, &accessLimitPath,
 		&hotlinkPath, &autoindexInt, &autoindexExactSizeInt, &autoindexLocaltimeInt, &s.AutoindexFormat, &s.ErrorPage404, &s.ErrorPage403,
 		&s.MarkerVersion, &s.LastSyncWarning,
-		&s.CreatedAt, &s.UpdatedAt,
+		&s.CreatedAt, &s.UpdatedAt, &s.MaintenanceEnabled, &s.MaintenancePending,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -105,7 +105,7 @@ func (r *SiteRepo) GetByPrimaryDomain(domain string) (*Site, error) {
 			config_path, enabled_path, rewrite_path, access_limit_path,
 			hotlink_path, autoindex_enabled, autoindex_exact_size, autoindex_localtime, autoindex_format, error_page_404, error_page_403,
 			marker_version, last_sync_warning,
-			created_at, updated_at
+			created_at, updated_at, maintenance_enabled, EXISTS(SELECT 1 FROM site_maintenance WHERE site_id=sites.id AND apply_status='pending')
 		FROM sites WHERE primary_domain = ?`,
 		domain,
 	).Scan(
@@ -115,7 +115,7 @@ func (r *SiteRepo) GetByPrimaryDomain(domain string) (*Site, error) {
 		&s.ConfigPath, &s.EnabledPath, &s.RewritePath, &accessLimitPath,
 		&hotlinkPath, &autoindexInt, &autoindexExactSizeInt, &autoindexLocaltimeInt, &s.AutoindexFormat, &s.ErrorPage404, &s.ErrorPage403,
 		&s.MarkerVersion, &s.LastSyncWarning,
-		&s.CreatedAt, &s.UpdatedAt,
+		&s.CreatedAt, &s.UpdatedAt, &s.MaintenanceEnabled, &s.MaintenancePending,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -161,7 +161,7 @@ func (r *SiteRepo) List(page, pageSize int, keyword, status string) ([]*Site, in
 		config_path, enabled_path, rewrite_path, access_limit_path,
 		hotlink_path, autoindex_enabled, autoindex_exact_size, autoindex_localtime, autoindex_format, error_page_404, error_page_403,
 		marker_version, last_sync_warning,
-		created_at, updated_at
+		created_at, updated_at, maintenance_enabled, EXISTS(SELECT 1 FROM site_maintenance WHERE site_id=sites.id AND apply_status='pending')
 	FROM sites ` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	args = append(args, pageSize, offset)
 
@@ -184,7 +184,7 @@ func (r *SiteRepo) List(page, pageSize int, keyword, status string) ([]*Site, in
 			&s.ConfigPath, &s.EnabledPath, &s.RewritePath, &accessLimitPath,
 			&hotlinkPath, &autoindexInt, &autoindexExactSizeInt, &autoindexLocaltimeInt, &s.AutoindexFormat, &s.ErrorPage404, &s.ErrorPage403,
 			&s.MarkerVersion, &s.LastSyncWarning,
-			&s.CreatedAt, &s.UpdatedAt,
+			&s.CreatedAt, &s.UpdatedAt, &s.MaintenanceEnabled, &s.MaintenancePending,
 		); err != nil {
 			return nil, 0, err
 		}
