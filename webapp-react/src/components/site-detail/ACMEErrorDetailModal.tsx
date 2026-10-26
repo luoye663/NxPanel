@@ -16,6 +16,13 @@ const ACME_ERROR_MAP: Record<string, string> = {
   order_creation_failed: '订单创建失败',
   certificate_download_failed: '证书下载失败',
   validation_timeout: '验证超时',
+  deployment_failed: '证书已签发，部署失败',
+  deployment_pending: '证书已签发，部署尚未完成',
+  renewal_finalize_failed: '证书已部署，续签状态更新失败',
+  config_update_failed: '验证配置准备失败',
+  database_error: '保存订单状态失败',
+  certificate_save_failed: '保存证书失败',
+  certificate_invalid: '证书检查失败',
   unknown: '未知错误',
 }
 
@@ -30,7 +37,7 @@ export function ACMEErrorDetailModal({ order, opened, onClose }: ACMEErrorDetail
               <Table.Tr><Table.Th w={110}>验证 URL</Table.Th><Table.Td>{order.verification_url ? <Anchor href={order.verification_url} target="_blank" rel="noreferrer">点击查看</Anchor> : '-'}</Table.Td></Table.Tr>
               <Table.Tr><Table.Th>验证内容</Table.Th><Table.Td>{order.verification_content || '-'}</Table.Td></Table.Tr>
               <Table.Tr><Table.Th>错误代码</Table.Th><Table.Td><Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{order.error_detail || '-'}</Text></Table.Td></Table.Tr>
-              <Table.Tr><Table.Th>验证结果</Table.Th><Table.Td><Badge color="red">验证失败</Badge></Table.Td></Table.Tr>
+              <Table.Tr><Table.Th>验证结果</Table.Th><Table.Td><Badge color="red">{order.status === 'success' ? '证书已签发，后续处理失败' : '申请失败'}</Badge></Table.Td></Table.Tr>
             </Table.Tbody>
           </Table>
         </Stack>

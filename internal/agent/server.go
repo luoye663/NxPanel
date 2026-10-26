@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -20,11 +21,13 @@ import (
 )
 
 type Server struct {
-	cfg      *app.Config
-	router   *chi.Mux
-	policy   *PathPolicy
-	executor *NginxExecutor
-	timeouts NginxTimeouts
+	cfg                *app.Config
+	router             *chi.Mux
+	policy             *PathPolicy
+	executor           *NginxExecutor
+	timeouts           NginxTimeouts
+	transactionMu      sync.Mutex // Held through test/reload/rollback, not just the file write.
+	reloadProbeForTest func(context.Context) (func(context.Context) error, error)
 	// restoreSnapshotHook is only set by tests that inject a post-snapshot fault.
 	restoreSnapshotHook func(string)
 }

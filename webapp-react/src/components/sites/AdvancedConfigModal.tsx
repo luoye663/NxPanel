@@ -10,6 +10,7 @@ import { getSites } from '@/api/sites'
 import type { DefaultPagesSettings, HTTPSHijackSettings, LogRotateSettings } from '@/api/types'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { notifySuccess } from '@/utils/notify'
+import { MaintenanceDefaultsPanel } from '@/components/sites/MaintenanceEditor'
 
 const NginxCodeEditor = lazy(() => import('@/components/editor/NginxCodeEditor'))
 
@@ -18,7 +19,7 @@ interface AdvancedConfigModalProps {
   onClose: () => void
 }
 
-type AdvancedTab = 'pages' | 'default-site' | 'https-hijack' | 'log-rotation'
+type AdvancedTab = 'pages' | 'default-site' | 'https-hijack' | 'log-rotation' | 'maintenance'
 
 const emptyPages: DefaultPagesSettings = {
   new_site_page: '',
@@ -68,12 +69,14 @@ export function AdvancedConfigModal({ opened, onClose }: AdvancedConfigModalProp
       <Tabs value={activeTab} onChange={switchTab} orientation={isSmallScreen ? 'horizontal' : 'vertical'} className="advancedConfigTabs" keepMounted={false}>
         <Tabs.List className="advancedConfigTabList">
           <Tabs.Tab value="pages" leftSection={<IconFileText size={15} />}>修改默认页面</Tabs.Tab>
+          <Tabs.Tab value="maintenance" leftSection={<IconFileText size={15} />}>默认维护页面</Tabs.Tab>
           <Tabs.Tab value="default-site" leftSection={<IconServer size={15} />}>默认站点</Tabs.Tab>
           <Tabs.Tab value="https-hijack" leftSection={<IconLock size={15} />}>HTTPS 防窜站</Tabs.Tab>
           <Tabs.Tab value="log-rotation" leftSection={<IconRotateClockwise size={15} />}>日志切割</Tabs.Tab>
         </Tabs.List>
 
         <ScrollArea className="advancedConfigPanelScroll">
+          <Tabs.Panel value="maintenance"><MaintenanceDefaultsPanel /></Tabs.Panel>
           <Tabs.Panel value="pages">
             <DefaultPagesPanel enabled={loadedTabs.has('pages')} />
           </Tabs.Panel>

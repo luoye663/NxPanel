@@ -993,6 +993,11 @@ a {
   min-height: 360px;
 }
 
+.maintenanceSiteWorkspace .nginxEditorShell {
+  height: clamp(160px, calc(100dvh - 500px), 300px);
+  min-height: 160px;
+}
+
 .fileEditorCodeShell {
   height: 60vh;
   min-height: 360px;

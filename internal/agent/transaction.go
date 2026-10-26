@@ -9,25 +9,36 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
 )
 
 const maxOperationIDLength = 128
 
+var ErrFileConflict = errors.New("file changed since preview")
+
 // FileChange 表示一个文件变更操作
 type FileChange struct {
-	Type          string `json:"type"`                     // 操作类型：write, remove, symlink, mkdir, truncate
-	Path          string `json:"path"`                     // 目标文件路径
-	Target        string `json:"target,omitempty"`         // symlink 的目标路径
-	ContentBase64 string `json:"content_base64,omitempty"` // write 的内容（base64 编码）
-	Content       []byte `json:"-"`                        // 解码后的内容（内部使用）
-	Perm          uint32 `json:"perm,omitempty"`           // 文件权限（如 0644 = 420）
-	RequireMarker string `json:"require_marker,omitempty"` // 要求文件中包含的标记
+	Type                  string `json:"type"`                     // 操作类型：write, remove, symlink, mkdir, truncate
+	Path                  string `json:"path"`                     // 目标文件路径
+	Target                string `json:"target,omitempty"`         // symlink 的目标路径
+	ContentBase64         string `json:"content_base64,omitempty"` // write 的内容（base64 编码）
+	Content               []byte `json:"-"`                        // 解码后的内容（内部使用）
+	Perm                  uint32 `json:"perm,omitempty"`           // 文件权限（如 0644 = 420）
+	RequireMarker         string `json:"require_marker,omitempty"` // 要求文件中包含的标记
+	ExpectedHash          string `json:"expected_hash,omitempty"`  // SHA256 of the file read for this patch
+	MaintenanceTransition bool   `json:"maintenance_transition,omitempty"`
+	FollowSymlink         bool   `json:"follow_symlink,omitempty"`
 }
 
 // BackupRecord 记录一次文件备份
@@ -185,6 +196,8 @@ func (tx *Transaction) backup(path string) error {
 // 此处只做文件操作。如果 handler 在 Apply 后发现 test/reload 失败，
 // 可调用 Rollback 回滚。
 func (tx *Transaction) Apply(ctx context.Context, changes []FileChange) error {
+	changes = append([]FileChange(nil), changes...)
+	aliases := map[string]string{}
 	// 1. 验证所有路径安全性
 	for _, ch := range changes {
 		if ch.Path != "" {
@@ -199,11 +212,93 @@ func (tx *Transaction) Apply(ctx context.Context, changes []FileChange) error {
 			}
 		}
 	}
+	// Explicit patch/check operations follow an existing alias under the same
+	// whitelist, rather than replacing an enabled-site symlink with a plain file.
+	for i := range changes {
+		ch := &changes[i]
+		if !ch.FollowSymlink {
+			continue
+		}
+		if (ch.Type != "write" && ch.Type != "check") || ch.ExpectedHash == "" {
+			return fmt.Errorf("following a configuration alias requires a hash-checked write/check")
+		}
+		resolved, err := filepath.EvalSymlinks(ch.Path)
+		if err != nil {
+			return fmt.Errorf("%w: configuration alias is unavailable", ErrFileConflict)
+		}
+		if _, err := tx.Policy.Validate(resolved); err != nil {
+			return err
+		}
+		aliases[ch.Path] = resolved
+		ch.Path = resolved
+	}
+
+	// Check every precondition before backups or writes, including auxiliary files.
+	for _, ch := range changes {
+		if ch.ExpectedHash == "" {
+			continue
+		}
+		hash, err := hex.DecodeString(ch.ExpectedHash)
+		if err != nil || len(hash) != sha256.Size || (ch.Type != "write" && ch.Type != "check") {
+			return fmt.Errorf("invalid expected_hash precondition")
+		}
+		info, err := os.Lstat(ch.Path)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: expected regular file", ErrFileConflict)
+		}
+		data, err := os.ReadFile(ch.Path)
+		if err != nil {
+			return fmt.Errorf("read precondition: %w", err)
+		}
+		actual := sha256.Sum256(data)
+		if !bytes.Equal(actual[:], hash) {
+			return ErrFileConflict
+		}
+	}
 
 	// 2. 备份所有将被修改的文件
+	for path, want := range aliases {
+		actual, err := filepath.EvalSymlinks(path)
+		if err != nil || actual != want {
+			return fmt.Errorf("%w: configuration alias changed", ErrFileConflict)
+		}
+	}
+	for _, ch := range changes {
+		if ch.Type == "check" {
+			if ch.ExpectedHash == "" {
+				return fmt.Errorf("check requires expected_hash")
+			}
+			continue
+		}
+		if ch.Type == "mkdir" || ch.Type == "chown" || ch.Type == "check" {
+			continue
+		}
+		var old []byte
+		info, statErr := os.Stat(ch.Path)
+		if statErr == nil && !info.Mode().IsRegular() {
+			continue
+		}
+		f, err := os.Open(ch.Path)
+		if err == nil {
+			old, err = io.ReadAll(io.LimitReader(f, nginxpatch.MaxConfigBytes+1))
+			_ = f.Close()
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("maintenance preflight: %w", err)
+		}
+		if nginxpatch.HasMaintenance(string(old)) || nginxpatch.HasMaintenance(string(ch.Content)) {
+			if ch.Type != "write" || ch.ExpectedHash == "" {
+				return fmt.Errorf("configuration is locked during maintenance; restore access first")
+			}
+			if err := nginxpatch.ValidateMaintenanceWrite(string(old), string(ch.Content), ch.MaintenanceTransition); err != nil {
+				return err
+			}
+		}
+	}
+
 	// 跳过 mkdir（幂等操作）和 chown（不修改文件内容）
 	for _, ch := range changes {
-		if ch.Type == "mkdir" || ch.Type == "chown" {
+		if ch.Type == "mkdir" || ch.Type == "chown" || ch.Type == "check" {
 			continue
 		}
 		if err := tx.backup(ch.Path); err != nil {
@@ -228,6 +323,8 @@ func (tx *Transaction) Apply(ctx context.Context, changes []FileChange) error {
 // applyOne 执行单个文件变更操作
 func (tx *Transaction) applyOne(ch FileChange) error {
 	switch ch.Type {
+	case "check":
+		return nil
 	case "write":
 		// 确保父目录存在
 		dir := filepath.Dir(ch.Path)
@@ -237,6 +334,8 @@ func (tx *Transaction) applyOne(ch FileChange) error {
 		perm := os.FileMode(0644)
 		if ch.Perm > 0 {
 			perm = os.FileMode(ch.Perm)
+		} else if info, err := os.Stat(ch.Path); err == nil && info.Mode().IsRegular() {
+			perm = info.Mode().Perm()
 		}
 		return writeFileAtomic(ch.Path, ch.Content, perm)
 

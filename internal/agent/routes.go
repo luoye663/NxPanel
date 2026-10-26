@@ -22,6 +22,7 @@ func (s *Server) setupRoutes() {
 	s.router.Post("/internal/v1/nginx/ensure-include", s.handleNginxEnsureInclude)
 	s.router.Post("/internal/v1/nginx/dump", s.handleNginxDump)
 	s.router.Post("/internal/v1/nginx/test", s.handleNginxTest)
+	s.router.Post("/internal/v1/nginx/access-preflight", s.handleConfigPreflight)
 	s.router.Post("/internal/v1/nginx/reload", s.handleNginxReload)
 	s.router.Post("/internal/v1/nginx/reopen", s.handleNginxReopen)
 	s.router.Post("/internal/v1/nginx/logs/rotate-run", s.handleNginxLogRotateRun)

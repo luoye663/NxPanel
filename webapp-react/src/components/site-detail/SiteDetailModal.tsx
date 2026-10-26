@@ -2,6 +2,7 @@ import { Alert, Button, Group, Loader, Modal, Stack } from '@mantine/core'
 import { useDisclosure, useMediaQuery } from '@mantine/hooks'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { useBlocker } from 'react-router-dom'
 import { enableSite } from '@/api/sites'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SiteAccessLimitTab } from '@/components/site-detail/SiteAccessLimitTab'
@@ -14,6 +15,7 @@ import { fallbackSiteDetailTab, getSiteDetailTabMeta, SiteDetailShell, type Site
 import { SiteProxyTab } from '@/components/site-detail/SiteProxyTab'
 import { SiteRewriteTab } from '@/components/site-detail/SiteRewriteTab'
 import { SiteSSLTab } from '@/components/site-detail/SiteSSLTab'
+import { SiteMaintenanceTab } from '@/components/sites/MaintenanceEditor'
 import { siteDetailKeys, useSiteDetail } from '@/hooks/useSiteDetail'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
@@ -26,19 +28,28 @@ interface SiteDetailModalProps {
 }
 
 function toSiteDetailTab(value?: string): SiteDetailTab {
-  const allowed: SiteDetailTab[] = ['basic', 'document', 'proxy', 'access-limit', 'hotlink', 'ssl', 'rewrite', 'config', 'files', 'logs', 'operations']
+  const allowed: SiteDetailTab[] = ['basic', 'document', 'proxy', 'access-limit', 'hotlink', 'ssl', 'rewrite', 'config', 'files', 'logs', 'operations', 'maintenance']
   return allowed.includes(value as SiteDetailTab) ? value as SiteDetailTab : 'basic'
 }
 
 export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDetailModalProps) {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<SiteDetailTab>(toSiteDetailTab(initialTab))
+  const [policyDirty, setPolicyDirty] = useState(false)
+  const [policySource, setPolicySource] = useState<string | undefined>()
+  const navigation = useBlocker(policyDirty)
   const [enableOpened, enableHandlers] = useDisclosure(false)
   const mobile = useMediaQuery('(max-width: 48rem)')
   const detailQuery = useSiteDetail(siteId, opened)
   const site = detailQuery.data
   const activeMeta = getSiteDetailTabMeta(activeTab)
   const enableMutation = useMutation({ mutationFn: () => enableSite(siteId!) })
+
+  useEffect(() => {
+    if (navigation.state !== 'blocked') return
+    if (window.confirm('访问策略尚未保存。放弃草稿并离开此页面？')) navigation.proceed()
+    else navigation.reset()
+  }, [navigation])
 
   useEffect(() => {
     if (opened) setActiveTab(toSiteDetailTab(initialTab))
@@ -49,8 +60,18 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
   }, [site])
 
   function closeAndReset() {
+    if (policyDirty && !window.confirm('访问策略尚未保存。放弃草稿并关闭详情？')) return
+    setPolicyDirty(false)
     setActiveTab('basic')
     onClose()
+  }
+
+  function changeTab(tab: SiteDetailTab) {
+    if (tab === activeTab) return
+    if (policyDirty && !window.confirm('访问策略尚未保存。放弃草稿并切换页面？')) return
+    setPolicyDirty(false)
+    setPolicySource(undefined)
+    setActiveTab(tab)
   }
 
   async function handleEnable() {
@@ -70,14 +91,15 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
 
   function renderActiveTab() {
     if (!site) return null
+    if (activeTab === 'maintenance') return <SiteMaintenanceTab site={site} />
     if (activeTab === 'basic') return <SiteBasicTab site={site} />
     if (activeTab === 'document') return <SiteDocumentTab site={site} />
     if (activeTab === 'config') return <SiteConfigTab site={site} />
-    if (activeTab === 'proxy') return <SiteProxyTab site={site} />
+    if (activeTab === 'proxy') return <SiteProxyTab site={site} onOpenAccessPolicy={(sourceId) => { setPolicySource(sourceId); setActiveTab('access-limit') }} />
     if (activeTab === 'rewrite') return <SiteRewriteTab site={site} />
-    if (activeTab === 'access-limit') return <SiteAccessLimitTab site={site} initialTab="auth" />
-    if (activeTab === 'hotlink') return <SiteAccessLimitTab site={site} initialTab="hotlink" singleTab />
-    if (activeTab === 'ssl') return <SiteSSLTab site={site} />
+    if (activeTab === 'access-limit') return <SiteAccessLimitTab key="access-limit" site={site} initialTab="auth" focusSource={policySource} onDirtyChange={setPolicyDirty} />
+    if (activeTab === 'hotlink') return <SiteAccessLimitTab key="hotlink" site={site} initialTab="hotlink" singleTab onDirtyChange={setPolicyDirty} />
+    if (activeTab === 'ssl') return <SiteSSLTab key={site.id} site={site} />
     if (activeTab === 'files') return <SiteFilesTab site={site} />
     if (activeTab === 'logs') return <SiteLogsTab site={site} />
     return <SiteOperationsTab site={site} />
@@ -95,6 +117,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
       classNames={{ content: 'siteDetailModalContent', body: 'siteDetailModalBody' }}
     >
       <Stack gap="md" className="siteDetailModalStack">
+        {site?.maintenance_enabled || site?.maintenance_pending ? <Alert color="orange" title="维护保护已启用">冲突配置表单已锁定，文件写入暂不可用。可在「网站维护」中对账或恢复访问，也可通过「SSL → 证书夹」预览并局部替换证书。</Alert> : null}
         {detailQuery.isLoading ? <Group justify="center" py="xl"><Loader /></Group> : null}
         {detailQuery.isError ? <ErrorAlert error={detailQuery.error} title="加载网站详情失败" /> : null}
         {site?.is_imported && (site.import_warnings?.length || 0) > 0 ? (
@@ -108,7 +131,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
           <SiteDetailShell
             site={site}
             activeTab={activeTab}
-            onTabChange={(tab) => setActiveTab(fallbackSiteDetailTab(site, tab))}
+            onTabChange={(tab) => changeTab(fallbackSiteDetailTab(site, tab))}
             actions={site.status !== 'enabled' ? <Button color="green" loading={enableMutation.isPending} onClick={enableHandlers.open}>启用</Button> : null}
           >
             {renderActiveTab()}

@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/app"
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
 )
 
 // ============================================================
@@ -80,6 +82,10 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 
 	// 解码 base64 编码的文件内容
 	for i := range req.Changes {
+		if req.Changes[i].MaintenanceTransition && (!req.TestNginx || !req.ReloadNginx || req.Changes[i].ExpectedHash == "") {
+			writeAgentError(w, http.StatusBadRequest, "maintenance transitions require a hash, nginx test and reload")
+			return
+		}
 		if req.Changes[i].ContentBase64 != "" {
 			decoded, err := base64.StdEncoding.DecodeString(req.Changes[i].ContentBase64)
 			if err != nil {
@@ -99,7 +105,35 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		writeAgentError(w, http.StatusRequestTimeout, "transaction canceled before apply")
+		return
+	}
+
 	// 创建并执行事务
+	var waitForGeneration func(context.Context) error
+	for _, ch := range req.Changes {
+		if req.ReloadNginx && (ch.MaintenanceTransition || nginxpatch.HasMaintenance(string(ch.Content))) {
+			var err error
+			waitForGeneration, err = s.captureReloadGeneration(ctx)
+			if err != nil {
+				writeAgentError(w, http.StatusServiceUnavailable, "无法安全确认 Nginx worker 代际，未写入配置")
+				return
+			}
+			break
+		}
+	}
+	ready := func() bool {
+		if waitForGeneration != nil {
+			if err := waitForGeneration(ctx); err != nil {
+				writeAgentError(w, http.StatusServiceUnavailable, "reload 信号已发送，但 worker 切换未确认；配置保留，需显式对账")
+				return false
+			}
+		}
+		return true
+	}
 	tx, err := NewTransaction(req.OperationID, s.cfg.Nginx.PanelDir+"/backups", s.policy,
 		s.cfg.Nginx.WebUser, s.cfg.Nginx.WebGroup)
 	if err != nil {
@@ -108,6 +142,10 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := tx.Apply(ctx, req.Changes); err != nil {
+		if errors.Is(err, ErrFileConflict) {
+			writeAgentError(w, http.StatusConflict, ErrFileConflict.Error())
+			return
+		}
 		slog.Error("文件事务执行失败", "operation_id", req.OperationID, "error", err)
 		writeAgentError(w, http.StatusInternalServerError, "事务执行失败: "+err.Error())
 		return
@@ -145,6 +183,9 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 					"error", reloadErr.Error())
 				startResult, startErr := s.executor.Start(ctx)
 				if startErr == nil {
+					if !ready() {
+						return
+					}
 					slog.Info("事务后 nginx reload 失败但启动成功", "operation_id", req.OperationID)
 					writeAgentOK(w, TransactionResponse{
 						Backups: tx.Backups,
@@ -187,6 +228,9 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	if !ready() {
+		return
+	}
 	writeAgentOK(w, TransactionResponse{
 		Backups: tx.Backups,
 	})

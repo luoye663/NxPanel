@@ -35,6 +35,10 @@ export function SiteSSLTab({ site }: SiteSSLTabProps) {
     ])
   }
 
+  if (site.is_imported || site.maintenance_enabled || site.maintenance_pending) {
+    return <SectionCard><SiteCertificateStoreTab site={site} onChanged={refreshSSL} /></SectionCard>
+  }
+
   return (
     <SectionCard>
       <Stack gap="md">

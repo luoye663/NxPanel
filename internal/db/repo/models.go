@@ -39,6 +39,8 @@ type Session struct {
 
 // Site 对应 sites 表的一行
 type Site struct {
+	MaintenanceEnabled bool
+	MaintenancePending bool
 	ID                 string
 	PrimaryDomain      string
 	DomainsJSON        string
@@ -183,6 +185,7 @@ type SiteSSL struct {
 
 // Certificate 对应 certificates 表的一行（证书夹）
 type Certificate struct {
+	Source      string
 	ID          string
 	Name        string
 	DomainsJSON string

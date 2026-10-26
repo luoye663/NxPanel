@@ -30,7 +30,6 @@ import (
 
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
-	"github.com/luoye663/nxpanel/internal/nginx"
 	"github.com/luoye663/nxpanel/internal/sse"
 	"github.com/luoye663/nxpanel/internal/ssl"
 )
@@ -65,6 +64,7 @@ type Service struct {
 	jobSlots    chan struct{}
 	jobsMu      sync.Mutex
 	jobsClosing bool
+	activeSites map[string]bool
 	jobsWG      sync.WaitGroup
 	closeOnce   sync.Once
 	applyJob    func(context.Context, string, string, []string, string, string, string, bool)
@@ -164,6 +164,10 @@ func orderToResp(o *repo.ACMEOrder) *ACMEOrderResponse {
 }
 
 func (svc *Service) ApplyCertificate(ctx context.Context, req *ApplyRequest, requestID string) (string, error) {
+	return svc.applyCertificate(ctx, req, requestID, applyOptions{})
+}
+
+func (svc *Service) applyCertificate(ctx context.Context, req *ApplyRequest, requestID string, opts applyOptions) (string, error) {
 	if len(req.Domains) == 0 {
 		return "", app.NewAppError(app.ErrValidationFailed, "请选择至少一个域名", nil)
 	}
@@ -203,8 +207,8 @@ func (svc *Service) ApplyCertificate(ctx context.Context, req *ApplyRequest, req
 		return "", app.NewAppError(app.ErrValidationFailed, "当前仅支持文件验证 (http-01)", nil)
 	}
 
-	if !svc.tryAdmit() {
-		return "", app.ErrBusyMsg("ACME 任务已达并发上限，请稍后重试")
+	if !svc.admitSite(req.SiteID) {
+		return "", app.ErrBusyMsg("该站点已有 ACME 任务或并发已达上限，请稍后重试")
 	}
 	orderID := app.NewID("acme")
 	domainsJSON, _ := json.Marshal(req.Domains)
@@ -217,13 +221,16 @@ func (svc *Service) ApplyCertificate(ctx context.Context, req *ApplyRequest, req
 		Status:        "pending",
 		AutoRenew:     true,
 	}
+	if opts.autoRenew != nil {
+		order.AutoRenew = *opts.autoRenew
+	}
 	if err := svc.acmeRepo.CreateOrder(order); err != nil {
-		svc.releaseJob()
+		svc.releaseSite(req.SiteID)
 		return "", app.NewAppError(app.ErrInternalError, "创建申请记录失败: "+err.Error(), nil)
 	}
 
 	stream := svc.sseHub.CreateStream("acme-" + orderID)
-	svc.startApply(stream, orderID, req.SiteID, req.Domains, req.ChallengeType, req.Email, requestID, false)
+	svc.startApply(stream, orderID, req.SiteID, req.Domains, req.ChallengeType, req.Email, requestID, false, opts)
 
 	return orderID, nil
 }
@@ -242,8 +249,8 @@ func (svc *Service) ForceObtain(ctx context.Context, orderID string) (string, er
 
 	var domains []string
 	json.Unmarshal([]byte(order.DomainsJSON), &domains)
-	if !svc.tryAdmit() {
-		return "", app.ErrBusyMsg("ACME 任务已达并发上限，请稍后重试")
+	if !svc.admitSite(order.SiteID) {
+		return "", app.ErrBusyMsg("该站点已有 ACME 任务或并发已达上限，请稍后重试")
 	}
 
 	newOrderID := app.NewID("acme")
@@ -257,7 +264,7 @@ func (svc *Service) ForceObtain(ctx context.Context, orderID string) (string, er
 		AutoRenew:     order.AutoRenew,
 	}
 	if err := svc.acmeRepo.CreateOrder(newOrder); err != nil {
-		svc.releaseJob()
+		svc.releaseSite(order.SiteID)
 		return "", app.NewAppError(app.ErrInternalError, "创建申请记录失败: "+err.Error(), nil)
 	}
 
@@ -267,36 +274,70 @@ func (svc *Service) ForceObtain(ctx context.Context, orderID string) (string, er
 	return newOrderID, nil
 }
 
-func (svc *Service) startApply(stream *sse.Stream, orderID, siteID string, domains []string, challengeType, email, requestID string, skipPreValidation bool) {
+func (svc *Service) startApply(stream *sse.Stream, orderID, siteID string, domains []string, challengeType, email, requestID string, skipPreValidation bool, options ...applyOptions) {
+	opts := applyOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	go func() {
-		defer svc.releaseJob()
+		var result error
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				svc.failOrder(orderID, "internal_error", fmt.Sprintf("任务 panic: %v", recovered), stream, sse.NewLogWriter(stream, "|-"))
+				result = fmt.Errorf("任务 panic: %v", recovered)
+				svc.failOrder(orderID, "internal_error", result.Error(), stream, sse.NewLogWriter(stream, "|-"))
+			}
+			svc.releaseSite(siteID)
+			if opts.done != nil {
+				opts.done <- result
 			}
 		}()
 		ctx, cancel := context.WithTimeout(svc.rootCtx, 30*time.Minute)
 		defer cancel()
+		if opts.taskCtx != nil {
+			stop := context.AfterFunc(opts.taskCtx, cancel)
+			defer stop()
+			if opts.taskCtx.Err() != nil {
+				cancel()
+			}
+		}
 		if svc.applyJob != nil {
 			svc.applyJob(ctx, orderID, siteID, domains, challengeType, email, requestID, skipPreValidation)
-			return
+			result = ctx.Err()
+		} else {
+			result = svc.doApply(ctx, stream, orderID, siteID, domains, challengeType, email, requestID, skipPreValidation)
 		}
-		svc.doApply(ctx, stream, orderID, siteID, domains, challengeType, email, requestID, skipPreValidation)
+		if result == nil && opts.previousOrderID != "" {
+			result = svc.acmeRepo.CompleteRenewal(opts.previousOrderID, orderID)
+			if result != nil {
+				svc.acmeRepo.UpdateOrderStatus(orderID, "success", "renewal_finalize_failed", result.Error())
+				stream.PublishDone("|-证书已部署，但续签状态更新失败：" + result.Error())
+			}
+		}
+		if result == nil {
+			stream.PublishDone("|-申请及部署完成")
+		}
 	}()
 }
 
-func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, siteID string, domains []string, challengeType, email, requestID string, skipPreValidation bool) {
+func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, siteID string, domains []string, challengeType, email, requestID string, skipPreValidation bool) error {
 	logWriter := sse.NewLogWriter(stream, "|-")
 
 	logWriter.Write([]byte("正在创建订单..\n"))
-	svc.acmeRepo.UpdateOrderStatus(orderID, "processing", "", "")
+	if err := svc.acmeRepo.UpdateOrderStatus(orderID, "processing", "", ""); err != nil {
+		svc.failOrder(orderID, "database_error", err.Error(), stream, logWriter)
+		return err
+	}
 
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil || site == nil {
 		svc.failOrder(orderID, "order_creation_failed", fmt.Sprintf("获取站点信息失败: %v", err), stream, logWriter)
-		return
+		return fmt.Errorf("ACME 申请失败，详见订单 %s", orderID)
 	}
 
+	if err := svc.prepareChallengeConfig(ctx, site, requestID); err != nil {
+		svc.failOrder(orderID, "config_update_failed", err.Error(), stream, logWriter)
+		return err
+	}
 	svc.acmeRepo.SaveEmail(email)
 
 	dirURL := "https://acme-v02.api.letsencrypt.org/directory"
@@ -309,7 +350,7 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 	user, err := svc.getOrCreateAccount(email, dirURL)
 	if err != nil {
 		svc.failOrder(orderID, "account_registration_failed", err.Error(), stream, logWriter)
-		return
+		return err
 	}
 
 	config := lego.NewConfig(user)
@@ -319,7 +360,7 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 	client, err := lego.NewClient(config)
 	if err != nil {
 		svc.failOrder(orderID, "order_creation_failed", "创建 ACME 客户端失败: "+err.Error(), stream, logWriter)
-		return
+		return err
 	}
 
 	challengeDir := filepath.Join(site.RootPath, ".well-known", "acme-challenge")
@@ -332,13 +373,17 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 		skipPreValidation: skipPreValidation,
 		preValConfig:      &svc.cfg.ACME.PreValidation,
 	}
-	client.Challenge.SetHTTP01Provider(httpProvider)
+	defer httpProvider.cleanAll()
+	if err := client.Challenge.SetHTTP01Provider(httpProvider); err != nil {
+		svc.failOrder(orderID, "challenge_failed", err.Error(), stream, logWriter)
+		return err
+	}
 
 	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 	if err != nil {
 		if !strings.Contains(err.Error(), "already registered") {
 			svc.failOrder(orderID, "account_registration_failed", "ACME 注册失败: "+err.Error(), stream, logWriter)
-			return
+			return err
 		}
 		reg = user.GetRegistration()
 	}
@@ -348,7 +393,10 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 	logWriter.Write([]byte("验证类型：http-01\n"))
 	logWriter.Write([]byte("正在获取验证信息..\n"))
 
-	svc.acmeRepo.UpdateOrderStatus(orderID, "verifying", "", "")
+	if err := svc.acmeRepo.UpdateOrderStatus(orderID, "verifying", "", ""); err != nil {
+		svc.failOrder(orderID, "database_error", err.Error(), stream, logWriter)
+		return err
+	}
 
 	logWriter.Write([]byte("正在验证域名..\n"))
 
@@ -361,17 +409,20 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 	if err != nil {
 		if errors.Is(err, errPreValidationFailed) {
 			logWriter.Write([]byte("预验证失败，可在订单列表中点击「继续提交」强制申请\n"))
-			svc.acmeRepo.UpdateOrderStatus(orderID, "pre_validation_failed", "pre_validation_failed", err.Error())
+			if saveErr := svc.acmeRepo.UpdateOrderStatus(orderID, "pre_validation_failed", "pre_validation_failed", err.Error()); saveErr != nil {
+				svc.failOrder(orderID, "database_error", saveErr.Error(), stream, logWriter)
+				return errors.Join(err, saveErr)
+			}
 			logWriter.Flush()
 			stream.PublishDone("|-预验证失败")
-			return
+			return err
 		}
 		errorType := classifyError(err.Error())
 		verificationURL := ""
 		verificationContent := ""
 		svc.acmeRepo.UpdateOrderVerification(orderID, verificationURL, verificationContent)
 		svc.failOrder(orderID, errorType, err.Error(), stream, logWriter)
-		return
+		return err
 	}
 
 	logWriter.Write([]byte("证书获取成功，正在保存..\n"))
@@ -398,31 +449,17 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 			Perm:          0600,
 		},
 	}
-	if configContent, _, readErr := svc.agent.ReadFile(ctx, site.ConfigPath); readErr == nil {
-		markerBody := []byte(nginx.BuildACMEChallengeBlock(&nginx.RenderData{RootPath: site.RootPath}))
-		patched, injectErr := nginx.EnsureMarkerBlock(configContent, nginx.MarkerNameACMEChallenge, markerBody)
-		if injectErr != nil {
-			svc.failOrder(orderID, "config_update_failed", "注入 ACME 标识块失败: "+injectErr.Error(), stream, logWriter)
-			return
-		}
-		changes = append(changes, ssl.FileChange{
-			Type:          "write",
-			Path:          site.ConfigPath,
-			ContentBase64: base64.StdEncoding.EncodeToString(patched),
-			Perm:          0644,
-		})
-	} else {
-		svc.failOrder(orderID, "config_read_failed", "读取站点配置失败: "+readErr.Error(), stream, logWriter)
-		return
-	}
 
 	opID := app.NewOperationID()
-	svc.opRepo.Create(&repo.Operation{
+	if err := svc.opRepo.Create(&repo.Operation{
 		ID: opID, Action: "acme.obtain", TargetType: "site", TargetID: siteID,
 		Status: "pending", RequestID: requestID, Actor: "admin",
 		Message:   fmt.Sprintf("Let's Encrypt 申请证书: %s", strings.Join(domains, ", ")),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	})
+	}); err != nil {
+		svc.failOrder(orderID, "database_error", err.Error(), stream, logWriter)
+		return err
+	}
 
 	agentErr := svc.agent.ApplyTransaction(ctx, &ssl.TransactionRequest{
 		OperationID: opID,
@@ -431,50 +468,12 @@ func (svc *Service) doApply(ctx context.Context, stream *sse.Stream, orderID, si
 		ReloadNginx: site.Status == "enabled",
 	})
 	if agentErr != nil {
+		svc.opRepo.UpdateStatus(opID, "failed")
 		svc.failOrder(orderID, "certificate_download_failed", "写入证书文件失败: "+agentErr.Error(), stream, logWriter)
-		return
+		return agentErr
 	}
 
-	inspectResp, err := ssl.InspectPair(certResource.Certificate, certResource.PrivateKey)
-	if err == nil {
-		dnsNamesJSON, _ := json.Marshal(inspectResp.DNSNames)
-		cert := &repo.Certificate{
-			ID:          app.NewID("cert"),
-			Name:        site.PrimaryDomain,
-			DomainsJSON: string(dnsNamesJSON),
-			Issuer:      inspectResp.Issuer,
-			Subject:     inspectResp.Subject,
-			NotBefore:   &inspectResp.NotBefore,
-			NotAfter:    &inspectResp.NotAfter,
-			CertSHA256:  inspectResp.CertSHA256,
-			KeySHA256:   inspectResp.KeySHA256,
-			CertPath:    certPath,
-			KeyPath:     keyPath,
-		}
-		if createErr := svc.certRepo.Create(cert); createErr != nil {
-			slog.Warn("保存到证书夹失败", "error", createErr)
-		} else {
-			svc.acmeRepo.UpdateOrderSuccess(orderID, cert.ID, inspectResp.NotAfter)
-			svc.opRepo.UpdateStatus(opID, "success")
-
-			logWriter.Write([]byte("证书已保存到证书夹，正在自动部署..\n"))
-			_, _, deployErr := svc.sslDeployer.DeployFromStore(ctx, cert.ID, &ssl.DeployFromStoreRequest{
-				SiteID:     siteID,
-				ForceHTTPS: true,
-			}, requestID)
-			if deployErr != nil {
-				slog.Warn("自动部署失败", "error", deployErr)
-				logWriter.Write([]byte("自动部署失败，请手动部署\n"))
-			}
-		}
-	}
-
-	svc.opRepo.UpdateStatus(opID, "success")
-
-	httpProvider.cleanAll()
-
-	logWriter.Flush()
-	stream.PublishDone("|-申请完成")
+	return svc.saveAndDeploy(ctx, orderID, siteID, requestID, opID, certPath, keyPath, site.PrimaryDomain, certResource, stream, logWriter)
 }
 
 type jobContextRoundTripper struct {
@@ -512,8 +511,11 @@ func bindHTTPClientContext(ctx context.Context, client *http.Client) *http.Clien
 }
 
 func (svc *Service) failOrder(orderID, errorType, errorDetail string, stream *sse.Stream, logWriter *sse.LogWriter) {
+	logWriter.Write([]byte(errorDetail + "\n"))
 	slog.Error("ACME 申请失败", "order_id", orderID, "error_type", errorType, "error_detail", errorDetail)
-	svc.acmeRepo.UpdateOrderStatus(orderID, "failed", errorType, errorDetail)
+	if err := svc.acmeRepo.UpdateOrderStatus(orderID, "failed", errorType, errorDetail); err != nil {
+		slog.Error("保存 ACME 失败状态失败", "order_id", orderID, "error", err)
+	}
 	logWriter.Flush()
 	stream.PublishDone("|-申请失败")
 }
@@ -606,13 +608,17 @@ func resolveDoH(ctx context.Context, domain, dohURL string, logWriter *sse.LogWr
 
 func httpLocalhostCheck(ctx context.Context, domain, token, expectedContent string) error {
 	checkURL := fmt.Sprintf("http://127.0.0.1/.well-known/acme-challenge/%s", token)
+	return httpContentCheck(ctx, checkURL, domain, expectedContent)
+}
+
+func httpContentCheck(ctx context.Context, checkURL, domain, expectedContent string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", checkURL, nil)
 	if err != nil {
 		return fmt.Errorf("构建请求失败: %w", err)
 	}
 	req.Host = domain
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newPreValidationHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("本地 HTTP 请求失败: %w", err)
@@ -620,7 +626,7 @@ func httpLocalhostCheck(ctx context.Context, domain, token, expectedContent stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("本地 HTTP 状态码 %d", resp.StatusCode)
+		return validationStatusError(resp)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -720,11 +726,10 @@ func (p *http01Provider) Present(domain, token, keyAuth string) error {
 
 	filePath := filepath.Join(p.challengeDir, token)
 	content := base64.StdEncoding.EncodeToString([]byte(keyAuth))
+	p.writtenFiles = append(p.writtenFiles, filePath)
 	if err := p.agent.FilesWrite(p.ctx, filePath, content); err != nil {
 		return fmt.Errorf("写入验证文件失败: %w", err)
 	}
-	p.writtenFiles = append(p.writtenFiles, filePath)
-
 	p.logWriter.Write([]byte(fmt.Sprintf("已写入验证文件：%s\n", filePath)))
 
 	if p.skipPreValidation {
@@ -796,7 +801,7 @@ func (p *http01Provider) tryPublicHTTPCheck(domain, token, keyAuth string, retry
 	checkURL := fmt.Sprintf("http://%s/.well-known/acme-challenge/%s", domain, token)
 	p.logWriter.Write([]byte(fmt.Sprintf("  公网验证：%s\n", checkURL)))
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newPreValidationHTTPClient()
 
 	for attempt := 1; attempt <= retryCount; attempt++ {
 		if attempt > 1 {
@@ -822,7 +827,7 @@ func (p *http01Provider) tryPublicHTTPCheck(domain, token, keyAuth string, retry
 		resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			p.logWriter.Write([]byte(fmt.Sprintf("  公网验证第 %d 次尝试返回状态码 %d\n", attempt, resp.StatusCode)))
+			p.logWriter.Write([]byte(fmt.Sprintf("  公网验证第 %d 次尝试失败：%s\n", attempt, validationStatusError(resp))))
 			continue
 		}
 
@@ -842,12 +847,14 @@ func (p *http01Provider) CleanUp(domain, token, keyAuth string) error {
 	if len(p.writtenFiles) == 0 {
 		return nil
 	}
-	return p.agent.FilesRemove(p.ctx, p.writtenFiles)
+	return p.cleanupFiles()
 }
 
 func (p *http01Provider) cleanAll() {
 	if len(p.writtenFiles) > 0 {
-		p.agent.FilesRemove(p.ctx, p.writtenFiles)
+		if err := p.cleanupFiles(); err != nil {
+			slog.Warn("清理 ACME 验证文件失败", "error", err)
+		}
 	}
 }
 
@@ -858,21 +865,6 @@ func sleepContext(ctx context.Context, delay time.Duration) bool {
 	case <-timer.C:
 		return true
 	case <-ctx.Done():
-		return false
-	}
-}
-
-func (svc *Service) tryAdmit() bool {
-	svc.jobsMu.Lock()
-	defer svc.jobsMu.Unlock()
-	if svc.jobsClosing || svc.rootCtx.Err() != nil {
-		return false
-	}
-	select {
-	case svc.jobSlots <- struct{}{}:
-		svc.jobsWG.Add(1)
-		return true
-	default:
 		return false
 	}
 }
@@ -921,17 +913,15 @@ func (svc *Service) RenewOrder(ctx context.Context, orderID, requestID string) (
 	var domains []string
 	json.Unmarshal([]byte(order.DomainsJSON), &domains)
 
-	newOrderID, err := svc.ApplyCertificate(ctx, &ApplyRequest{
+	newOrderID, err := svc.applyCertificate(ctx, &ApplyRequest{
 		SiteID:        order.SiteID,
 		Domains:       domains,
 		ChallengeType: order.ChallengeType,
 		Email:         order.Email,
-	}, requestID)
+	}, requestID, applyOptions{previousOrderID: orderID, autoRenew: &order.AutoRenew})
 	if err != nil {
 		return "", err
 	}
-
-	svc.acmeRepo.UpdateOrderRenewed(orderID)
 	return newOrderID, nil
 }
 
@@ -1006,14 +996,15 @@ func (svc *Service) DeployOrder(ctx context.Context, orderID, requestID string) 
 		return app.NewAppError(app.ErrValidationFailed, "该订单无有效证书", nil)
 	}
 
-	_, _, err = svc.sslDeployer.DeployFromStore(ctx, order.CertificateID, &ssl.DeployFromStoreRequest{
-		SiteID:     order.SiteID,
-		ForceHTTPS: true,
-	}, requestID)
+	if !svc.admitSite(order.SiteID) {
+		return app.ErrBusyMsg("该站点已有 ACME 任务或并发已达上限")
+	}
+	defer svc.releaseSite(order.SiteID)
+	err = svc.deployIssuedCertificate(ctx, order.SiteID, order.CertificateID, requestID)
 	if err != nil {
 		return err
 	}
-	return nil
+	return svc.acmeRepo.UpdateOrderStatus(orderID, "success", "", "")
 }
 
 func (svc *Service) SetAutoRenew(orderID string, enabled bool) error {

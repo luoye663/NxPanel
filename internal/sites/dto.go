@@ -49,20 +49,24 @@ type DeleteSiteRequest struct {
 }
 
 type SiteListItem struct {
-	ID            string    `json:"id"`
-	PrimaryDomain string    `json:"primary_domain"`
-	Domains       []string  `json:"domains"`
-	Bindings      []Binding `json:"bindings"`
-	Status        string    `json:"status"`
-	RootPath      string    `json:"root_path"`
-	AccessLogPath string    `json:"access_log_path"`
-	ErrorLogPath  string    `json:"error_log_path"`
-	UpdatedAt     string    `json:"updated_at"`
-	SSLEnabled    bool      `json:"ssl_enabled"`
-	ProxyEnabled  bool      `json:"proxy_enabled"`
+	MaintenancePending bool      `json:"maintenance_pending"`
+	MaintenanceEnabled bool      `json:"maintenance_enabled"`
+	ID                 string    `json:"id"`
+	PrimaryDomain      string    `json:"primary_domain"`
+	Domains            []string  `json:"domains"`
+	Bindings           []Binding `json:"bindings"`
+	Status             string    `json:"status"`
+	RootPath           string    `json:"root_path"`
+	AccessLogPath      string    `json:"access_log_path"`
+	ErrorLogPath       string    `json:"error_log_path"`
+	UpdatedAt          string    `json:"updated_at"`
+	SSLEnabled         bool      `json:"ssl_enabled"`
+	ProxyEnabled       bool      `json:"proxy_enabled"`
 }
 
 type SiteDetailResponse struct {
+	MaintenancePending bool               `json:"maintenance_pending"`
+	MaintenanceEnabled bool               `json:"maintenance_enabled"`
 	ID                 string             `json:"id"`
 	PrimaryDomain      string             `json:"primary_domain"`
 	Domains            []string           `json:"domains"`
@@ -102,6 +106,7 @@ type SSLBrief struct {
 }
 
 type ImportScanItem struct {
+	ServerHash      string   `json:"server_hash"`
 	SourceFile      string   `json:"source_file"`
 	ServerNames     []string `json:"server_names"`
 	Listen          []string `json:"listen"`
@@ -121,6 +126,8 @@ type ImportScanResponse struct {
 
 type ImportSiteRequest struct {
 	SourceFile string `json:"source_file"`
+	ServerHash string `json:"server_hash,omitempty"`
+	ServerName string `json:"server_name,omitempty"`
 }
 
 type ImportSiteResponse struct {

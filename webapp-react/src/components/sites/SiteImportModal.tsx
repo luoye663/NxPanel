@@ -13,6 +13,8 @@ interface SiteImportModalProps {
   onClose: () => void
 }
 
+function itemKey(item: ImportScanItem) { return `${item.source_file}::${item.server_hash}` }
+
 export function SiteImportModal({ opened, scanning, items, onClose }: SiteImportModalProps) {
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState<string[]>([])
@@ -29,12 +31,14 @@ export function SiteImportModal({ opened, scanning, items, onClose }: SiteImport
       return
     }
     let successCount = 0
-    for (const sourceFile of selected) {
+    for (const key of selected) {
+      const item = items.find((candidate) => itemKey(candidate) === key)
+      if (!item) continue
       try {
-        await importMutation.mutateAsync(sourceFile)
+        await importMutation.mutateAsync({ source_file: item.source_file, server_hash: item.server_hash, server_name: item.server_names[0] })
         successCount++
       } catch (error) {
-        showErrorModal(error, `导入失败：${sourceFile}`)
+        showErrorModal(error, `导入失败：${item.source_file} / ${item.server_names[0]}`)
       }
     }
     if (successCount > 0) {
@@ -72,10 +76,10 @@ export function SiteImportModal({ opened, scanning, items, onClose }: SiteImport
                   </Table.Thead>
                   <Table.Tbody>
                     {items.map((item) => {
-                      const checked = selected.includes(item.source_file)
+                      const checked = selected.includes(itemKey(item))
                       return (
-                        <Table.Tr key={item.source_file}>
-                          <Table.Td><Checkbox aria-label="选择导入站点" checked={checked} onChange={(event) => { const nextChecked = event.currentTarget.checked; setSelected((current) => nextChecked ? [...current, item.source_file] : current.filter((value) => value !== item.source_file)) }} /></Table.Td>
+                        <Table.Tr key={itemKey(item)}>
+                          <Table.Td><Checkbox aria-label={`选择导入 ${item.server_names[0]}`} checked={checked} onChange={(event) => { const nextChecked = event.currentTarget.checked; setSelected((current) => nextChecked ? [...current.filter((value) => items.find((candidate) => itemKey(candidate) === value)?.source_file !== item.source_file), itemKey(item)] : current.filter((value) => value !== itemKey(item))) }} /></Table.Td>
                           <Table.Td><PathCell value={item.source_file} maxWidth={260} /></Table.Td>
                           <Table.Td><Group gap={4}>{item.server_names.map((name) => <Badge key={name} variant="light">{name}</Badge>)}</Group></Table.Td>
                           <Table.Td>{item.listen[0] || '-'}</Table.Td>

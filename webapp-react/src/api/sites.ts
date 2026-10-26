@@ -71,6 +71,7 @@ export function deleteSite(
 }
 
 export interface ImportScanItem {
+	server_hash: string
   source_file: string
   server_names: string[]
   listen: string[]
@@ -88,10 +89,10 @@ export function importScan(): Promise<{ items: ImportScanItem[] }> {
   return post('/sites/import-scan', {})
 }
 
-export function importSite(sourceFile: string): Promise<{
+export function importSite(input: string | { source_file: string; server_name?: string; server_hash?: string }): Promise<{
   site_id: string
   operation_id: string
   status: string
 }> {
-  return post('/sites/import', { source_file: sourceFile })
+  return post('/sites/import', typeof input === 'string' ? { source_file: input } : input)
 }

@@ -28,6 +28,7 @@ interface NginxCodeEditorProps {
   onChange: (value: string) => void
   formattable?: boolean
   language?: CodeEditorLanguage
+  readOnly?: boolean
 }
 
 function words(value: string): Record<string, boolean> {
@@ -310,7 +311,7 @@ function formatNginxConf(value: string): string {
   return `${formatted.join('\n').trimEnd()}\n`
 }
 
-export default function NginxCodeEditor({ value, onChange, formattable = false, language = 'nginx' }: NginxCodeEditorProps) {
+export default function NginxCodeEditor({ value, onChange, formattable = false, language = 'nginx', readOnly = false }: NginxCodeEditorProps) {
   const editorShellRef = useRef<HTMLDivElement>(null)
   const [editorHeight, setEditorHeight] = useState(400)
   const parser = languageParsers[language]
@@ -360,12 +361,14 @@ export default function NginxCodeEditor({ value, onChange, formattable = false, 
     <div className="nginxCodeEditor">
       {formattable ? (
         <Group className="nginxCodeEditorToolbar" justify="flex-end">
-          <Button size="compact-xs" variant="subtle" onClick={handleFormat}>格式化</Button>
+          <Button size="compact-xs" variant="subtle" disabled={readOnly} onClick={handleFormat}>格式化</Button>
         </Group>
       ) : null}
       <div ref={editorShellRef} className="nginxCodeMirrorShell">
         <CodeMirror
           value={value}
+          readOnly={readOnly}
+          editable={!readOnly}
           height={`${editorHeight}px`}
           basicSetup={{ foldGutter: true, lineNumbers: true }}
           extensions={[...(parser ? [StreamLanguage.define(parser)] : []), indentUnit.of(NGINX_INDENT), EditorView.lineWrapping, editorTheme]}

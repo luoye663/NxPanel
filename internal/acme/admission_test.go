@@ -27,7 +27,7 @@ func newAdmissionTestService(t *testing.T, root context.Context, limit int) *Ser
 	if err := sites.Create(&repo.Site{ID: "site-1", PrimaryDomain: "example.com", DomainsJSON: `["example.com"]`, Status: "enabled", RootPath: "/var/www/example", ConfigPath: "/etc/nginx/example.conf"}); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(root, limit, sites, repo.NewSSLRepo(database), repo.NewCertificateRepo(database), repo.NewACMERepo(database), repo.NewOperationRepo(database), nil, nil, sse.NewHub(), &app.Config{})
+	svc := NewService(root, limit, sites, repo.NewSSLRepo(database), repo.NewCertificateRepo(database), repo.NewACMERepo(database), repo.NewOperationRepo(database), nil, nil, sse.NewHub(), &app.Config{DataDir: t.TempDir()})
 	t.Cleanup(svc.Close)
 	return svc
 }

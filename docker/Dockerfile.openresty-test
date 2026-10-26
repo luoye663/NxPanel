@@ -1,0 +1,12 @@
+# Test-only runtime for hosts where the published OpenResty image is unavailable.
+FROM public.ecr.aws/nginx/nginx:1.27-alpine
+ARG ALPINE_MIRROR=dl-cdn.alpinelinux.org
+ARG OPENRESTY_VERSION=1.27.1.2
+RUN sed -i "s/dl-cdn.alpinelinux.org/${ALPINE_MIRROR}/g" /etc/apk/repositories \
+    && apk add --no-cache build-base linux-headers pcre2-dev openssl-dev zlib-dev perl wget \
+    && wget -q "https://openresty.org/download/openresty-${OPENRESTY_VERSION}.tar.gz" -O /tmp/openresty.tar.gz \
+    && cd /tmp && tar xzf openresty.tar.gz \
+    && cd "openresty-${OPENRESTY_VERSION}" \
+    && ./configure --with-http_ssl_module --with-pcre-jit -j2 \
+    && make -j2 && make install
+ENV PATH="/usr/local/openresty/bin:/usr/local/openresty/nginx/sbin:${PATH}"

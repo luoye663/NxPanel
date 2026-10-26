@@ -7,9 +7,10 @@ interface PathCellProps {
   maxWidth?: number | string
   onClick?: () => void
   justify?: 'flex-start' | 'flex-end'
+  wrap?: boolean
 }
 
-export function PathCell({ value, maxWidth = 300, onClick, justify = 'flex-start' }: PathCellProps) {
+export function PathCell({ value, maxWidth = 300, onClick, justify = 'flex-start', wrap = false }: PathCellProps) {
   async function handleCopy() {
     if (!value) return
     try {
@@ -26,10 +27,10 @@ export function PathCell({ value, maxWidth = 300, onClick, justify = 'flex-start
     <Group gap={4} wrap="nowrap" justify={justify} align="center" style={{ minWidth: 0 }}>
       <Tooltip label={value} multiline maw={520} openDelay={300}>
         <Code
-          className="monoEllipsis"
+          className={wrap ? undefined : 'monoEllipsis'}
           component={onClick ? 'button' : 'span'}
           onClick={onClick}
-          style={{ maxWidth, cursor: onClick ? 'pointer' : 'default', border: 0, minWidth: 0 }}
+          style={{ maxWidth, cursor: onClick ? 'pointer' : 'default', border: 0, minWidth: 0, ...(wrap ? { whiteSpace: 'normal', overflowWrap: 'anywhere' } : {}) }}
         >
           {value}
         </Code>

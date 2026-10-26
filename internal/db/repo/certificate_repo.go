@@ -19,7 +19,7 @@ func (r *CertificateRepo) List() ([]*Certificate, error) {
 		`SELECT id, name, domains_json, issuer, subject,
 			not_before, not_after, cert_sha256, key_sha256,
 			cert_path, key_path,
-			created_at, updated_at
+			created_at, updated_at, source
 		FROM certificates ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -34,7 +34,7 @@ func (r *CertificateRepo) List() ([]*Certificate, error) {
 			&c.ID, &c.Name, &c.DomainsJSON, &c.Issuer, &c.Subject,
 			&c.NotBefore, &c.NotAfter, &c.CertSHA256, &c.KeySHA256,
 			&c.CertPath, &c.KeyPath,
-			&c.CreatedAt, &c.UpdatedAt,
+			&c.CreatedAt, &c.UpdatedAt, &c.Source,
 		); err != nil {
 			return nil, fmt.Errorf("扫描证书行失败: %w", err)
 		}
@@ -49,14 +49,14 @@ func (r *CertificateRepo) GetByID(id string) (*Certificate, error) {
 		`SELECT id, name, domains_json, issuer, subject,
 			not_before, not_after, cert_sha256, key_sha256,
 			cert_path, key_path,
-			created_at, updated_at
+			created_at, updated_at, source
 		FROM certificates WHERE id = ?`,
 		id,
 	).Scan(
 		&c.ID, &c.Name, &c.DomainsJSON, &c.Issuer, &c.Subject,
 		&c.NotBefore, &c.NotAfter, &c.CertSHA256, &c.KeySHA256,
 		&c.CertPath, &c.KeyPath,
-		&c.CreatedAt, &c.UpdatedAt,
+		&c.CreatedAt, &c.UpdatedAt, &c.Source,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -73,14 +73,14 @@ func (r *CertificateRepo) GetBySHA256(sha256 string) (*Certificate, error) {
 		`SELECT id, name, domains_json, issuer, subject,
 			not_before, not_after, cert_sha256, key_sha256,
 			cert_path, key_path,
-			created_at, updated_at
+			created_at, updated_at, source
 		FROM certificates WHERE cert_sha256 = ?`,
 		sha256,
 	).Scan(
 		&c.ID, &c.Name, &c.DomainsJSON, &c.Issuer, &c.Subject,
 		&c.NotBefore, &c.NotAfter, &c.CertSHA256, &c.KeySHA256,
 		&c.CertPath, &c.KeyPath,
-		&c.CreatedAt, &c.UpdatedAt,
+		&c.CreatedAt, &c.UpdatedAt, &c.Source,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -93,17 +93,21 @@ func (r *CertificateRepo) GetBySHA256(sha256 string) (*Certificate, error) {
 
 func (r *CertificateRepo) Create(c *Certificate) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	source := c.Source
+	if source == "" {
+		source = "panel"
+	}
 	_, err := r.db.Exec(
 		`INSERT INTO certificates (
 			id, name, domains_json, issuer, subject,
 			not_before, not_after, cert_sha256, key_sha256,
 			cert_path, key_path,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, updated_at, source
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.Name, c.DomainsJSON, c.Issuer, c.Subject,
 		c.NotBefore, c.NotAfter, c.CertSHA256, c.KeySHA256,
 		c.CertPath, c.KeyPath,
-		now, now,
+		now, now, source,
 	)
 	if err != nil {
 		return fmt.Errorf("创建证书失败: %w", err)
