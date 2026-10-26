@@ -35,15 +35,15 @@ export function AccessPolicyDiagnostics({ siteId, refreshKey }: Props) {
       if (controller.signal.aborted) return
       setReport(result)
       setLoading(false)
-      if (result.warnings.length || !result.complete || result.truncated) {
-        notifications.show({
-          id: notificationId,
-          color: 'yellow',
-          title: result.complete ? `发现 ${result.warnings.length}${result.truncated ? '+' : ''} 项配置风险` : '配置诊断未完成',
-          autoClose: 8000,
-          message: <Stack gap="xs"><Text size="sm">自定义配置独立生效，本提示不阻止保存，不改变策略的应用状态。</Text><Button variant="subtle" size="xs" onClick={() => { notifications.hide(notificationId); setOpened(true) }}>查看详情</Button></Stack>,
-        })
-      }
+      // if (result.warnings.length || !result.complete || result.truncated) {
+      //   notifications.show({
+      //     id: notificationId,
+      //     color: 'yellow',
+      //     title: result.complete ? `发现 ${result.warnings.length}${result.truncated ? '+' : ''} 项配置风险` : '配置诊断未完成',
+      //     autoClose: 8000,
+      //     message: <Stack gap="xs"><Text size="sm">自定义配置独立生效，本提示不阻止保存，不改变策略的应用状态。</Text><Button variant="subtle" size="xs" onClick={() => { notifications.hide(notificationId); setOpened(true) }}>查看详情</Button></Stack>,
+      //   })
+      // }
     })
     return () => {
       controller.abort()
