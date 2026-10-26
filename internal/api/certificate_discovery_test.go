@@ -12,6 +12,7 @@ func TestCertificateDiscoveryAuthenticationAndCSRF(t *testing.T) {
 	setupTestAdmin(t, server)
 	for _, test := range []struct{ method, path string }{
 		{"GET", "/sites/site/certificates/scan"}, {"POST", "/certificates/adopt"},
+		{"POST", "/sites/site/certificates/replace-preview"}, {"POST", "/sites/site/certificates/replace"},
 	} {
 		rec := httptest.NewRecorder()
 		server.Handler().ServeHTTP(rec, httptest.NewRequest(test.method, apiTestPath(server, test.path), nil))

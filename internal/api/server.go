@@ -391,6 +391,7 @@ func (a *sslAgentAdapter) SSLInspectFiles(ctx context.Context, certPath, keyPath
 		NotAfter:   resp.NotAfter,
 		DNSNames:   resp.DNSNames,
 		CertSHA256: resp.CertSHA256,
+		KeySHA256:  resp.KeySHA256,
 	}, nil
 }
 

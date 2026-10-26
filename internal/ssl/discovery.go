@@ -14,11 +14,13 @@ import (
 
 type CertificateScan struct {
 	nginxpatch.CertificateReference
-	configPath    string
-	keyHash       string
-	SiteID        string            `json:"site_id"`
-	PrimaryDomain string            `json:"primary_domain"`
-	Certificate   *SSLInspectResult `json:"certificate,omitempty"`
+	configPath     string
+	keyHash        string
+	SiteID         string            `json:"site_id"`
+	PrimaryDomain  string            `json:"primary_domain"`
+	Certificate    *SSLInspectResult `json:"certificate,omitempty"`
+	CertificateID  string            `json:"certificate_id,omitempty"`
+	AdoptionStatus string            `json:"adoption_status"`
 }
 
 type AdoptCertificateRequest struct {
@@ -49,7 +51,7 @@ func (svc *Service) ScanCertificate(ctx context.Context, siteID string) (*Certif
 	} else {
 		ref.ReadOnlyReason = resolveErr.Error()
 	}
-	result := &CertificateScan{CertificateReference: ref, configPath: site.ConfigPath, SiteID: site.ID, PrimaryDomain: site.PrimaryDomain}
+	result := &CertificateScan{CertificateReference: ref, configPath: site.ConfigPath, SiteID: site.ID, PrimaryDomain: site.PrimaryDomain, AdoptionStatus: "unknown"}
 	if ref.ReadOnlyReason != "" {
 		return result, nil
 	}
@@ -62,6 +64,19 @@ func (svc *Service) ScanCertificate(ctx context.Context, siteID string) (*Certif
 	result.keyHash = info.KeySHA256
 	info.KeySHA256 = ""
 	result.Certificate = info
+	association, err := svc.certRepo.GetSiteAssociation(ctx, siteID)
+	if err != nil {
+		return nil, app.NewAppError(app.ErrInternalError, "读取证书接管状态失败", nil)
+	}
+	result.AdoptionStatus = "unadopted"
+	if association != nil {
+		result.CertificateID = association.CertificateID
+		result.AdoptionStatus = "changed"
+		if association.ConfigPath == site.ConfigPath && association.FileHash == ref.FileHash && association.ServerHash == ref.ServerHash &&
+			association.CertPath == ref.CertPath && association.KeyPath == ref.KeyPath && association.CertSHA256 == info.CertSHA256 {
+			result.AdoptionStatus = "adopted"
+		}
+	}
 	return result, nil
 }
 
@@ -76,7 +91,7 @@ func (svc *Service) AdoptCertificate(ctx context.Context, req *AdoptCertificateR
 		return "", "", app.NewAppError(app.ErrConflict, "配置已变化，请重新扫描", nil)
 	}
 	if scan.ReadOnlyReason != "" || scan.Certificate == nil {
-		return "", "", app.NewAppError(app.ErrValidationFailed, "该配置只能只读展示，不能纳管", nil)
+		return "", "", app.NewAppError(app.ErrValidationFailed, "该配置只能只读展示，不能接管", nil)
 	}
 	site, err := svc.siteRepo.GetByID(req.SiteID)
 	if err != nil || site == nil || site.ConfigPath != scan.configPath || site.PrimaryDomain != scan.PrimaryDomain {

@@ -257,3 +257,48 @@ func TestDiscoverySanitizesInspectorErrorAndForgetPreservesFiles(t *testing.T) {
 		t.Fatalf("forget metadata: %+v %v", certs, err)
 	}
 }
+
+func TestCertificateAdoptionStatusLifecycle(t *testing.T) {
+	svc, a, database, _ := discoveryService(t)
+	ctx := context.Background()
+	assertStatus := func(want string) *CertificateScan {
+		t.Helper()
+		scan, err := svc.ScanCertificate(ctx, "site")
+		if err != nil || scan.AdoptionStatus != want {
+			t.Fatalf("want %s: %+v %v", want, scan, err)
+		}
+		return scan
+	}
+	scan := assertStatus("unadopted")
+	id, _, err := svc.AdoptCertificate(ctx, &AdoptCertificateRequest{SiteID: "site", ExpectedHash: scan.FileHash}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan = assertStatus("adopted"); scan.CertificateID != id {
+		t.Fatal("missing certificate ID")
+	}
+	// Reconstructing the service must recover state from the persisted association.
+	svc = NewService(repo.NewSiteRepo(database), repo.NewSSLRepo(database), repo.NewCertificateRepo(database), repo.NewOperationRepo(database), a, &app.Config{})
+	assertStatus("adopted")
+	a.content += "\n# external edit"
+	scan = assertStatus("changed")
+	id2, _, err := svc.AdoptCertificate(ctx, &AdoptCertificateRequest{SiteID: "site", ExpectedHash: scan.FileHash}, "test")
+	if err != nil || id != id2 {
+		t.Fatalf("repeat adoption: %s %v", id2, err)
+	}
+	assertStatus("adopted")
+	if _, err := database.Exec(`UPDATE certificates SET cert_sha256='old' WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus("changed")
+	a.inspectError = fmt.Errorf("unreadable")
+	assertStatus("unknown")
+	a.inspectError = nil
+	if _, err := svc.DeleteFromStore(ctx, id, "test"); err != nil {
+		t.Fatal(err)
+	}
+	assertStatus("unadopted")
+	if a.writes != 0 {
+		t.Fatal("scan/adoption changed nginx")
+	}
+}

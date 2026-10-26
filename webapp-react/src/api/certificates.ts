@@ -17,6 +17,8 @@ export interface CertificateItem {
 }
 
 export interface CertificateScan {
+  certificate_id?: string
+  adoption_status: 'unadopted' | 'adopted' | 'changed' | 'unknown'
   site_id: string
   primary_domain: string
   file_hash: string
@@ -36,6 +38,8 @@ export function adoptSiteCertificate(siteId: string, expectedHash: string): Prom
 }
 
 export interface CertificateReplacementPreview {
+  matched_domains: string[]
+  unmatched_domains: string[]
   dependency_hash: string
   file_hash: string
   certificate_sha256: string

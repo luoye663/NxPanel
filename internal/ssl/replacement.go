@@ -3,6 +3,7 @@ package ssl
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -22,13 +23,42 @@ type ReplacementRequest struct {
 type ReplacementPreview struct {
 	DependencyHash    string `json:"dependency_hash"`
 	checks            []FileChange
-	FileHash          string `json:"file_hash"`
-	CertificateSHA256 string `json:"certificate_sha256"`
-	OldCertPath       string `json:"old_cert_path"`
-	NewCertPath       string `json:"new_cert_path"`
-	OldKeyPath        string `json:"old_key_path"`
-	NewKeyPath        string `json:"new_key_path"`
-	NotAfter          string `json:"not_after"`
+	FileHash          string   `json:"file_hash"`
+	CertificateSHA256 string   `json:"certificate_sha256"`
+	OldCertPath       string   `json:"old_cert_path"`
+	NewCertPath       string   `json:"new_cert_path"`
+	OldKeyPath        string   `json:"old_key_path"`
+	NewKeyPath        string   `json:"new_key_path"`
+	NotAfter          string   `json:"not_after"`
+	MatchedDomains    []string `json:"matched_domains"`
+	UnmatchedDomains  []string `json:"unmatched_domains"`
+}
+
+func certificateDomainCoverage(domains, names []string) ([]string, []string) {
+	matched, unmatched := []string{}, []string{}
+	seen := make(map[string]bool)
+	normalize := func(s string) string { return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".") }
+	for _, domain := range domains {
+		domain = normalize(domain)
+		if domain == "" || seen[domain] {
+			continue
+		}
+		seen[domain] = true
+		covered := false
+		for _, name := range names {
+			name = normalize(name)
+			if name == domain || (strings.HasPrefix(name, "*.") && strings.HasSuffix(domain, name[1:]) && strings.Count(domain, ".") == strings.Count(name, ".")) {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			matched = append(matched, domain)
+		} else {
+			unmatched = append(unmatched, domain)
+		}
+	}
+	return matched, unmatched
 }
 
 func (svc *Service) replacement(ctx context.Context, id string, req *ReplacementRequest) (*ReplacementPreview, string, *repo.Certificate, *SSLInspectResult, error) {
@@ -64,28 +94,27 @@ func (svc *Service) replacement(ctx context.Context, id string, req *Replacement
 	if err != nil {
 		return nil, "", nil, nil, app.NewAppError(app.ErrValidationFailed, "新证书无法校验，请检查证书夹文件与 Agent 白名单", nil)
 	}
+	for _, hash := range []string{info.CertSHA256, info.KeySHA256} {
+		decoded, err := hex.DecodeString(hash)
+		if err != nil || len(decoded) != 32 {
+			return nil, "", nil, nil, app.NewAppError(app.ErrAgentUnavailable, "Agent 未返回有效的证书或私钥校验信息，未修改配置；请检查 API 与 Agent 版本并重新预览", nil)
+		}
+	}
 	if info.CertSHA256 != cert.CertSHA256 {
 		return nil, "", nil, nil, app.NewAppError(app.ErrConflict, "证书夹文件发生变化，请重新上传", nil)
 	}
 	var domains []string
 	_ = json.Unmarshal([]byte(site.DomainsJSON), &domains)
 	domains = append(domains, site.PrimaryDomain)
-	for _, domain := range domains {
-		matched := false
-		for _, name := range info.DNSNames {
-			if name == domain || (strings.HasPrefix(name, "*.") && strings.HasSuffix(domain, name[1:]) && strings.Count(domain, ".") == strings.Count(name, ".")) {
-				matched = true
-			}
-		}
-		if !matched {
-			return nil, "", nil, nil, app.NewAppError(app.ErrValidationFailed, "新证书未覆盖站点全部已绑定域名", nil)
-		}
+	matched, unmatched := certificateDomainCoverage(domains, info.DNSNames)
+	if len(matched) == 0 {
+		return nil, "", nil, nil, app.NewAppError(app.ErrValidationFailed, "新证书未覆盖任何已绑定域名", map[string]any{"unmatched_domains": unmatched})
 	}
 	patched, err := nginxpatch.ReplaceResolvedCertificate(string(content), site.PrimaryDomain, ref.FileHash, cert.CertPath, cert.KeyPath)
 	if err != nil {
 		return nil, "", nil, nil, err
 	}
-	return &ReplacementPreview{checks: checks, DependencyHash: dependencyHash(checks), FileHash: ref.FileHash, CertificateSHA256: info.CertSHA256, OldCertPath: ref.CertPath, OldKeyPath: ref.KeyPath, NewCertPath: cert.CertPath, NewKeyPath: cert.KeyPath, NotAfter: info.NotAfter}, patched, cert, info, nil
+	return &ReplacementPreview{checks: checks, DependencyHash: dependencyHash(checks), FileHash: ref.FileHash, CertificateSHA256: info.CertSHA256, OldCertPath: ref.CertPath, OldKeyPath: ref.KeyPath, NewCertPath: cert.CertPath, NewKeyPath: cert.KeyPath, NotAfter: info.NotAfter, MatchedDomains: matched, UnmatchedDomains: unmatched}, patched, cert, info, nil
 }
 
 func (svc *Service) PreviewReplacement(ctx context.Context, id string, req *ReplacementRequest) (*ReplacementPreview, error) {
@@ -119,7 +148,7 @@ func (svc *Service) ReplaceCertificate(ctx context.Context, id string, req *Repl
 	}...)})
 	if err != nil {
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, "证书引用应用未确认，请重新扫描对账", "")
-		return opID, app.NewAppError(app.ErrAgentUnavailable, "证书应用失败或结果不确定；请重新扫描并确认纳管以对账", map[string]any{"sync_required": true, "operation_id": opID})
+		return opID, app.NewAppError(app.ErrAgentUnavailable, "证书应用失败或结果不确定；请重新扫描并确认接管以对账", map[string]any{"sync_required": true, "operation_id": opID})
 	}
 	ref := nginxpatch.InspectResolvedCertificate(patched, site.PrimaryDomain)
 	cert.KeySHA256 = info.KeySHA256
@@ -130,7 +159,7 @@ func (svc *Service) ReplaceCertificate(ctx context.Context, id string, req *Repl
 	domainsJSON, _ := json.Marshal(info.DNSNames)
 	cert.DomainsJSON = string(domainsJSON)
 	if _, err := svc.certRepo.AdoptExternal(ctx, cert, id, site.ConfigPath, ref.FileHash, ref.ServerHash, opID); err != nil {
-		return opID, app.NewAppError(app.ErrInternalError, "证书已应用，但关联保存失败；请重新扫描纳管", map[string]any{"sync_required": true, "operation_id": opID})
+		return opID, app.NewAppError(app.ErrInternalError, "证书已应用，但关联保存失败；请重新扫描接管", map[string]any{"sync_required": true, "operation_id": opID})
 	}
 	if err := svc.opRepo.UpdateStatus(opID, "success"); err != nil {
 		return opID, err

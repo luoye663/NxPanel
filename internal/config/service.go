@@ -192,7 +192,7 @@ func (svc *Service) Save(ctx context.Context, siteID string, req *SaveRequest, r
 		syncWarnings = nil
 		accessLog, errorLog, locateErr := nginxpatch.ServerLogPaths(req.Content, site.PrimaryDomain)
 		if locateErr != nil {
-			syncWarnings = append(syncWarnings, "无法唯一定位已纳管 server，保留日志元数据，未选择首个 server")
+			syncWarnings = append(syncWarnings, "无法唯一定位已接管 server，保留日志元数据，未选择首个 server")
 		} else {
 			site.AccessLogPath = accessLog
 			site.ErrorLogPath = errorLog

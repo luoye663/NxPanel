@@ -2,12 +2,37 @@ package repo
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
 type CertificateSite struct {
 	SiteID        string `json:"site_id"`
 	PrimaryDomain string `json:"primary_domain"`
+}
+
+type CertificateAssociation struct {
+	CertificateID string
+	ConfigPath    string
+	FileHash      string
+	ServerHash    string
+	CertPath      string
+	KeyPath       string
+	CertSHA256    string
+}
+
+func (r *CertificateRepo) GetSiteAssociation(ctx context.Context, siteID string) (*CertificateAssociation, error) {
+	var a CertificateAssociation
+	err := r.db.QueryRowContext(ctx, `SELECT cs.certificate_id,cs.config_path,cs.file_hash,cs.server_hash,cs.cert_path,cs.key_path,c.cert_sha256
+		FROM certificate_sites cs JOIN certificates c ON c.id=cs.certificate_id WHERE cs.site_id=?`, siteID).
+		Scan(&a.CertificateID, &a.ConfigPath, &a.FileHash, &a.ServerHash, &a.CertPath, &a.KeyPath, &a.CertSHA256)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 func (r *CertificateRepo) AssociatedSites(id string) ([]CertificateSite, error) {

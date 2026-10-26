@@ -820,7 +820,7 @@ func (svc *Service) ImportScan(ctx context.Context, requestID string) (*ImportSc
 		}
 		warnings := importWarningsForPaths(roots, p.SourceFile, p.RootPath, p.AccessLogPath, p.ErrorLogPath)
 		if serverCounts[p.SourceFile] > 1 {
-			warnings = append(warnings, "此文件包含多个 server：请选择明确目标；同一文件仅纳管一个站点，整站禁用/删除前必须先拆分配置")
+			warnings = append(warnings, "此文件包含多个 server：请选择明确目标；同一文件仅接管一个站点，整站禁用/删除前必须先拆分配置")
 		}
 		items = append(items, ImportScanItem{
 			ServerHash:      nginxpatch.Hash(p.RawBlock),

@@ -99,7 +99,7 @@ export function SiteDetailModal({ siteId, initialTab, opened, onClose }: SiteDet
     if (activeTab === 'rewrite') return <SiteRewriteTab site={site} />
     if (activeTab === 'access-limit') return <SiteAccessLimitTab key="access-limit" site={site} initialTab="auth" focusSource={policySource} onDirtyChange={setPolicyDirty} />
     if (activeTab === 'hotlink') return <SiteAccessLimitTab key="hotlink" site={site} initialTab="hotlink" singleTab onDirtyChange={setPolicyDirty} />
-    if (activeTab === 'ssl') return <SiteSSLTab site={site} />
+    if (activeTab === 'ssl') return <SiteSSLTab key={site.id} site={site} />
     if (activeTab === 'files') return <SiteFilesTab site={site} />
     if (activeTab === 'logs') return <SiteLogsTab site={site} />
     return <SiteOperationsTab site={site} />

@@ -847,16 +847,16 @@ func (svc *Service) DeleteFromStore(ctx context.Context, certID string, requestI
 	if svc.certificateSource(cert) == "external" {
 		opID := app.NewOperationID()
 		if err := svc.opRepo.Create(&repo.Operation{ID: opID, Action: "cert.forget", TargetType: "certificate", TargetID: certID,
-			Status: "pending", RequestID: requestID, Actor: "admin", Message: "取消外部证书纳管，保留原文件",
+			Status: "pending", RequestID: requestID, Actor: "admin", Message: "取消外部证书接管，保留原文件",
 			CreatedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
 			return "", app.NewAppError(app.ErrInternalError, "创建操作记录失败", nil)
 		}
 		if err := svc.certRepo.ForgetExternal(ctx, certID); err != nil {
-			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, "取消纳管失败", "")
-			return "", app.NewAppError(app.ErrInternalError, "取消纳管失败", nil)
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, "取消接管失败", "")
+			return "", app.NewAppError(app.ErrInternalError, "取消接管失败", nil)
 		}
 		if err := svc.opRepo.UpdateStatus(opID, "success"); err != nil {
-			return opID, app.NewAppError(app.ErrInternalError, "已取消纳管，但审计更新失败", nil)
+			return opID, app.NewAppError(app.ErrInternalError, "已取消接管，但审计更新失败", nil)
 		}
 		return opID, nil
 	}
@@ -868,7 +868,7 @@ func (svc *Service) DeleteFromStore(ctx context.Context, certID string, requestI
 		return "", app.NewAppError(app.ErrInternalError, "读取证书关联失败", nil)
 	}
 	if len(associated) > 0 {
-		return "", app.NewAppError(app.ErrConflict, "证书仍被已纳管站点引用，不能删除", nil)
+		return "", app.NewAppError(app.ErrConflict, "证书仍被已接管站点引用，不能删除", nil)
 	}
 
 	opID := app.NewOperationID()
@@ -921,7 +921,7 @@ func (svc *Service) DeployFromStore(ctx context.Context, certID string, req *Dep
 		return nil, "", app.NewAppError(app.ErrNotFound, "证书不存在", nil)
 	}
 	if svc.certificateSource(cert) == "external" {
-		return nil, "", app.NewAppError(app.ErrValidationFailed, "外部纳管证书目前只读；不能通过 marker 部署修改导入配置", nil)
+		return nil, "", app.NewAppError(app.ErrValidationFailed, "外部接管证书目前只读；不能通过 marker 部署修改导入配置", nil)
 	}
 
 	site, err := svc.siteRepo.GetByID(req.SiteID)
