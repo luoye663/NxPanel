@@ -17,6 +17,7 @@ import (
 
 	"github.com/luoye663/nxpanel/internal/accessanalysis"
 	"github.com/luoye663/nxpanel/internal/accesslimit"
+	"github.com/luoye663/nxpanel/internal/accesspolicy"
 	"github.com/luoye663/nxpanel/internal/acme"
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/api/middleware"
@@ -28,6 +29,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/geoaccess"
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
+	"github.com/luoye663/nxpanel/internal/maintenance"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
 	"github.com/luoye663/nxpanel/internal/proxy"
 	"github.com/luoye663/nxpanel/internal/rewrite"
@@ -44,6 +46,8 @@ import (
 )
 
 type Server struct {
+	configurationWriteMu   sync.Mutex
+	maintenanceSvc         *maintenance.Service
 	cfg                    *app.Config
 	db                     *sql.DB
 	authSvc                *auth.AuthService
@@ -61,6 +65,7 @@ type Server struct {
 	sslSvc                 *ssl.Service
 	rewriteSvc             *rewrite.Service
 	accessLimitSvc         *accesslimit.Service
+	accessPolicySvc        *accesspolicy.Service
 	geoAccessSvc           *geoaccess.Service
 	hotlinkSvc             *hotlink.Service
 	configSvc              *config.Service
@@ -341,6 +346,17 @@ type sslAgentAdapter struct {
 	client *agentclient.Client
 }
 
+func (a *sslAgentAdapter) NginxDump(ctx context.Context) (string, error) {
+	result, err := a.client.NginxDump(ctx, &agentclient.NginxDumpRequest{})
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(strings.ToLower(result.Stderr), "conflicting server name") {
+		return "", fmt.Errorf("ambiguous runtime server names")
+	}
+	return result.Stdout, nil
+}
+
 func (a *sslAgentAdapter) SSLInspect(ctx context.Context, certPEM, keyPEM string) (*ssl.SSLInspectResult, error) {
 	resp, err := a.client.SSLInspect(ctx, &agentclient.SSLInspectRequest{
 		CertPEM: certPEM,
@@ -375,6 +391,7 @@ func (a *sslAgentAdapter) SSLInspectFiles(ctx context.Context, certPath, keyPath
 		NotAfter:   resp.NotAfter,
 		DNSNames:   resp.DNSNames,
 		CertSHA256: resp.CertSHA256,
+		KeySHA256:  resp.KeySHA256,
 	}, nil
 }
 
@@ -382,6 +399,8 @@ func (a *sslAgentAdapter) ApplyTransaction(ctx context.Context, req *ssl.Transac
 	changes := make([]agentclient.FileChangeRequest, len(req.Changes))
 	for i, c := range req.Changes {
 		changes[i] = agentclient.FileChangeRequest{
+			ExpectedHash:  c.ExpectedHash,
+			FollowSymlink: c.FollowSymlink,
 			Type:          c.Type,
 			Path:          c.Path,
 			Target:        c.Target,
@@ -418,6 +437,8 @@ func (a *acmeAgentAdapter) ApplyTransaction(ctx context.Context, req *ssl.Transa
 	changes := make([]agentclient.FileChangeRequest, len(req.Changes))
 	for i, c := range req.Changes {
 		changes[i] = agentclient.FileChangeRequest{
+			ExpectedHash:  c.ExpectedHash,
+			FollowSymlink: c.FollowSymlink,
 			Type:          c.Type,
 			Path:          c.Path,
 			Target:        c.Target,

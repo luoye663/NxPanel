@@ -39,16 +39,18 @@ type capabilityAgent interface {
 }
 
 type Service struct {
-	repo       *repo.GeoAccessRepo
-	sites      siteRepo
-	ipRules    *repo.IPWhitelistRuleRepo
-	operations operationRepo
-	agent      agent
-	dataDir    string
-	panelDir   string
-	key        []byte
-	httpClient *http.Client
-	mutationMu sync.Mutex
+	repo          *repo.GeoAccessRepo
+	sites         siteRepo
+	ipRules       *repo.IPWhitelistRuleRepo
+	operations    operationRepo
+	agent         agent
+	dataDir       string
+	panelDir      string
+	key           []byte
+	httpClient    *http.Client
+	mutationMu    sync.Mutex
+	policyManaged func(string) bool
+	policyRefresh func(context.Context, string) error
 }
 
 func NewService(repoStore *repo.GeoAccessRepo, sites siteRepo, ipRules *repo.IPWhitelistRuleRepo,
@@ -136,6 +138,11 @@ func (s *Service) UpdateSettings(ctx context.Context, req UpdateGeoIPSettingsReq
 	if proxiesChanged {
 		if err := s.applyAll(ctx, "", requestID, "更新地域访问可信代理"); err != nil {
 			_ = s.repo.SaveGeoIPSettings(old)
+			return nil, err
+		}
+	}
+	if proxiesChanged {
+		if err := s.refreshAccessPolicies(ctx, requestID); err != nil {
 			return nil, err
 		}
 	}
@@ -245,7 +252,7 @@ func (s *Service) activateDatabase(ctx context.Context, sourcePath, requestID st
 		_ = s.repo.SaveGeoIPSettings(old)
 		return err
 	}
-	return nil
+	return s.refreshAccessPolicies(ctx, requestID)
 }
 
 func (s *Service) GetSiteAccess(siteID string) (*SiteAccessResponse, error) {
@@ -579,6 +586,9 @@ func (s *Service) ReorderRules(ctx context.Context, siteID string, ids []string,
 }
 
 func (s *Service) IsSiteEnabled(siteID string) bool {
+	if s.policyManaged != nil && s.policyManaged(siteID) {
+		return false
+	}
 	item, err := s.repo.GetSiteSettings(siteID)
 	return err == nil && item.Enabled
 }
@@ -656,6 +666,18 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 	settings, err := s.repo.ListEnabledSiteSettings()
 	if err != nil {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	if s.policyManaged != nil {
+		legacy := settings[:0]
+		for _, setting := range settings {
+			if !s.policyManaged(setting.SiteID) {
+				legacy = append(legacy, setting)
+			}
+		}
+		settings = legacy
+		if affectedSiteID != "" && s.policyManaged(affectedSiteID) {
+			return nil
+		}
 	}
 	if len(settings) == 0 && affectedSiteID == "" {
 		return nil

@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Badge, Button, Group, Modal, Select, Stack, Switch, Tabs, Text, TextInput, Textarea, Tooltip } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Group, Loader, Modal, Select, Stack, Switch, Tabs, Text, TextInput, Textarea, Tooltip } from '@mantine/core'
 import { useForm } from '@mantine/form'
 import { useDisclosure } from '@mantine/hooks'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -37,11 +37,15 @@ import { GeoAccessPanel } from './GeoAccessPanel'
 import { confirmDanger } from '@/utils/confirm'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
+import { accessPolicyKeys, getAccessPolicy, type AccessPolicy } from '@/api/accessPolicy'
+import { AccessPolicyEditor } from './AccessPolicyEditor'
 
 interface SiteAccessLimitTabProps {
   site: SiteDetail
   initialTab?: AccessSubTab
   singleTab?: boolean
+  focusSource?: string
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 interface AuthFormValues {
@@ -77,7 +81,26 @@ const defaultDenyForm: DenyFormValues = { name: '', extension_pattern: '', path_
 const defaultIPLimitForm: IPLimitFormValues = { name: '', ruleType: 'allow', ipsText: '' }
 const defaultHotlinkForm: HotlinkFormValues = { name: '', extensionsText: 'jpg, jpeg, png, gif, webp', referersText: 'server_names', allow_empty_referer: true, block_status: '403' }
 
-export function SiteAccessLimitTab({ site, initialTab = 'auth', singleTab = false }: SiteAccessLimitTabProps) {
+export function SiteAccessLimitTab(props: SiteAccessLimitTabProps) {
+  return <AccessLimitMode key={props.site.id} {...props} />
+}
+
+function AccessLimitMode(props: SiteAccessLimitTabProps) {
+  const { site } = props
+  const [migration, setMigration] = useState<AccessPolicy | null>(null)
+  const query = useQuery({ queryKey: accessPolicyKeys.site(site.id), queryFn: () => getAccessPolicy(site.id), refetchOnWindowFocus: false })
+  if (query.isPending) return <Group justify="center" py="xl"><Loader size="sm" /><Text>正在读取访问策略…</Text></Group>
+  if (query.isError && !query.data) return <Stack><ErrorAlert error={query.error} title="读取访问策略失败" /><Group><Button variant="default" onClick={() => query.refetch()}>重试</Button></Group></Stack>
+  if (query.data.mode === 'unified' || query.data.version > 0 || migration) return <AccessPolicyEditor siteId={site.id} initialPolicy={migration || query.data} focusSource={props.focusSource || (props.initialTab === 'hotlink' ? 'hotlink' : undefined)} onDirtyChange={props.onDirtyChange} onCancelMigration={() => {
+    if (window.confirm('放弃统一策略草稿，返回现有设置？')) setMigration(null)
+  }} />
+  return <Stack gap="md">
+    <Alert color="blue" title="当前使用固定执行策略"><Stack gap="sm"><Text>IP、地域及其他限制按原有规则生效。切换为统一访问策略后，可以组合条件，并自由调整规则的执行顺序。</Text><Group><Button variant="light" loading={query.isFetching} onClick={async () => { const result = await query.refetch(); if (result.data && !result.error) setMigration(structuredClone(result.data)) }}>准备切换为统一策略</Button></Group></Stack></Alert>
+    <LegacyAccessLimitTab {...props} />
+  </Stack>
+}
+
+function LegacyAccessLimitTab({ site, initialTab = 'auth', singleTab = false }: SiteAccessLimitTabProps) {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<AccessSubTab>(initialTab)
   const [authOpened, authHandlers] = useDisclosure(false)

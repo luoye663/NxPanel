@@ -201,6 +201,8 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 // ============================================================
 
 func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
 	var req FilesWriteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAgentError(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
@@ -216,6 +218,10 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 	content, err := base64.StdEncoding.DecodeString(req.ContentBase64)
 	if err != nil {
 		writeAgentError(w, http.StatusBadRequest, "base64 解码失败: "+err.Error())
+		return
+	}
+	if err := s.rejectMaintenancePaths(path); err != nil {
+		writeAgentError(w, http.StatusConflict, err.Error())
 		return
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/luoye663/nxpanel/internal/accessanalysis"
 	"github.com/luoye663/nxpanel/internal/accesslimit"
+	"github.com/luoye663/nxpanel/internal/accesspolicy"
 	"github.com/luoye663/nxpanel/internal/acme"
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/api/middleware"
@@ -22,6 +23,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/geoaccess"
 	"github.com/luoye663/nxpanel/internal/hotlink"
 	"github.com/luoye663/nxpanel/internal/logs"
+	"github.com/luoye663/nxpanel/internal/maintenance"
 	"github.com/luoye663/nxpanel/internal/nginxconf"
 	"github.com/luoye663/nxpanel/internal/proxy"
 	"github.com/luoye663/nxpanel/internal/rewrite"
@@ -191,6 +193,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	s.proxySvc = proxy.NewService(r.site, r.proxy, r.upstream, r.authAccount, s.opRepo, s.backupRepo, s.agentClient, s.cfg)
 	sslAgent := &sslAgentAdapter{client: s.agentClient}
 	s.sslSvc = ssl.NewService(r.site, r.ssl, r.certificate, s.opRepo, sslAgent, s.cfg)
+	s.maintenanceSvc = maintenance.NewService(repo.NewMaintenanceRepo(s.db), r.site, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.rewriteSvc = rewrite.NewService(r.site, r.rewrite, s.opRepo, s.agentClient, r.rewriteTemplate)
 	s.accessLimitSvc = accesslimit.NewService(r.site, r.authAccount, r.authRule, r.denyRule, r.ipWhitelistRule, r.proxy, s.opRepo, s.agentClient, s.agentClient, s.cfg.Nginx.PanelDir)
 	geoSvc, err := geoaccess.NewService(r.geoAccess, r.site, r.ipWhitelistRule, s.opRepo, s.agentClient, s.cfg.DataDir, s.cfg.Nginx.PanelDir)
@@ -199,6 +202,12 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	}
 	s.geoAccessSvc = geoSvc
 	s.accessLimitSvc.SetGeoAccessSyncer(geoSvc)
+	s.accessPolicySvc = accesspolicy.NewService(s.db, s.agentClient, geoSvc, s.proxySvc, s.cfg.Nginx.PanelDir)
+	s.accessPolicySvc.SetNginxConfigPath(s.cfg.Nginx.ConfPath)
+	s.siteSvc.SetAccessPolicyHooks(s.accessPolicySvc.PrepareSiteCreate, s.accessPolicySvc.FinishSiteCreate, s.accessPolicySvc.SiteDeleteFiles)
+	s.proxySvc.SetAccessPolicyHooks(s.accessPolicySvc.Managed, s.accessPolicySvc.PrepareProxyChange, s.accessPolicySvc.ProxyWriteGuard)
+	geoSvc.SetAccessPolicyHooks(s.accessPolicySvc.Managed, s.accessPolicySvc.RefreshActive)
+	s.accessLimitSvc.SetAccessPolicyHooks(s.accessPolicySvc.Managed, s.accessPolicySvc.CheckAccountChange, s.accessPolicySvc.RefreshActive)
 	if err := geoSvc.AttachScheduledTasks(s.scheduledTaskSvc); err != nil {
 		return fmt.Errorf("注册 GeoIP 更新计划任务失败: %w", err)
 	}
@@ -236,6 +245,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	s.nginxconfSvc = nginxconf.NewService(s.agentClient, &nginxConfigRefresher{cfg: s.cfg}, s.opRepo)
 	s.upstreamSvc = upstream.NewService(r.upstream, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.siteBackupSvc = sitebackup.NewService(s.rootCtx, s.cfg.API.AsyncJobs.BackupMaxConcurrent, r.site, r.siteBackup, r.backupSchedule, r.ssl, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir, s.sseHub)
+	s.siteBackupSvc.SetAccessPolicyHooks(s.accessPolicySvc)
 	s.siteBackupSvc.SetTaskLogDir(s.cfg.TaskLogDir())
 	if err := s.siteBackupSvc.AttachScheduledTasks(s.scheduledTaskSvc); err != nil {
 		return fmt.Errorf("注册站点备份计划任务失败: %w", err)

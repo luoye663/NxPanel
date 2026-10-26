@@ -183,6 +183,8 @@ export interface Binding {
 
 // === Sites ===
 export interface SiteListItem {
+  maintenance_enabled: boolean
+  maintenance_pending: boolean
   id: string
   primary_domain: string
   domains: string[]
@@ -213,6 +215,8 @@ export interface MarkerStatus {
 }
 
 export interface SiteDetail {
+  maintenance_enabled: boolean
+  maintenance_pending: boolean
   id: string
   primary_domain: string
   domains: string[]

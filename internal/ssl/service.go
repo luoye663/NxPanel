@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/app"
@@ -33,6 +34,7 @@ import (
 // SSLAgentClient 定义 SSL 服务所需的 agent RPC 能力
 // 使用接口避免 ssl -> agentclient 循环依赖
 type SSLAgentClient interface {
+	NginxDump(context.Context) (string, error)
 	SSLInspect(ctx context.Context, certPEM, keyPEM string) (*SSLInspectResult, error)
 	SSLInspectFiles(ctx context.Context, certPath, keyPath string) (*SSLInspectResult, error)
 	ApplyTransaction(ctx context.Context, req *TransactionRequest) error
@@ -60,6 +62,8 @@ type TransactionRequest struct {
 
 // FileChange 文件变更（简化版）
 type FileChange struct {
+	FollowSymlink bool
+	ExpectedHash  string
 	Type          string
 	Path          string
 	Target        string
@@ -69,12 +73,13 @@ type FileChange struct {
 
 // Service SSL 业务服务
 type Service struct {
-	siteRepo *repo.SiteRepo
-	sslRepo  *repo.SSLRepo
-	certRepo *repo.CertificateRepo
-	opRepo   *repo.OperationRepo
-	agent    SSLAgentClient
-	cfg      *app.Config
+	certificateMu sync.Mutex
+	siteRepo      *repo.SiteRepo
+	sslRepo       *repo.SSLRepo
+	certRepo      *repo.CertificateRepo
+	opRepo        *repo.OperationRepo
+	agent         SSLAgentClient
+	cfg           *app.Config
 }
 
 // NewService 创建 SSL 服务
@@ -191,6 +196,8 @@ func (svc *Service) Get(siteID string) (*SSLResponse, error) {
 //  4. 重新渲染 Nginx 配置
 //  5. 通过 agent 写入文件（cert 0644, key 0600）
 func (svc *Service) ManualPEM(ctx context.Context, siteID string, req *ManualPEMRequest, requestID string) (*SSLResponse, string, error) {
+	svc.certificateMu.Lock()
+	defer svc.certificateMu.Unlock()
 	// 1. 基本校验
 	if req.CertificatePEM == "" {
 		return nil, "", app.NewAppError(app.ErrValidationFailed, "证书内容不能为空", nil)
@@ -222,6 +229,9 @@ func (svc *Service) ManualPEM(ctx context.Context, siteID string, req *ManualPEM
 	}
 	if site == nil {
 		return nil, "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if site.MaintenanceEnabled || site.MaintenancePending {
+		return nil, "", app.NewAppError(app.ErrConflict, "维护保护中，请使用证书夹预览局部替换；其他 SSL 配置需先恢复访问", nil)
 	}
 
 	// 3. 调用 agent 的 SSL inspect RPC 解析证书
@@ -324,6 +334,8 @@ func (svc *Service) ManualPEM(ctx context.Context, siteID string, req *ManualPEM
 
 // ExistingFiles 使用已有证书路径启用 SSL
 func (svc *Service) ExistingFiles(ctx context.Context, siteID string, req *ExistingFilesRequest, requestID string) (*SSLResponse, string, error) {
+	svc.certificateMu.Lock()
+	defer svc.certificateMu.Unlock()
 	// 校验路径
 	if req.CertPath == "" {
 		return nil, "", app.NewAppError(app.ErrValidationFailed, "证书路径不能为空", nil)
@@ -349,6 +361,9 @@ func (svc *Service) ExistingFiles(ctx context.Context, siteID string, req *Exist
 	}
 	if site == nil {
 		return nil, "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if site.MaintenanceEnabled || site.MaintenancePending {
+		return nil, "", app.NewAppError(app.ErrConflict, "维护保护中，请使用证书夹预览局部替换；其他 SSL 配置需先恢复访问", nil)
 	}
 
 	// 调用 agent 检查文件存在并解析证书
@@ -427,12 +442,17 @@ func (svc *Service) ExistingFiles(ctx context.Context, siteID string, req *Exist
 
 // Disable 禁用 SSL
 func (svc *Service) Disable(ctx context.Context, siteID string, req *DisableSSLRequest, requestID string) (*SSLResponse, string, error) {
+	svc.certificateMu.Lock()
+	defer svc.certificateMu.Unlock()
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
 		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if site == nil {
 		return nil, "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if site.MaintenanceEnabled || site.MaintenancePending {
+		return nil, "", app.NewAppError(app.ErrConflict, "维护保护中，请使用证书夹预览局部替换；其他 SSL 配置需先恢复访问", nil)
 	}
 
 	previousSSL, _ := svc.sslRepo.GetBySiteID(siteID)
@@ -536,6 +556,9 @@ func (svc *Service) syncToStore(inspectResp *SSLInspectResult, certPath, keyPath
 		CertPath:    certPath,
 		KeyPath:     keyPath,
 	}
+	if !svc.managedCertificatePaths(cert) {
+		cert.Source = "external"
+	}
 	if err := svc.certRepo.Create(cert); err != nil {
 		slog.Warn("同步证书记录到证书夹失败", "cert_path", certPath, "error", err)
 	} else {
@@ -624,17 +647,19 @@ func detectDefaultServer(content []byte) bool {
 
 // CertificateResponse 证书夹条目响应
 type CertificateResponse struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Domains    []string `json:"domains"`
-	Issuer     string   `json:"issuer"`
-	Subject    string   `json:"subject"`
-	NotBefore  string   `json:"not_before,omitempty"`
-	NotAfter   string   `json:"not_after,omitempty"`
-	CertSHA256 string   `json:"cert_sha256"`
-	CertPath   string   `json:"cert_path"`
-	KeyPath    string   `json:"key_path"`
-	CreatedAt  string   `json:"created_at"`
+	Source          string                 `json:"source"`
+	AssociatedSites []repo.CertificateSite `json:"associated_sites"`
+	ID              string                 `json:"id"`
+	Name            string                 `json:"name"`
+	Domains         []string               `json:"domains"`
+	Issuer          string                 `json:"issuer"`
+	Subject         string                 `json:"subject"`
+	NotBefore       string                 `json:"not_before,omitempty"`
+	NotAfter        string                 `json:"not_after,omitempty"`
+	CertSHA256      string                 `json:"cert_sha256"`
+	CertPath        string                 `json:"cert_path"`
+	KeyPath         string                 `json:"key_path"`
+	CreatedAt       string                 `json:"created_at"`
 }
 
 // UploadToStoreRequest 上传证书到证书夹请求
@@ -660,22 +685,28 @@ func (svc *Service) ListStoreCertificates() ([]*CertificateResponse, error) {
 
 	result := make([]*CertificateResponse, 0, len(certs))
 	for _, c := range certs {
+		associated, err := svc.certRepo.AssociatedSites(c.ID)
+		if err != nil {
+			return nil, app.NewAppError(app.ErrInternalError, "读取证书关联失败", nil)
+		}
 		var domains []string
 		if c.DomainsJSON != "" {
 			json.Unmarshal([]byte(c.DomainsJSON), &domains)
 		}
 		result = append(result, &CertificateResponse{
-			ID:         c.ID,
-			Name:       c.Name,
-			Domains:    domains,
-			Issuer:     c.Issuer,
-			Subject:    c.Subject,
-			NotBefore:  ptrToString(c.NotBefore),
-			NotAfter:   ptrToString(c.NotAfter),
-			CertSHA256: c.CertSHA256,
-			CertPath:   c.CertPath,
-			KeyPath:    c.KeyPath,
-			CreatedAt:  c.CreatedAt,
+			Source:          svc.certificateSource(c),
+			AssociatedSites: associated,
+			ID:              c.ID,
+			Name:            c.Name,
+			Domains:         domains,
+			Issuer:          c.Issuer,
+			Subject:         c.Subject,
+			NotBefore:       ptrToString(c.NotBefore),
+			NotAfter:        ptrToString(c.NotAfter),
+			CertSHA256:      c.CertSHA256,
+			CertPath:        c.CertPath,
+			KeyPath:         c.KeyPath,
+			CreatedAt:       c.CreatedAt,
 		})
 	}
 	return result, nil
@@ -683,6 +714,8 @@ func (svc *Service) ListStoreCertificates() ([]*CertificateResponse, error) {
 
 // UploadToStore 上传证书到证书夹
 func (svc *Service) UploadToStore(ctx context.Context, req *UploadToStoreRequest, requestID string) (*CertificateResponse, string, error) {
+	svc.certificateMu.Lock()
+	defer svc.certificateMu.Unlock()
 	if req.Name == "" {
 		return nil, "", app.NewAppError(app.ErrValidationFailed, "证书名称不能为空", nil)
 	}
@@ -797,6 +830,8 @@ func (svc *Service) UploadToStore(ctx context.Context, req *UploadToStoreRequest
 
 // DeleteFromStore 从证书夹删除证书
 func (svc *Service) DeleteFromStore(ctx context.Context, certID string, requestID string) (string, error) {
+	svc.certificateMu.Lock()
+	defer svc.certificateMu.Unlock()
 	cert, err := svc.certRepo.GetByID(certID)
 	if err != nil {
 		return "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
@@ -805,22 +840,46 @@ func (svc *Service) DeleteFromStore(ctx context.Context, certID string, requestI
 		return "", app.NewAppError(app.ErrNotFound, "证书不存在", nil)
 	}
 
-	deployedCount, _ := svc.sslRepo.CountByCertStoreID(certID)
+	deployedCount, err := svc.sslRepo.CountByCertStoreID(certID)
+	if err != nil {
+		return "", app.NewAppError(app.ErrInternalError, "读取证书引用失败", nil)
+	}
+	if svc.certificateSource(cert) == "external" {
+		opID := app.NewOperationID()
+		if err := svc.opRepo.Create(&repo.Operation{ID: opID, Action: "cert.forget", TargetType: "certificate", TargetID: certID,
+			Status: "pending", RequestID: requestID, Actor: "admin", Message: "取消外部证书接管，保留原文件",
+			CreatedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+			return "", app.NewAppError(app.ErrInternalError, "创建操作记录失败", nil)
+		}
+		if err := svc.certRepo.ForgetExternal(ctx, certID); err != nil {
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, "取消接管失败", "")
+			return "", app.NewAppError(app.ErrInternalError, "取消接管失败", nil)
+		}
+		if err := svc.opRepo.UpdateStatus(opID, "success"); err != nil {
+			return opID, app.NewAppError(app.ErrInternalError, "已取消接管，但审计更新失败", nil)
+		}
+		return opID, nil
+	}
 	if deployedCount > 0 {
 		return "", app.NewAppError(app.ErrConflict, fmt.Sprintf("该证书已被 %d 个站点使用，请先禁用相关站点的 SSL", deployedCount), nil)
 	}
-
-	if err := svc.certRepo.Delete(certID); err != nil {
-		return "", app.NewAppError(app.ErrInternalError, "删除证书记录失败: "+err.Error(), nil)
+	associated, err := svc.certRepo.AssociatedSites(certID)
+	if err != nil {
+		return "", app.NewAppError(app.ErrInternalError, "读取证书关联失败", nil)
+	}
+	if len(associated) > 0 {
+		return "", app.NewAppError(app.ErrConflict, "证书仍被已接管站点引用，不能删除", nil)
 	}
 
 	opID := app.NewOperationID()
-	_ = svc.opRepo.Create(&repo.Operation{
+	if err := svc.opRepo.Create(&repo.Operation{
 		ID: opID, Action: "cert.delete", TargetType: "certificate", TargetID: certID,
 		Status: "pending", RequestID: requestID, Actor: "admin",
 		Message:   fmt.Sprintf("从证书夹删除证书: %s", cert.Name),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-	})
+	}); err != nil {
+		return "", app.NewAppError(app.ErrInternalError, "创建删除操作记录失败", nil)
+	}
 
 	changes := []FileChange{
 		{Type: "remove", Path: cert.CertPath},
@@ -837,8 +896,14 @@ func (svc *Service) DeleteFromStore(ctx context.Context, certID string, requestI
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, agentErr.Error(), "")
 		return "", app.NewAppError(app.ErrAgentUnavailable, "删除证书文件失败: "+agentErr.Error(), nil)
 	}
+	if err := svc.certRepo.Delete(certID); err != nil {
+		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, "文件已删除，证书记录尚未删除，可重试删除以对账", "")
+		return opID, app.NewAppError(app.ErrInternalError, "文件已删除，证书记录删除失败；请刷新并重试删除", map[string]any{"operation_id": opID, "sync_required": true})
+	}
 
-	_ = svc.opRepo.UpdateStatus(opID, "success")
+	if err := svc.opRepo.UpdateStatus(opID, "success"); err != nil {
+		return opID, app.NewAppError(app.ErrInternalError, "证书已删除，但审计状态更新失败", map[string]any{"operation_id": opID})
+	}
 	slog.Info("证书已从证书夹删除", "cert_id", certID, "name", cert.Name)
 
 	return opID, nil
@@ -846,12 +911,17 @@ func (svc *Service) DeleteFromStore(ctx context.Context, certID string, requestI
 
 // DeployFromStore 从证书夹部署证书到站点
 func (svc *Service) DeployFromStore(ctx context.Context, certID string, req *DeployFromStoreRequest, requestID string) (*SSLResponse, string, error) {
+	svc.certificateMu.Lock()
+	defer svc.certificateMu.Unlock()
 	cert, err := svc.certRepo.GetByID(certID)
 	if err != nil {
 		return nil, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if cert == nil {
 		return nil, "", app.NewAppError(app.ErrNotFound, "证书不存在", nil)
+	}
+	if svc.certificateSource(cert) == "external" {
+		return nil, "", app.NewAppError(app.ErrValidationFailed, "外部接管证书目前只读；不能通过 marker 部署修改导入配置", nil)
 	}
 
 	site, err := svc.siteRepo.GetByID(req.SiteID)
@@ -861,13 +931,28 @@ func (svc *Service) DeployFromStore(ctx context.Context, certID string, req *Dep
 	if site == nil {
 		return nil, "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
 	}
+	if site.MaintenanceEnabled || site.MaintenancePending {
+		return nil, "", app.NewAppError(app.ErrConflict, "维护保护中，请使用证书夹预览局部替换；其他 SSL 配置需先恢复访问", nil)
+	}
 
 	inspectResp, err := svc.agent.SSLInspectFiles(ctx, cert.CertPath, cert.KeyPath)
 	if err != nil {
 		return nil, "", app.NewAppError(app.ErrValidationFailed, "证书文件检查失败: "+err.Error(), nil)
 	}
 
-	previousSSL, _ := svc.sslRepo.GetBySiteID(req.SiteID)
+	// Validate the configuration before persisting SSL state. Imported sites do
+	// not need marker migration merely to scan or associate a certificate.
+	current, err := svc.agent.ReadFile(ctx, site.ConfigPath)
+	if err != nil {
+		return nil, "", app.NewAppError(app.ErrAgentUnavailable, "读取站点配置失败", nil)
+	}
+	if status := nginx.ValidateRequiredMarkers(current, []string{nginx.MarkerNameListen}); !status.Valid {
+		return nil, "", app.NewAppError(app.ErrValidationFailed, "该配置不可通过 marker 部署，请使用安全局部替换", nil)
+	}
+	previousSSL, err := svc.sslRepo.GetBySiteID(req.SiteID)
+	if err != nil {
+		return nil, "", app.NewAppError(app.ErrInternalError, "读取 SSL 状态失败", nil)
+	}
 
 	dnsNamesJSON, _ := json.Marshal(inspectResp.DNSNames)
 	sslRow := &repo.SiteSSL{
@@ -892,6 +977,7 @@ func (svc *Service) DeployFromStore(ctx context.Context, certID string, req *Dep
 
 	configContent, err := svc.renderConfig(ctx, site, sslRow)
 	if err != nil {
+		svc.rollbackSSL(req.SiteID, previousSSL)
 		return nil, "", err
 	}
 
@@ -909,6 +995,7 @@ func (svc *Service) DeployFromStore(ctx context.Context, certID string, req *Dep
 			{
 				Type:          "write",
 				Path:          site.ConfigPath,
+				ExpectedHash:  nginx.HashContent(current),
 				ContentBase64: base64.StdEncoding.EncodeToString([]byte(configContent)),
 				Perm:          0644,
 			},
@@ -943,6 +1030,16 @@ func (svc *Service) DeployFromStore(ctx context.Context, certID string, req *Dep
 
 // GetContent 读取当前 SSL 证书和私钥的 PEM 内容
 func (svc *Service) GetContent(ctx context.Context, siteID string) (string, string, error) {
+	site, siteErr := svc.siteRepo.GetByIDContext(ctx, siteID)
+	if siteErr != nil {
+		return "", "", app.NewAppError(app.ErrInternalError, "读取站点失败", nil)
+	}
+	if site == nil {
+		return "", "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if site.ConfigPath == site.EnabledPath || site.MaintenanceEnabled || site.MaintenancePending {
+		return "", "", app.NewAppError(app.ErrConflict, "导入或维护站点不返回私钥，请通过证书夹上传并局部替换", nil)
+	}
 	ssl, err := svc.sslRepo.GetBySiteID(siteID)
 	if err != nil {
 		return "", "", app.NewAppError(app.ErrInternalError, err.Error(), nil)

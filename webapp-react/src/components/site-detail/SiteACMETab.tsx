@@ -65,7 +65,7 @@ export function SiteACMETab({ site, onChanged }: SiteACMETabProps) {
   const columns = useMemo<MRT_ColumnDef<ACMEOrderItem>[]>(() => [
     { accessorKey: 'domains', header: '域名', size: 220, Cell: ({ row }) => <MonoText value={row.original.domains?.join(', ') || '-'} maxWidth={260} /> },
     { accessorKey: 'expires_at', header: '到期时间', size: 170, Cell: ({ row }) => <TimeCell value={row.original.expires_at} /> },
-    { accessorKey: 'status', header: '状态', size: 120, Cell: ({ row }) => <Badge color={statusColor(row.original.status)} variant="light">{statusLabel(row.original.status)}</Badge> },
+    { accessorKey: 'status', header: '状态', size: 120, Cell: ({ row }) => <Badge color={row.original.error_type ? 'red' : statusColor(row.original.status)} variant="light">{row.original.status === 'success' && row.original.error_type ? '已签发，需处理' : statusLabel(row.original.status)}</Badge> },
     { accessorKey: 'email', header: '邮箱', size: 180, Cell: ({ row }) => <MonoText value={row.original.email || '-'} maxWidth={220} /> },
   ], [])
 
@@ -83,6 +83,12 @@ export function SiteACMETab({ site, onChanged }: SiteACMETabProps) {
       queryClient.setQueryData(ordersQueryKey, orders)
       const order = orders.find((item) => item.id === orderId)
       if (!order) return
+      if (order.status === 'success' && order.error_type) {
+        setLogOrderId(null)
+        setErrorOrder(order)
+        await onChanged()
+        return
+      }
       if (order.status === 'success') {
         setLogOrderId(null)
         notifySuccess({ message: '证书申请成功，已自动部署' })
@@ -215,7 +221,7 @@ export function SiteACMETab({ site, onChanged }: SiteACMETabProps) {
               {order.status === 'success' ? <Tooltip label="下载"><ActionIcon variant="subtle" onClick={() => handleDownload(order)}><IconDownload size={16} /></ActionIcon></Tooltip> : null}
               {order.status === 'success' ? <Tooltip label="续签"><ActionIcon variant="subtle" loading={renewMutation.isPending} onClick={() => handleRenew(order)}><IconRefresh size={16} /></ActionIcon></Tooltip> : null}
               {order.status === 'pre_validation_failed' ? <Tooltip label="继续提交"><ActionIcon color="yellow" variant="subtle" loading={forceMutation.isPending} onClick={() => handleForce(order)}><IconPlayerPlay size={16} /></ActionIcon></Tooltip> : null}
-              {order.status === 'failed' || order.status === 'pre_validation_failed' ? <Tooltip label="失败详情"><ActionIcon color="red" variant="subtle" onClick={() => setErrorOrder(order)}><IconEye size={16} /></ActionIcon></Tooltip> : null}
+              {order.error_type || order.status === 'failed' || order.status === 'pre_validation_failed' ? <Tooltip label="失败详情"><ActionIcon color="red" variant="subtle" onClick={() => setErrorOrder(order)}><IconEye size={16} /></ActionIcon></Tooltip> : null}
               {order.status === 'success' ? <Switch checked={order.auto_renew} disabled={autoRenewMutation.isPending} onChange={(event) => handleAutoRenew(order, event.currentTarget.checked)} /> : null}
               <Tooltip label="删除"><ActionIcon color="red" variant="subtle" loading={deleteMutation.isPending} onClick={() => handleDelete(order)}><IconTrash size={16} /></ActionIcon></Tooltip>
             </Group>

@@ -6,7 +6,7 @@ import type { SiteDetail } from '@/api/types'
 import { StatusBadge } from '@/components/common/StatusBadge'
 import { notifyError, notifySuccess } from '@/utils/notify'
 
-export type SiteDetailTab = 'basic' | 'document' | 'proxy' | 'access-limit' | 'hotlink' | 'ssl' | 'rewrite' | 'config' | 'files' | 'logs' | 'operations'
+export type SiteDetailTab = 'basic' | 'document' | 'proxy' | 'access-limit' | 'hotlink' | 'ssl' | 'rewrite' | 'config' | 'files' | 'logs' | 'operations' | 'maintenance'
 
 interface SiteTabItem {
   value: SiteDetailTab
@@ -17,12 +17,13 @@ interface SiteTabItem {
 }
 
 const tabItems: SiteTabItem[] = [
+  { value: 'maintenance', label: '网站维护', description: '保持 HTTPS 和监听，临时返回 503 维护页面；可编辑页面并安全恢复访问。', icon: <IconSettings size={16} /> },
   { value: 'basic', label: '基础配置', description: '修改域名绑定、站点根目录、默认首页、HTTPS 端口和访问日志开关。', icon: <IconSettings size={16} />, importedDisabled: true },
   { value: 'document', label: '默认文档', description: '配置默认首页顺序、目录浏览 autoindex，以及站点内 403/404 错误页 URI。', icon: <IconFileDescription size={16} />, importedDisabled: true },
   { value: 'proxy', label: '反向代理', description: '为当前站点配置一个或多个 location 反代规则，保存后会由后端测试并 reload Nginx。', icon: <IconRoute size={16} />, importedDisabled: true },
-  { value: 'access-limit', label: '访问限制', description: '管理加密访问和禁止访问规则，规则保存后由后端更新独立 include 文件。', icon: <IconKey size={16} />, importedDisabled: true },
-  { value: 'hotlink', label: '防盗链', description: '管理站点级 Referer 防盗链规则，保存后会重写独立 hotlink include 文件。', icon: <IconShield size={16} />, importedDisabled: true },
-  { value: 'ssl', label: 'SSL', description: '部署手动 PEM、使用已有证书文件或从证书夹部署证书。', icon: <IconLock size={16} />, importedDisabled: true },
+  { value: 'access-limit', label: '访问限制', description: '管理 IP、地域、路径和密码验证规则，组合条件并调整执行顺序。', icon: <IconKey size={16} />, importedDisabled: true },
+  { value: 'hotlink', label: '防盗链', description: '管理请求来源限制；统一策略模式下可与其他访问规则组合排序。', icon: <IconShield size={16} />, importedDisabled: true },
+  { value: 'ssl', label: 'SSL', description: '管理 SSL，或在证书夹内扫描并关联已有站点证书。', icon: <IconLock size={16} /> },
   { value: 'rewrite', label: 'Location', description: 'Location 用于按访问路径配置站点规则，例如 /api 反向代理、/uploads 静态目录、/admin 访问限制等。', icon: <IconFileText size={16} />, importedDisabled: true },
   { value: 'config', label: '站点配置', description: '直接编辑当前站点 Nginx 配置文件，需要保留哨兵标记块，否则基础配置、SSL、反向代理等表单功能将无法安全修改对应片段。', icon: <IconCode size={16} /> },
   { value: 'files', label: '文件管理', description: '管理当前站点根目录下的文件，文件浏览器会锁定在站点根目录内。', icon: <IconFolder size={16} /> },
@@ -43,7 +44,12 @@ export function isImportedDisabledTab(site: SiteDetail | null | undefined, tab: 
 }
 
 export function fallbackSiteDetailTab(site: SiteDetail | null | undefined, tab: SiteDetailTab): SiteDetailTab {
+  if (isMaintenanceDisabledTab(site, tab)) return 'maintenance'
   return isImportedDisabledTab(site, tab) ? 'config' : tab
+}
+
+function isMaintenanceDisabledTab(site: SiteDetail | null | undefined, tab: SiteDetailTab): boolean {
+  return Boolean((site?.maintenance_enabled || site?.maintenance_pending) && ['basic', 'document', 'proxy', 'access-limit', 'hotlink', 'rewrite', 'config'].includes(tab))
 }
 
 export function getSiteDetailTabMeta(tab: SiteDetailTab): Pick<SiteTabItem, 'label' | 'description'> {
@@ -58,7 +64,7 @@ export function SiteDetailShell({ site, activeTab, onTabChange, children, action
   const selectData = tabItems.map((item) => ({
     value: item.value,
     label: item.importedDisabled && site.is_imported ? `${item.label}（旧站点不可用）` : item.label,
-    disabled: item.importedDisabled && site.is_imported,
+    disabled: Boolean(item.importedDisabled && site.is_imported) || isMaintenanceDisabledTab(site, item.value),
   }))
 
   function openPrimaryDomain() {
@@ -121,7 +127,7 @@ export function SiteDetailShell({ site, activeTab, onTabChange, children, action
           <ScrollArea className="siteDetailNav">
             <Stack gap={6}>
               {tabItems.map((item) => {
-                const disabled = Boolean(item.importedDisabled && site.is_imported)
+                const disabled = Boolean(item.importedDisabled && site.is_imported) || isMaintenanceDisabledTab(site, item.value)
                 return (
                   <Button
                     key={item.value}

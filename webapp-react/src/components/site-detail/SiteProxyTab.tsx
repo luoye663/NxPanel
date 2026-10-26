@@ -18,8 +18,9 @@ import { siteDetailKeys } from '@/hooks/useSiteDetail'
 import { confirmDanger } from '@/utils/confirm'
 import { showErrorModal } from '@/utils/errorModal'
 import { notifySuccess } from '@/utils/notify'
+import { accessPolicyKeys, getAccessPolicy } from '@/api/accessPolicy'
 
-interface SiteProxyTabProps { site: SiteDetail }
+interface SiteProxyTabProps { site: SiteDetail; onOpenAccessPolicy: (sourceId?: string) => void }
 type ProxyFormValues = CreateProxyRequest & { target_mode: 'direct' | 'managed' }
 
 const UpstreamManagerModal = lazy(() => import('@/components/nginx/UpstreamManagerModal'))
@@ -50,13 +51,13 @@ function toProxyForm(proxy: SiteProxy): ProxyFormValues {
   }
 }
 
-function toProxyRequest(values: ProxyFormValues): CreateProxyRequest {
+function toProxyRequest(values: ProxyFormValues, unified = false): CreateProxyRequest {
   const common = {
     name: values.name.trim(), enabled: values.enabled, location_path: values.location_path.trim(),
     host_header: values.host_header.trim(), websocket_enabled: values.websocket_enabled,
     connect_timeout: values.connect_timeout, send_timeout: values.send_timeout, read_timeout: values.read_timeout,
     cache_enabled: values.cache_enabled, cache_type: values.cache_type, cache_time: values.cache_time,
-    auth_enabled: values.auth_enabled, auth_account_ids: values.auth_enabled ? values.auth_account_ids : [],
+    ...(unified ? {} : { auth_enabled: values.auth_enabled, auth_account_ids: values.auth_enabled ? values.auth_account_ids : [] }),
   }
   if (values.target_mode === 'direct') {
     return {
@@ -93,7 +94,7 @@ function validCAPath(value: string): boolean {
   return value.startsWith('/') && !/[\0\n\r\t ;{}"'#\\]/.test(value)
 }
 
-export function SiteProxyTab({ site }: SiteProxyTabProps) {
+export function SiteProxyTab({ site, onOpenAccessPolicy }: SiteProxyTabProps) {
   const mobile = useMediaQuery('(max-width: 48rem)')
   const queryClient = useQueryClient()
   const [opened, handlers] = useDisclosure(false)
@@ -102,9 +103,11 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
   const [editingProxy, setEditingProxy] = useState<SiteProxy | null>(null)
   const proxyQueryKey = ['site-detail', site.id, 'proxy'] as const
   const proxyQuery = useQuery({ queryKey: proxyQueryKey, queryFn: () => listProxies(site.id) })
+  const policyQuery = useQuery({ queryKey: accessPolicyKeys.site(site.id), queryFn: () => getAccessPolicy(site.id) })
+  const unified = policyQuery.data?.mode === 'unified' || (policyQuery.data?.version || 0) > 0
   const upstreamQuery = useQuery({ queryKey: upstreamKeys.all, queryFn: listUpstreams })
-  const saveMutation = useMutation({ mutationFn: (values: ProxyFormValues) => editingProxy ? updateProxy(site.id, editingProxy.id, toProxyRequest(values)) : createProxy(site.id, toProxyRequest(values)) })
-  const toggleMutation = useMutation({ mutationFn: ({ proxy, enabled }: { proxy: SiteProxy; enabled: boolean }) => updateProxy(site.id, proxy.id, toProxyRequest({ ...toProxyForm(proxy), enabled })) })
+  const saveMutation = useMutation({ mutationFn: (values: ProxyFormValues) => editingProxy ? updateProxy(site.id, editingProxy.id, toProxyRequest(values, unified)) : createProxy(site.id, toProxyRequest(values, unified)) })
+  const toggleMutation = useMutation({ mutationFn: ({ proxy, enabled }: { proxy: SiteProxy; enabled: boolean }) => updateProxy(site.id, proxy.id, toProxyRequest({ ...toProxyForm(proxy), enabled }, unified)) })
   const deleteMutation = useMutation({ mutationFn: (proxyId: string) => deleteProxy(site.id, proxyId) })
   const syncMutation = useMutation({ mutationFn: () => syncProxy(site.id) })
   const markerMissing = isProxyMarkerMissing(site)
@@ -127,7 +130,7 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
       send_timeout: (value, values) => !values.websocket_enabled || (value >= 1 && value <= 3600) ? null : '发送超时范围为 1-3600 秒',
       read_timeout: (value, values) => !values.websocket_enabled || (value >= 1 && value <= 3600) ? null : '读取超时范围为 1-3600 秒',
       cache_time: (value, values) => !values.cache_enabled || (value >= 1 && value <= 10080) ? null : '缓存时间范围为 1-10080 分钟',
-      auth_account_ids: (value, values) => !values.auth_enabled || (value && value.length > 0) ? null : '请选择至少一个账户',
+      auth_account_ids: (value, values) => unified || !values.auth_enabled || (value && value.length > 0) ? null : '请选择至少一个账户',
     },
   })
 
@@ -141,8 +144,8 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
       return <MonoText value={value} maxWidth={280} />
     } },
     { accessorKey: 'cache_enabled', header: '缓存', size: 90, Cell: ({ row }) => <Badge color={row.original.cache_enabled ? 'green' : 'gray'} variant="light">{row.original.cache_enabled ? '是' : '否'}</Badge> },
-    { accessorKey: 'auth_enabled', header: '访问限制', size: 100, Cell: ({ row }) => <Badge color={row.original.auth_enabled ? 'blue' : 'gray'} variant="light">{row.original.auth_enabled ? `${row.original.auth_account_ids?.length || 0} 个账户` : '关闭'}</Badge> },
-    { accessorKey: 'enabled', header: '状态', size: 90, Cell: ({ row }) => <Switch checked={row.original.enabled} disabled={toggleMutation.isPending} onChange={(event) => handleToggle(row.original, event.currentTarget.checked)} /> },
+    { accessorKey: 'auth_enabled', header: '访问限制', size: 100, Cell: ({ row }) => unified ? <Button size="xs" variant="subtle" onClick={() => onOpenAccessPolicy(row.original.id)}>统一策略</Button> : <Badge color={row.original.auth_enabled ? 'blue' : 'gray'} variant="light">{row.original.auth_enabled ? `${row.original.auth_account_ids?.length || 0} 个账户` : '关闭'}</Badge> },
+    { accessorKey: 'enabled', header: '状态', size: 90, Cell: ({ row }) => <Switch checked={row.original.enabled} disabled={toggleMutation.isPending || !policyQuery.isSuccess} onChange={(event) => handleToggle(row.original, event.currentTarget.checked)} /> },
   ]
 
   function openCreate() { setEditingProxy(null); form.setValues(defaultProxyForm); form.clearErrors(); handlers.open() }
@@ -247,9 +250,10 @@ export function SiteProxyTab({ site }: SiteProxyTabProps) {
               <Divider label="高级配置" labelPosition="left" />
               <Switch label="WebSocket" {...form.getInputProps('websocket_enabled', { type: 'checkbox' })} />
               {form.values.websocket_enabled ? <Group grow align="flex-start" className="proxyResponsiveGroup"><NumberInput label="连接超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('connect_timeout')} /><NumberInput label="发送超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('send_timeout')} /><NumberInput label="读取超时（秒）" min={1} max={3600} allowDecimal={false} {...form.getInputProps('read_timeout')} /></Group> : null}
-              <Switch label="访问限制" {...form.getInputProps('auth_enabled', { type: 'checkbox' })} />
-              {form.values.auth_enabled ? <Stack gap="xs"><Group justify="space-between"><Text size="sm" fw={500}>账户</Text><Button size="xs" variant="subtle" onClick={accountManagerHandlers.open}>账户管理</Button></Group><AuthAccountSelector siteId={site.id} value={form.values.auth_account_ids || []} onChange={(value) => form.setFieldValue('auth_account_ids', value)} />{form.errors.auth_account_ids ? <Text size="xs" c="red">{form.errors.auth_account_ids}</Text> : null}</Stack> : null}
-              <Group justify="flex-end" className="proxyModalActions"><Button variant="default" onClick={handlers.close}>取消</Button><Button type="submit" loading={saveMutation.isPending}>{editingProxy ? '保存' : '添加'}</Button></Group>
+              {unified ? <Alert color="blue"><Stack gap="xs"><Text>密码验证由统一访问策略管理。可使用此代理路径作为条件，并调整它与 IP、地域规则的顺序。</Text><Group><Button variant="light" onClick={() => { if (form.isDirty() && !window.confirm('放弃未保存的代理修改并打开访问策略？')) return; handlers.close(); onOpenAccessPolicy(editingProxy?.id) }}>打开访问策略</Button></Group></Stack></Alert> : <><Switch label="访问限制" disabled={!policyQuery.isSuccess} {...form.getInputProps('auth_enabled', { type: 'checkbox' })} />
+              {form.values.auth_enabled ? <Stack gap="xs"><Group justify="space-between"><Text size="sm" fw={500}>账户</Text><Button size="xs" variant="subtle" onClick={accountManagerHandlers.open}>账户管理</Button></Group><AuthAccountSelector siteId={site.id} value={form.values.auth_account_ids || []} onChange={(value) => form.setFieldValue('auth_account_ids', value)} />{form.errors.auth_account_ids ? <Text size="xs" c="red">{form.errors.auth_account_ids}</Text> : null}</Stack> : null}</>}
+              {policyQuery.error ? <Stack><ErrorAlert error={policyQuery.error} title="读取访问策略失败" /><Button variant="default" onClick={() => policyQuery.refetch()}>重试</Button></Stack> : null}
+              <Group justify="flex-end" className="proxyModalActions"><Button variant="default" onClick={handlers.close}>取消</Button><Button type="submit" loading={saveMutation.isPending} disabled={!policyQuery.isSuccess}>{editingProxy ? '保存' : '添加'}</Button></Group>
             </Stack>
           </form>
         </Modal>

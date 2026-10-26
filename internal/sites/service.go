@@ -16,19 +16,23 @@ import (
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/nginx"
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
 	"github.com/luoye663/nxpanel/internal/parser"
 )
 
 type Service struct {
-	db          *sql.DB
-	siteRepo    *repo.SiteRepo
-	proxyRepo   *repo.ProxyRepo
-	sslRepo     *repo.SSLRepo
-	rewriteRepo *repo.RewriteRepo
-	opRepo      *repo.OperationRepo
-	agent       *agentclient.Client
-	cfg         *app.Config
-	settingsSvc SettingsServiceProvider
+	prepareAccessPolicyCreate func(*repo.Site, []agentclient.FileChangeRequest) ([]agentclient.FileChangeRequest, error)
+	finishAccessPolicyCreate  func(string) error
+	deleteAccessPolicyFiles   func(string) []agentclient.FileChangeRequest
+	db                        *sql.DB
+	siteRepo                  *repo.SiteRepo
+	proxyRepo                 *repo.ProxyRepo
+	sslRepo                   *repo.SSLRepo
+	rewriteRepo               *repo.RewriteRepo
+	opRepo                    *repo.OperationRepo
+	agent                     *agentclient.Client
+	cfg                       *app.Config
+	settingsSvc               SettingsServiceProvider
 
 	// rootsFn 返回 Agent 当前的有效白名单根目录，默认走 agent.FilesRoots。
 	// 可在测试中注入以便脱离真实 Agent。
@@ -71,6 +75,13 @@ func NewService(
 
 func (svc *Service) SetSettingsProvider(p SettingsServiceProvider) {
 	svc.settingsSvc = p
+}
+
+// SetAccessPolicyHooks is configured once during dependency initialization.
+func (svc *Service) SetAccessPolicyHooks(prepare func(*repo.Site, []agentclient.FileChangeRequest) ([]agentclient.FileChangeRequest, error), finish func(string) error, deleteFiles func(string) []agentclient.FileChangeRequest) {
+	svc.prepareAccessPolicyCreate = prepare
+	svc.finishAccessPolicyCreate = finish
+	svc.deleteAccessPolicyFiles = deleteFiles
 }
 
 func (svc *Service) Create(ctx context.Context, req *CreateSiteRequest, requestID string) (*repo.Site, string, error) {
@@ -251,6 +262,14 @@ func (svc *Service) Create(ctx context.Context, req *CreateSiteRequest, requestI
 		}
 	}
 
+	if svc.prepareAccessPolicyCreate != nil {
+		changes, err = svc.prepareAccessPolicyCreate(site, changes)
+		if err != nil {
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
+			return nil, "", app.NewAppError(app.ErrInternalError, "初始化访问策略失败: "+err.Error(), nil)
+		}
+	}
+
 	_, agentErr := svc.agent.ApplyTransaction(ctx, &agentclient.TransactionRequest{
 		OperationID: opID,
 		Changes:     changes,
@@ -266,6 +285,13 @@ func (svc *Service) Create(ctx context.Context, req *CreateSiteRequest, requestI
 		slog.Error("创建站点数据库记录失败", "error", err)
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
 		return nil, "", app.NewAppError(app.ErrInternalError, "创建站点失败: "+err.Error(), nil)
+	}
+
+	if svc.finishAccessPolicyCreate != nil {
+		if err := svc.finishAccessPolicyCreate(site.ID); err != nil {
+			_ = svc.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
+			return nil, "", app.NewAppError(app.ErrInternalError, "站点配置已创建，但访问策略元数据初始化失败，请检查后同步: "+err.Error(), nil)
+		}
 	}
 
 	_ = svc.opRepo.UpdateStatus(opID, "success")
@@ -397,7 +423,10 @@ func (svc *Service) RefreshLogPaths(ctx context.Context, site *repo.Site) (*repo
 	if err != nil {
 		return site, false
 	}
-	accessLog, errorLog := parser.ExtractServerLogPaths(string(content))
+	accessLog, errorLog, locateErr := nginxpatch.ServerLogPaths(string(content), site.PrimaryDomain)
+	if locateErr != nil {
+		return site, false
+	}
 	changed := false
 	if accessLog != site.AccessLogPath {
 		site.AccessLogPath = accessLog
@@ -613,12 +642,20 @@ func (svc *Service) Enable(ctx context.Context, siteID string, req *EnableSiteRe
 }
 
 func (svc *Service) Disable(ctx context.Context, siteID string, req *DisableSiteRequest, requestID string) (string, string, error) {
+	if blocked, err := repo.NewMaintenanceRepo(svc.db).Blocked(ctx, siteID); err != nil {
+		return "", "", err
+	} else if blocked {
+		return "", "", app.NewAppError(app.ErrConflict, "请先恢复访问并完成维护对账，再禁用网站", nil)
+	}
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
 		return "", "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if site == nil {
 		return "", "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if err := svc.checkImportedOwnership(ctx, site); err != nil {
+		return "", "", err
 	}
 	if site.Status == "disabled" {
 		return "", "", app.NewAppError(app.ErrConflict, "站点已经处于禁用状态", nil)
@@ -652,12 +689,20 @@ func (svc *Service) Disable(ctx context.Context, siteID string, req *DisableSite
 }
 
 func (svc *Service) Delete(ctx context.Context, siteID string, req *DeleteSiteRequest, requestID string) (bool, string, error) {
+	if blocked, err := repo.NewMaintenanceRepo(svc.db).Blocked(ctx, siteID); err != nil {
+		return false, "", err
+	} else if blocked {
+		return false, "", app.NewAppError(app.ErrConflict, "请先恢复访问并完成维护对账，再删除网站", nil)
+	}
 	site, err := svc.siteRepo.GetByID(siteID)
 	if err != nil {
 		return false, "", app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	if site == nil {
 		return false, "", app.NewAppError(app.ErrNotFound, "站点不存在", nil)
+	}
+	if err := svc.checkImportedOwnership(ctx, site); err != nil {
+		return false, "", err
 	}
 
 	opID := app.NewOperationID()
@@ -705,6 +750,10 @@ func (svc *Service) Delete(ctx context.Context, siteID string, req *DeleteSiteRe
 		}
 	}
 
+	if svc.deleteAccessPolicyFiles != nil {
+		changes = append(changes, svc.deleteAccessPolicyFiles(siteID)...)
+	}
+
 	_, agentErr := svc.agent.ApplyTransaction(ctx, &agentclient.TransactionRequest{
 		OperationID: opID,
 		Changes:     changes,
@@ -748,6 +797,10 @@ func (svc *Service) ImportScan(ctx context.Context, requestID string) (*ImportSc
 	}
 
 	parsed := parser.ParseNginxDump(dumpResp.Stdout)
+	serverCounts := map[string]int{}
+	for _, p := range parsed {
+		serverCounts[p.SourceFile]++
+	}
 
 	managedPaths := svc.getManagedConfigPaths()
 
@@ -766,7 +819,11 @@ func (svc *Service) ImportScan(ctx context.Context, requestID string) (*ImportSc
 			continue
 		}
 		warnings := importWarningsForPaths(roots, p.SourceFile, p.RootPath, p.AccessLogPath, p.ErrorLogPath)
+		if serverCounts[p.SourceFile] > 1 {
+			warnings = append(warnings, "此文件包含多个 server：请选择明确目标；同一文件仅接管一个站点，整站禁用/删除前必须先拆分配置")
+		}
 		items = append(items, ImportScanItem{
+			ServerHash:      nginxpatch.Hash(p.RawBlock),
 			SourceFile:      p.SourceFile,
 			ServerNames:     p.ServerNames,
 			Listen:          p.Listen,
@@ -857,15 +914,9 @@ func (svc *Service) Import(ctx context.Context, req *ImportSiteRequest, requestI
 
 	parsed := parser.ParseNginxDump(dumpResp.Stdout)
 
-	var target *parser.ParsedServer
-	for _, p := range parsed {
-		if p.SourceFile == req.SourceFile {
-			target = p
-			break
-		}
-	}
-	if target == nil {
-		return nil, app.NewAppError(app.ErrNotFound, "未找到配置文件对应的 server block: "+req.SourceFile, nil)
+	target, err := selectImportTarget(parsed, req)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(target.ServerNames) == 0 {

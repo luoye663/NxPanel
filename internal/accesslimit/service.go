@@ -48,6 +48,9 @@ type Service struct {
 	configReader        configReader
 	panelDir            string
 	geoSyncer           geoAccessSyncer
+	policyManaged       func(string) bool
+	policyAccountCheck  func(string, *repo.AuthAccount) error
+	policyRefresh       func(context.Context, string) error
 }
 
 type geoAccessSyncer interface {
@@ -337,6 +340,11 @@ func (svc *Service) UpdateAuthAccount(ctx context.Context, siteID, accountID str
 	updated.ID = accountID
 	updated.PasswordHash = passwordHash
 	updated.CreatedAt = account.CreatedAt
+	if svc.policyAccountCheck != nil {
+		if err := svc.policyAccountCheck(accountID, updated); err != nil {
+			return nil, err
+		}
+	}
 	if !updated.Enabled {
 		if err := svc.ensureAccountCanBeDisabled(account.ID); err != nil {
 			return nil, err
@@ -367,7 +375,12 @@ func (svc *Service) DeleteAuthAccount(ctx context.Context, siteID, accountID str
 	if account == nil || !accountVisibleForSite(account, siteID) {
 		return app.NewAppError(app.ErrNotFound, "账户不存在", nil)
 	}
-	refs, err := svc.accountRepo.CountReferences(accountID)
+	if svc.policyAccountCheck != nil {
+		if err := svc.policyAccountCheck(accountID, nil); err != nil {
+			return err
+		}
+	}
+	refs, err := svc.legacyAccountReferences(accountID)
 	if err != nil {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
@@ -1238,6 +1251,15 @@ func (svc *Service) ensureAccountCanBeDisabled(accountID string) error {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	for _, ruleID := range ruleIDs {
+		if svc.policyManaged != nil {
+			rule, err := svc.authRuleRepo.GetByID(ruleID)
+			if err != nil {
+				return err
+			}
+			if rule != nil && svc.policyManaged(rule.SiteID) {
+				continue
+			}
+		}
 		accounts, err := svc.accountsForAuthRule(ruleID)
 		if err != nil {
 			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
@@ -1264,7 +1286,7 @@ func (svc *Service) ensureAccountCanBeDisabled(accountID string) error {
 		if err != nil {
 			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 		}
-		if proxy == nil || !proxy.AuthEnabled {
+		if proxy == nil || !proxy.AuthEnabled || (svc.policyManaged != nil && svc.policyManaged(proxy.SiteID)) {
 			continue
 		}
 		accounts, err := svc.accountsForProxy(proxyID)
@@ -1304,6 +1326,11 @@ func (svc *Service) accountsForProxy(proxyID string) ([]*repo.AuthAccount, error
 }
 
 func (svc *Service) refreshAccountReferences(ctx context.Context, account *repo.AuthAccount, requestID string) error {
+	if svc.policyRefresh != nil {
+		if err := svc.policyRefresh(ctx, requestID); err != nil {
+			return err
+		}
+	}
 	ruleIDs, err := svc.authRuleRepo.ListRuleIDsByAccountID(account.ID)
 	if err != nil {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
@@ -1314,7 +1341,7 @@ func (svc *Service) refreshAccountReferences(ctx context.Context, account *repo.
 		if err != nil {
 			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 		}
-		if rule == nil {
+		if rule == nil || (svc.policyManaged != nil && svc.policyManaged(rule.SiteID)) {
 			continue
 		}
 		site, ok := visitedSites[rule.SiteID]
@@ -1357,7 +1384,7 @@ func (svc *Service) refreshAccountReferences(ctx context.Context, account *repo.
 		if err != nil {
 			return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 		}
-		if proxy == nil || !proxy.AuthEnabled {
+		if proxy == nil || !proxy.AuthEnabled || (svc.policyManaged != nil && svc.policyManaged(proxy.SiteID)) {
 			continue
 		}
 		accounts, err := svc.accountsForProxy(proxy.ID)
