@@ -1,6 +1,7 @@
 package accesspolicy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luoye663/nxpanel/internal/agentclient"
+	"github.com/luoye663/nxpanel/internal/configpreflight"
 	"github.com/luoye663/nxpanel/internal/db/repo"
 )
 
@@ -53,7 +55,7 @@ func TestConfigGuardFindsAccessInNestedIncludes(t *testing.T) {
 			service, agent, site := configGuardFixture()
 			agent.files["/panel/rewrite/site.conf"] = []byte("location /admin { include snippets/access.conf; }")
 			agent.files["/etc/nginx/snippets/access.conf"] = []byte(directive)
-			err := service.CheckConfig(context.Background(), site, []byte("server { include /panel/rewrite/site.conf; }"))
+			err := service.diagnosticError(context.Background(), site, []byte("server { include /panel/rewrite/site.conf; }"))
 			if err == nil || !strings.Contains(err.Error(), "/etc/nginx/snippets/access.conf") || !strings.Contains(err.Error(), strings.Fields(directive)[0]) {
 				t.Fatalf("nested conflict missed: %v", err)
 			}
@@ -66,12 +68,12 @@ func TestConfigGuardFindsHTTPInheritanceAndSkipsOtherServers(t *testing.T) {
 	agent.files["/etc/nginx/conf.d/other.conf"] = []byte("server { auth_basic Other; include /missing-other-site.conf; location / { return 403; } }")
 	agent.files["/etc/nginx/conf.d/data.conf"] = []byte("map $http_user_agent $x { default 0; return 1; } upstream backend { server 127.0.0.1:8080; }")
 	main := []byte("server { location / { proxy_pass http://backend; } }")
-	if err := service.CheckConfig(context.Background(), site, main); err != nil {
+	if err := service.diagnosticError(context.Background(), site, main); err != nil {
 		t.Fatalf("other server/data falsely flagged: %v", err)
 	}
 	agent.files["/etc/nginx/conf.d/inherited.conf"] = []byte("include inherited-auth.conf;")
 	agent.files["/etc/nginx/inherited-auth.conf"] = []byte("auth_basic \"Inherited\"; auth_basic_user_file /etc/nginx/passwords;")
-	err := service.CheckConfig(context.Background(), site, main)
+	err := service.diagnosticError(context.Background(), site, main)
 	if err == nil || !strings.Contains(err.Error(), "/etc/nginx/inherited-auth.conf") || !strings.Contains(err.Error(), "auth_basic") {
 		t.Fatalf("HTTP inheritance missed: %v", err)
 	}
@@ -81,12 +83,12 @@ func TestConfigGuardRelativeStandardIncludesUseMainConfigDirectory(t *testing.T)
 	service, agent, site := configGuardFixture()
 	agent.files["/etc/nginx/fastcgi_params"] = []byte("fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; fastcgi_param EMPTY \"\";")
 	main := []byte("server { location / { include fastcgi_params; fastcgi_pass unix:/tmp/php.sock; } }")
-	if err := service.CheckConfig(context.Background(), site, main); err != nil {
+	if err := service.diagnosticError(context.Background(), site, main); err != nil {
 		t.Fatal(err)
 	}
 	delete(agent.files, "/etc/nginx/fastcgi_params")
 	agent.files["/panel/sites/fastcgi_params"] = []byte("fastcgi_param WRONG_LOCATION 1;")
-	if err := service.CheckConfig(context.Background(), site, main); err == nil || !strings.Contains(err.Error(), "/etc/nginx/fastcgi_params") {
+	if err := service.diagnosticError(context.Background(), site, main); err == nil || !strings.Contains(err.Error(), "/etc/nginx/fastcgi_params") {
 		t.Fatalf("include resolved against site directory: %v", err)
 	}
 }
@@ -95,27 +97,27 @@ func TestConfigGuardOnlySkipsOwnedAccessBlocks(t *testing.T) {
 	service, agent, site := configGuardFixture()
 	main := []byte("server {\n#NXPANEL-ACCESS-LIMIT-START\ninclude /missing-old-ip.conf;\n#NXPANEL-ACCESS-LIMIT-END\n#NXPANEL-HOTLINK-START\ninclude /missing-old-hotlink.conf;\n#NXPANEL-HOTLINK-END\n#NXPANEL-FORCE-HTTPS-START\nreturn 301 https://$host$request_uri;\n#NXPANEL-FORCE-HTTPS-END\n#NXPANEL-REWRITE-START\ninclude /panel/rewrite/site.conf;\n#NXPANEL-REWRITE-END\n}\n")
 	agent.files["/panel/rewrite/site.conf"] = []byte("rewrite ^/old$ /new last;")
-	if err := service.CheckConfig(context.Background(), site, main); err != nil {
+	if err := service.diagnosticError(context.Background(), site, main); err != nil {
 		t.Fatal(err)
 	}
 	agent.files["/panel/rewrite/site.conf"] = []byte("if ($request_method = POST) { return 403; }")
-	if err := service.CheckConfig(context.Background(), site, main); err == nil {
+	if err := service.diagnosticError(context.Background(), site, main); err == nil {
 		t.Fatal("REWRITE include was skipped as owned access block")
 	}
 }
 
-func TestConfigGuardRejectsUnresolvedIncludes(t *testing.T) {
+func TestConfigDiagnosticReportsUnresolvedIncludes(t *testing.T) {
 	for _, path := range []string{"$dynamic.conf", "${dynamic}.conf", "conf.*/access.conf", "missing.conf", "conf.d/[invalid"} {
 		t.Run(path, func(t *testing.T) {
 			service, _, site := configGuardFixture()
-			if err := service.CheckConfig(context.Background(), site, []byte("server { include "+path+"; }")); err == nil {
+			if err := service.diagnosticError(context.Background(), site, []byte("server { include "+path+"; }")); err == nil {
 				t.Fatal("unresolved include accepted")
 			}
 		})
 	}
 	service, agent, site := configGuardFixture()
 	service.agent = agent.policyServiceAgent // No glob listing capability.
-	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err == nil || !strings.Contains(err.Error(), "通配符") {
+	if err := service.diagnosticError(context.Background(), site, []byte("server {}")); err == nil || !strings.Contains(err.Error(), "通配符") {
 		t.Fatalf("glob silently ignored: %v", err)
 	}
 }
@@ -124,13 +126,13 @@ func TestConfigGuardCyclesAndBudgets(t *testing.T) {
 	service, agent, site := configGuardFixture()
 	agent.files["/etc/nginx/a.conf"] = []byte("include b.conf;")
 	agent.files["/etc/nginx/b.conf"] = []byte("include a.conf;")
-	if err := service.CheckConfig(context.Background(), site, []byte("server { include a.conf; }")); err == nil || !strings.Contains(err.Error(), "循环") {
+	if err := service.diagnosticError(context.Background(), site, []byte("server { include a.conf; }")); err == nil || !strings.Contains(err.Error(), "循环") {
 		t.Fatalf("cycle: %v", err)
 	}
 	for i := 0; i < 18; i++ {
 		agent.files[fmt.Sprintf("/etc/nginx/depth%d.conf", i)] = []byte(fmt.Sprintf("include depth%d.conf;", i+1))
 	}
-	if err := service.CheckConfig(context.Background(), site, []byte("server { include depth0.conf; }")); err == nil || !strings.Contains(err.Error(), "16") {
+	if err := service.diagnosticError(context.Background(), site, []byte("server { include depth0.conf; }")); err == nil || !strings.Contains(err.Error(), "16") {
 		t.Fatalf("depth: %v", err)
 	}
 
@@ -163,11 +165,11 @@ func TestConfigGuardDetectFallbackAndFakeCompatibility(t *testing.T) {
 	service.nginxConfigPath = ""
 	service.agent = &detectingConfigGuardAgent{configGuardAgent: agent}
 	agent.files["/etc/nginx/nginx.conf"] = []byte("http { auth_basic inherited; }")
-	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err == nil || !strings.Contains(err.Error(), "auth_basic") {
+	if err := service.diagnosticError(context.Background(), site, []byte("server {}")); err == nil || !strings.Contains(err.Error(), "auth_basic") {
 		t.Fatalf("detect fallback did not inspect inherited config: %v", err)
 	}
 	service.agent = agent.policyServiceAgent
-	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err != nil {
+	if err := service.diagnosticError(context.Background(), site, []byte("server {}")); err != nil {
 		t.Fatalf("minimal fake compatibility: %v", err)
 	}
 }
@@ -178,25 +180,43 @@ type preflightGuardAgent struct {
 	err     error
 }
 
-func (a *preflightGuardAgent) CheckAccessConfig(_ context.Context, req *agentclient.ConfigPreflightRequest) error {
+func (a *preflightGuardAgent) DiagnoseAccessConfig(_ context.Context, req *agentclient.ConfigPreflightRequest) (configpreflight.Report, error) {
 	a.request = req
-	return a.err
+	return configpreflight.Report{Complete: a.err == nil}, a.err
 }
 func (a *preflightGuardAgent) ReadFile(context.Context, string) ([]byte, string, error) {
 	panic("RPC preflight must not read include contents through API")
 }
-func TestConfigGuardUsesAgentPreflightAndFailsClosed(t *testing.T) {
+func TestConfigDiagnosticUsesAgentAndReportsRPCFailure(t *testing.T) {
 	service, agent, site := configGuardFixture()
 	remote := &preflightGuardAgent{configGuardAgent: agent}
 	service.agent = remote
-	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err != nil {
+	if err := service.diagnosticError(context.Background(), site, []byte("server {}")); err != nil {
 		t.Fatal(err)
 	}
 	if remote.request == nil || remote.request.GlobalPath != service.nginxConfigPath || remote.request.SitePath != site.ConfigPath {
 		t.Fatalf("bad request: %+v", remote.request)
 	}
 	remote.err = fmt.Errorf("agent preflight unavailable")
-	if err := service.CheckConfig(context.Background(), site, []byte("server {}")); err == nil {
+	if err := service.diagnosticError(context.Background(), site, []byte("server {}")); err == nil {
 		t.Fatal("RPC failure ignored")
 	}
+}
+
+// Existing scanner fixtures assert the contents of warnings, not write admission.
+func reportError(report configpreflight.Report) error {
+	if len(report.Warnings) > 0 {
+		w := report.Warnings[0]
+		return fmt.Errorf("%s:%d: %s %s", w.Path, w.Line, w.Directive, w.Message)
+	}
+	if !report.Complete {
+		return fmt.Errorf("incomplete diagnostic")
+	}
+	return nil
+}
+func (s *Service) diagnosticError(ctx context.Context, site *repo.Site, main []byte) error {
+	return reportError(s.DiagnoseConfig(ctx, site, main))
+}
+func checkCustomAccess(main []byte) error {
+	return reportError(configpreflight.Diagnose(context.Background(), nil, "站点配置", "", bytes.NewReader(stripOwnedAccessBlocks(main))))
 }

@@ -41,7 +41,7 @@ func TestStripGeneratedProxyAuthPreservesCustomContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := strings.Replace(string(config), "        auth_basic \"Restricted\";\n        auth_basic_user_file /panel/proxy-auth/p1.htpasswd;\n", "", 1)
+	want := strings.Replace(string(config), "        auth_basic \"Restricted\";\n        auth_basic_user_file /panel/proxy-auth/p1.htpasswd;\n", "\n\n", 1)
 	if string(got) != want {
 		t.Fatalf("must only strip known pair inside proxy marker:\n%s", got)
 	}

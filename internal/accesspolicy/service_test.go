@@ -195,17 +195,20 @@ func TestServiceRefreshOnlyUsesAppliedSnapshot(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsCustomAuthenticationBeforeSaving(t *testing.T) {
+func TestServicePreservesCustomAuthenticationWhileSaving(t *testing.T) {
 	service, agent, _, _ := policyServiceFixture(t)
 	agent.files["/tmp/site.conf"] = []byte(strings.Replace(servicePolicyConfig, "    add_header X-Server", "    auth_basic \"custom\";\n    add_header X-Server", 1))
-	if _, err := service.Save(context.Background(), "site_policy", serviceAllowPolicy(), "request"); err == nil {
-		t.Fatal("custom auth conflict accepted")
+	if _, err := service.Save(context.Background(), "site_policy", serviceAllowPolicy(), "request"); err != nil {
+		t.Fatal(err)
 	}
-	if len(agent.transactions) != 0 {
-		t.Fatal("conflicting config reached Agent")
+	if len(agent.transactions) != 1 {
+		t.Fatal("custom config blocked transaction")
 	}
-	if p, err := service.store.Get("site_policy"); err != nil || p != nil {
-		t.Fatalf("preflight saved policy: %#v, %v", p, err)
+	if !strings.Contains(string(agent.files["/tmp/site.conf"]), `auth_basic "custom";`) {
+		t.Fatal("custom configuration changed")
+	}
+	if p, err := service.store.Get("site_policy"); err != nil || p == nil || p.ApplyStatus != "applied" {
+		t.Fatalf("policy not applied: %#v %v", p, err)
 	}
 }
 

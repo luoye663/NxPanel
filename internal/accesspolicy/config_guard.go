@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/luoye663/nxpanel/internal/agentclient"
-	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/configpreflight"
 	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/nginx"
@@ -24,55 +23,84 @@ type nginxConfigLister interface {
 }
 
 type nginxConfigPreflight interface {
-	CheckAccessConfig(context.Context, *agentclient.ConfigPreflightRequest) error
+	DiagnoseAccessConfig(context.Context, *agentclient.ConfigPreflightRequest) (configpreflight.Report, error)
 }
 
 // SetNginxConfigPath is configured once during dependency initialization.
 func (s *Service) SetNginxConfigPath(path string) { s.nginxConfigPath = path }
 
-// CheckConfig rejects independent checks that native policy variables would
-// override or that could finish a request before the ordered rules run.
-func (s *Service) CheckConfig(ctx context.Context, site *repo.Site, main []byte) error {
+// DiagnoseSite reads a prepared snapshot without modifying configuration or policy.
+// It deliberately stays outside the apply path: diagnostic failures never gate writes.
+func (s *Service) DiagnoseSite(ctx context.Context, siteID string) (configpreflight.Report, error) {
+	site, err := s.requireSite(siteID)
+	if err != nil {
+		return configpreflight.Report{}, err
+	}
+	var main []byte
+	if s.proxy != nil {
+		err = s.proxy.WithAccessPolicyConfig(ctx, siteID, func(content []byte) error {
+			main = append([]byte(nil), content...)
+			return nil
+		})
+	} else {
+		main, _, err = s.agent.ReadFile(ctx, site.ConfigPath)
+	}
+	if err != nil {
+		return incompleteReport(configGuardError(site.ConfigPath, err.Error())), nil
+	}
+	return s.DiagnoseConfig(ctx, site, main), nil
+}
+
+func incompleteReport(err error) configpreflight.Report {
+	report := configpreflight.Report{Warnings: []configpreflight.Warning{}}
+	report.Incomplete(err)
+	return report
+}
+
+func (s *Service) DiagnoseConfig(ctx context.Context, site *repo.Site, main []byte) configpreflight.Report {
 	global := s.nginxConfigPath
 	if global == "" {
 		if detector, ok := s.agent.(nginxConfigDetector); ok {
 			info, err := detector.DetectNginx(ctx, &agentclient.NginxDetectRequest{})
 			if err != nil {
-				return configGuardError("nginx.conf", "无法确定主配置路径: "+err.Error())
+				return incompleteReport(configGuardError("nginx.conf", "无法确定主配置路径: "+err.Error()))
 			}
 			if info == nil || info.ConfPath == "" {
-				return configGuardError("nginx.conf", "Agent 未返回主配置路径")
+				return incompleteReport(configGuardError("nginx.conf", "Agent 未返回主配置路径"))
 			}
 			global = info.ConfPath
 		}
 	}
 	if global != "" && !filepath.IsAbs(global) {
-		return configGuardError(global, "主配置路径必须是绝对路径")
+		return incompleteReport(configGuardError(global, "主配置路径必须是绝对路径"))
 	}
 	if checker, ok := s.agent.(nginxConfigPreflight); ok {
-		err := checker.CheckAccessConfig(ctx, &agentclient.ConfigPreflightRequest{
+		report, err := checker.DiagnoseAccessConfig(ctx, &agentclient.ConfigPreflightRequest{
 			SitePath: site.ConfigPath, GlobalPath: global,
 			Main: string(stripOwnedAccessBlocks(main)),
 		})
 		if err != nil {
-			return configGuardError(site.ConfigPath, err.Error())
+			report.Incomplete(err)
 		}
-		return nil
+		return report
 	}
-	if err := configpreflight.Check(ctx, guardSource{s, ctx}, site.ConfigPath, global, bytes.NewReader(stripOwnedAccessBlocks(main))); err != nil {
-		return configGuardError(site.ConfigPath, err.Error())
-	}
-	return nil
+	return configpreflight.Diagnose(ctx, guardSource{s, ctx}, site.ConfigPath, global, bytes.NewReader(stripOwnedAccessBlocks(main)))
 }
 
 func configGuardError(path, detail string) error {
-	return app.ErrValidationFailedMsg("访问策略配置预检失败（"+path+"）："+detail, nil)
+	return fmt.Errorf("%s: %s", path, detail)
 }
 
 func stripOwnedAccessBlocks(main []byte) []byte {
 	clean := main
 	for _, name := range []string{nginx.MarkerNameAccessLimit, nginx.MarkerNameHotlink, nginx.MarkerNameForceHTTPS} {
-		if patched, err := nginx.ReplaceMarkerBlock(clean, name, nil); err == nil {
+		body, err := nginx.ExtractMarkerBlock(clean, name)
+		if err != nil {
+			continue
+		}
+		// Blank only owned content; preserve physical source lines for diagnostics.
+		blank := bytes.Repeat([]byte("\n"), bytes.Count(body, []byte("\n")))
+		if patched, err := nginx.ReplaceMarkerBlock(clean, name, blank); err == nil {
 			clean = patched
 		}
 	}
@@ -92,10 +120,6 @@ func (g guardSource) Open(path string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	return io.NopCloser(bytes.NewReader(content)), nil
-}
-
-func checkCustomAccess(main []byte) error {
-	return configpreflight.Check(context.Background(), nil, "站点配置", "", bytes.NewReader(stripOwnedAccessBlocks(main)))
 }
 
 func (g guardSource) Includes(path string) ([]string, error) {

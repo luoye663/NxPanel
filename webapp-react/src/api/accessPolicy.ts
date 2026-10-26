@@ -38,6 +38,16 @@ export interface AccessPolicy {
   pending_source?: string
 }
 
+export interface AccessConfigDiagnostics {
+  warnings: { path?: string; line?: number; directive?: string; message: string }[]
+  complete: boolean
+  truncated: boolean
+}
+
+export function getAccessConfigDiagnostics(siteId: string, signal?: AbortSignal): Promise<AccessConfigDiagnostics> {
+  return get(`/sites/${siteId}/access-policy/diagnostics`, { signal })
+}
+
 export interface AccessPreviewRequest {
   ip: string
   country?: string

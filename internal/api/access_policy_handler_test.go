@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,10 +13,20 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/luoye663/nxpanel/internal/accesspolicy"
 	"github.com/luoye663/nxpanel/internal/agentclient"
+	"github.com/luoye663/nxpanel/internal/configpreflight"
 	"github.com/luoye663/nxpanel/internal/db"
 )
 
-type accessPolicyHandlerAgent struct{ applies int }
+type accessPolicyHandlerAgent struct {
+	applies         int
+	diagnosticErr   error
+	diagnosticCalls int
+}
+
+func (a *accessPolicyHandlerAgent) DiagnoseAccessConfig(context.Context, *agentclient.ConfigPreflightRequest) (configpreflight.Report, error) {
+	a.diagnosticCalls++
+	return configpreflight.Report{Warnings: []configpreflight.Warning{}, Complete: a.diagnosticErr == nil}, a.diagnosticErr
+}
 
 func (*accessPolicyHandlerAgent) ReadFile(context.Context, string) ([]byte, string, error) {
 	return []byte("server {\n#NXPANEL-ACCESS-LIMIT-START\n#NXPANEL-ACCESS-LIMIT-END\n#NXPANEL-HOTLINK-START\n#NXPANEL-HOTLINK-END\n}\n"), "", nil
@@ -63,6 +74,33 @@ func TestAccessPolicyGetDoesNotPersistDraft(t *testing.T) {
 	}
 	if p, err := store.Get("site_policy"); err != nil || p != nil || agent.applies != 0 {
 		t.Fatalf("GET changed state: %#v %v", p, err)
+	}
+}
+
+func TestAccessPolicyDiagnosticsIsReadOnly(t *testing.T) {
+	server, store, agent, _ := accessPolicyHandlerFixture(t)
+	response := accessPolicyRequest(t, http.MethodGet, "access-policy/diagnostics", "", server.handleAccessPolicyDiagnostics)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"complete":true`) || !strings.Contains(response.Body.String(), `"warnings":[]`) {
+		t.Fatalf("diagnostics: %d %s", response.Code, response.Body)
+	}
+	if p, err := store.Get("site_policy"); err != nil || p != nil || agent.applies != 0 {
+		t.Fatalf("diagnostics changed state: %#v %v", p, err)
+	}
+}
+
+func TestAccessPolicyDiagnosticFailureDoesNotFailSave(t *testing.T) {
+	server, _, agent, _ := accessPolicyHandlerFixture(t)
+	agent.diagnosticErr = errors.New("diagnostic RPC unavailable")
+	response := accessPolicyRequest(t, http.MethodGet, "access-policy/diagnostics", "", server.handleAccessPolicyDiagnostics)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"complete":false`) || !strings.Contains(response.Body.String(), "diagnostic RPC unavailable") {
+		t.Fatalf("incomplete report: %d %s", response.Code, response.Body)
+	}
+	response = accessPolicyRequest(t, http.MethodPut, "access-policy", `{"default_action":{"type":"allow"},"rules":[]}`, server.handleAccessPolicySave)
+	if response.Code != http.StatusOK || agent.applies != 1 || agent.diagnosticCalls != 1 {
+		t.Fatalf("diagnostic blocked save: %d %s", response.Code, response.Body)
+	}
+	if strings.Contains(response.Body.String(), "diagnostic RPC unavailable") {
+		t.Fatal("diagnostic leaked into persisted policy")
 	}
 }
 

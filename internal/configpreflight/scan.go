@@ -1,10 +1,12 @@
-// Package configpreflight checks access-policy conflicts without materializing
-// large geo/map blocks. Filesystem access is supplied by the caller.
+// Package configpreflight diagnoses external access directives without
+// materializing large geo/map blocks. Its findings do not gate policy writes.
+// Filesystem access is supplied by the caller.
 package configpreflight
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -30,20 +32,27 @@ type scanner struct {
 	base                     string
 	bytes, files, statements int
 	active, seen             map[string]bool
+	report                   Report
 }
 
-func Check(ctx context.Context, source Source, sitePath, globalPath string, main io.Reader) error {
+func Diagnose(ctx context.Context, source Source, sitePath, globalPath string, main io.Reader) Report {
 	s := &scanner{ctx: ctx, source: source, active: map[string]bool{}, seen: map[string]bool{}}
+	s.report.Warnings = []Warning{}
 	if globalPath != "" {
 		s.base = filepath.Dir(globalPath)
 	}
 	if err := s.scan(sitePath, "site", main, 0); err != nil {
-		return err
+		s.report.Incomplete(err)
+		return s.report
 	}
 	if globalPath != "" {
-		return s.file(globalPath, "main", 0)
+		if err := s.file(globalPath, "main", 0); err != nil {
+			s.report.Incomplete(err)
+			return s.report
+		}
 	}
-	return nil
+	s.report.Complete = true
+	return s.report
 }
 
 func (s *scanner) file(path, scope string, depth int) error {
@@ -66,7 +75,7 @@ func (s *scanner) file(path, scope string, depth int) error {
 	}
 	r, err := s.source.Open(path)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return &locationError{path: path, err: err}
 	}
 	defer r.Close()
 	s.active[key] = true
@@ -105,19 +114,24 @@ func (s *scanner) scan(path, scope string, r io.Reader, depth int) error {
 	if s.files > MaxFiles {
 		return fmt.Errorf("检查文件超过 256 个")
 	}
-	l := &lexer{r: bufio.NewReaderSize(budgetReader{s, r}, 32<<10)}
-	if err := s.block(l, scope, depth, 0, false); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+	l := &lexer{r: bufio.NewReaderSize(budgetReader{s, r}, 32<<10), line: 1}
+	if err := s.block(l, path, scope, depth, 0, false); err != nil {
+		var located *locationError
+		if errors.As(err, &located) {
+			return err
+		}
+		return &locationError{path: path, line: l.line, err: err}
 	}
 	return nil
 }
 
-func (s *scanner) block(l *lexer, scope string, includeDepth, blockDepth int, nested bool) error {
+func (s *scanner) block(l *lexer, path, scope string, includeDepth, blockDepth int, nested bool) error {
 	if blockDepth > 64 {
 		return fmt.Errorf("配置块嵌套超过 64 层")
 	}
 	var words []string
 	wordBytes := 0
+	statementLine := 1
 	for {
 		token, delim, err := l.next()
 		if err == io.EOF {
@@ -130,6 +144,9 @@ func (s *scanner) block(l *lexer, scope string, includeDepth, blockDepth int, ne
 			return err
 		}
 		if delim == 0 {
+			if len(words) == 0 {
+				statementLine = l.tokenLine
+			}
 			wordBytes += len(token)
 			if wordBytes > maxToken || len(words) >= 4096 {
 				return fmt.Errorf("配置指令过长")
@@ -155,7 +172,11 @@ func (s *scanner) block(l *lexer, scope string, includeDepth, blockDepth int, ne
 			if scope == "site" || scope == "http" {
 				switch name {
 				case "auth_basic", "auth_basic_user_file", "auth_request", "allow", "deny", "satisfy", "return":
-					return fmt.Errorf("包含编排之外的访问指令或提前响应 %s，请先处理冲突", name)
+					message := "该访问指令独立于面板规则生效，可能覆盖或改变统一策略的访问结果。"
+					if name == "return" {
+						message = "该指令可能提前结束请求，使请求不进入统一策略。"
+					}
+					s.report.Add(Warning{Path: path, Line: statementLine, Directive: name, Message: message})
 				}
 			}
 			if name == "include" {
@@ -198,18 +219,39 @@ func (s *scanner) block(l *lexer, scope string, includeDepth, blockDepth int, ne
 			} else if scope == "main" && name == "http" {
 				child = "http"
 			}
-			if err := s.block(l, child, includeDepth, blockDepth+1, true); err != nil {
+			if err := s.block(l, path, child, includeDepth, blockDepth+1, true); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-type lexer struct{ r *bufio.Reader }
+type lexer struct {
+	r               *bufio.Reader
+	line, tokenLine int
+	last            byte
+}
+
+func (l *lexer) readByte() (byte, error) {
+	c, err := l.r.ReadByte()
+	if err == nil {
+		l.last = c
+		if c == '\n' {
+			l.line++
+		}
+	}
+	return c, err
+}
+
+func (l *lexer) unreadByte() {
+	if err := l.r.UnreadByte(); err == nil && l.last == '\n' {
+		l.line--
+	}
+}
 
 func (l *lexer) next() (string, byte, error) {
 	for {
-		c, err := l.r.ReadByte()
+		c, err := l.readByte()
 		if err != nil {
 			return "", 0, err
 		}
@@ -218,7 +260,7 @@ func (l *lexer) next() (string, byte, error) {
 		}
 		if c == '#' {
 			for {
-				c, err = l.r.ReadByte()
+				c, err = l.readByte()
 				if err != nil {
 					return "", 0, err
 				}
@@ -228,16 +270,17 @@ func (l *lexer) next() (string, byte, error) {
 			}
 			continue
 		}
+		l.tokenLine = l.line
 		if c == ';' || c == '{' || c == '}' {
 			return "", c, nil
 		}
-		_ = l.r.UnreadByte()
+		l.unreadByte()
 		break
 	}
 	var word strings.Builder
 	var quote byte
 	for {
-		c, err := l.r.ReadByte()
+		c, err := l.readByte()
 		if err == io.EOF {
 			if quote != 0 {
 				return "", 0, fmt.Errorf("配置字符串未结束")
@@ -248,7 +291,7 @@ func (l *lexer) next() (string, byte, error) {
 			return "", 0, err
 		}
 		if c == '\\' {
-			c, err = l.r.ReadByte()
+			c, err = l.readByte()
 			if err != nil {
 				return "", 0, fmt.Errorf("配置转义未结束: %w", err)
 			}
@@ -266,7 +309,7 @@ func (l *lexer) next() (string, byte, error) {
 			next, _ := l.r.Peek(1)
 			if len(next) == 1 && next[0] == '{' {
 				for {
-					c, err = l.r.ReadByte()
+					c, err = l.readByte()
 					if err != nil {
 						return "", 0, fmt.Errorf("变量引用未结束: %w", err)
 					}
@@ -280,7 +323,7 @@ func (l *lexer) next() (string, byte, error) {
 				}
 			}
 		} else if strings.ContainsRune(" \t\r\n;{}", rune(c)) {
-			_ = l.r.UnreadByte()
+			l.unreadByte()
 			break
 		} else {
 			word.WriteByte(c)

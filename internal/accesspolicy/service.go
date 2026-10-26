@@ -311,11 +311,8 @@ func (s *Service) apply(ctx context.Context, site *repo.Site, p Policy, compiled
 			return app.ErrValidationFailedMsg(prepErr.Error(), nil)
 		}
 		compiled, proxies, authFiles = currentCompiled, currentProxies, renderCtx.AuthFiles
-		// Custom access directives outside our owned markers cannot be made
-		// reorderable safely. Never silently remove or override them.
-		if err := s.CheckConfig(ctx, site, main); err != nil {
-			return err
-		}
+		// External configuration is independently managed. Its diagnostics are
+		// advisory; nginx -t remains authoritative for the write transaction.
 		accessPath := site.AccessLimitPath
 		if accessPath == "" {
 			accessPath = filepath.Join(s.panelDir, "access-limit", site.PrimaryDomain+".conf")
@@ -488,7 +485,3 @@ func (s *Service) RefreshActive(ctx context.Context, requestID string) error {
 	}
 	return errors.Join(errs...)
 }
-
-// Owned access blocks and HTTPS redirection have known semantics. For other
-// directives tokenize statements, rather than checking line prefixes (a custom
-// location commonly fits on one line).

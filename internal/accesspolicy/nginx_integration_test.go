@@ -72,7 +72,12 @@ http {
   root /policy/www;
   include /policy/server.conf;
   location = /rewrite { try_files /missing /admin/private; }
-  location /proxy { proxy_pass http://127.0.0.1:8081; }
+  location /proxy {
+   proxy_pass http://127.0.0.1:8081;
+   add_header Access-Control-Allow-Origin *;
+   add_header Access-Control-Allow-Methods 'GET, POST, OPTIONS';
+   if ($request_method = 'OPTIONS') { return 204; }
+  }
  }
  server { listen 8081; location / { return 200 "upstream"; } }
 }`
@@ -148,6 +153,34 @@ http {
 				t.Errorf("Content-Type %q", resp.Header.Get("Content-Type"))
 			}
 		})
+	}
+	// A custom preflight response intentionally skips password verification for
+	// OPTIONS only. Actual requests still pass through the server auth policy.
+	for _, tt := range []struct {
+		method, password string
+		want             int
+	}{
+		{http.MethodOptions, "", http.StatusNoContent},
+		{http.MethodGet, "", http.StatusUnauthorized},
+		{http.MethodPost, "", http.StatusUnauthorized},
+		{http.MethodGet, "password", http.StatusOK},
+		{http.MethodPost, "password", http.StatusOK},
+	} {
+		req, _ := http.NewRequest(tt.method, "http://"+address+"/proxy", nil)
+		if tt.password != "" {
+			req.SetBasicAuth("user", tt.password)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tt.want {
+			t.Fatalf("%s password=%t: got %d want %d", tt.method, tt.password != "", resp.StatusCode, tt.want)
+		}
+		if tt.method == http.MethodOptions && resp.Header.Get("Access-Control-Allow-Origin") != "*" {
+			t.Fatal("preflight lost CORS headers")
+		}
 	}
 	checkIP := func(ip string, want int) bool {
 		t.Helper()

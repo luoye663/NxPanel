@@ -131,6 +131,7 @@ func (s *Server) setupRoutes() {
 
 			// Access Limit
 			r.Get("/sites/{site_id}/access-policy", s.handleAccessPolicyGet)
+			r.Get("/sites/{site_id}/access-policy/diagnostics", s.handleAccessPolicyDiagnostics)
 			r.Put("/sites/{site_id}/access-policy", s.handleAccessPolicySave)
 			r.Post("/sites/{site_id}/access-policy/preview", s.handleAccessPolicyPreview)
 			r.Post("/sites/{site_id}/access-policy/sync", s.handleAccessPolicySync)

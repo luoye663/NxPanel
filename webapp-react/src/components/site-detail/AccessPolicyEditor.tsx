@@ -9,6 +9,7 @@ import { ApiError } from '@/api/client'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SectionCard } from '@/components/common/SectionCard'
 import { AuthAccountManager, AuthAccountSelector } from './AuthAccountManager'
+import { AccessPolicyDiagnostics } from './AccessPolicyDiagnostics'
 import { notifySuccess } from '@/utils/notify'
 
 interface Props {
@@ -89,6 +90,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
   ])].sort().map((code) => ({ value: code, label: countryName(code) }))
   const [ruleError, setRuleError] = useState<string | null>(null)
   const [error, setError] = useState<unknown>(null)
+  const [diagnosticsRefresh, setDiagnosticsRefresh] = useState(0)
   const [accountsOpened, setAccountsOpened] = useState(false)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [previewOpened, setPreviewOpened] = useState(false)
@@ -133,6 +135,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
 
   async function acceptPolicy(policy: AccessPolicy) {
     setDraft(policy); setBaseline(policy); setPreview(null)
+    setDiagnosticsRefresh((value) => value + 1)
     client.setQueryData(accessPolicyKeys.site(siteId), policy)
     await client.invalidateQueries({ queryKey: ['site-detail', siteId] })
   }
@@ -180,10 +183,10 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
   async function reloadSaved() {
     if (dirty && !window.confirm('放弃当前草稿并重新载入已保存的策略？')) return
     const policy = await client.fetchQuery({ queryKey: accessPolicyKeys.site(siteId), queryFn: () => getAccessPolicy(siteId), staleTime: 0 }).catch(setError)
-    if (policy) { setBaseline(policy); changePolicy({ ...policy, mode: 'unified' }) }
+    if (policy) { setBaseline(policy); changePolicy({ ...policy, mode: 'unified' }); setDiagnosticsRefresh((value) => value + 1) }
   }
 
-  return <SectionCard title="访问策略" description="从上到下判断，首条命中的规则决定结果。拖动或使用上下移动按钮调整顺序，保存后统一生效。">
+  return <SectionCard title="访问策略" description="面板规则从上到下判断，首条命中的规则决定本套检查的动作。自定义配置和上游应用仍独立生效。" actions={<AccessPolicyDiagnostics key={siteId} siteId={siteId} refreshKey={diagnosticsRefresh} />}>
     <Stack gap="md">
       {baseline.mode === 'legacy' && baseline.version === 0 ? <Alert color="yellow" title="正在准备切换">
         现有策略仍在运行。请检查导入规则和行为差异，点击“保存并应用”后切换为统一策略。
@@ -225,7 +228,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
       </Group>
       {previewOpened ? <>
         <Divider label="测试当前草稿" labelPosition="left" />
-        <Text c="dimmed">填写示例请求，查看每条规则的判断和最终动作。密码规则只显示“需要验证”，不接收密码。</Text>
+        <Text c="dimmed">填写示例请求，查看面板规则的判断和动作；预览不执行自定义配置或上游应用逻辑，不代表请求最终响应。密码规则只显示“需要验证”，不接收密码。</Text>
         <SimpleGrid cols={{ base: 1, sm: 2 }}>
           <TextInput label="访问者 IP" description="地域根据此 IP 和当前 GeoIP 数据库判断。" placeholder="203.0.113.8" required disabled={previewMutation.isPending} value={previewRequest.ip} onChange={(event) => { setPreviewRequest({ ...previewRequest, ip: event.currentTarget.value }); setPreview(null) }} />
           <TextInput label="请求路径" placeholder="/admin" required disabled={previewMutation.isPending} value={previewRequest.path} onChange={(event) => { setPreviewRequest({ ...previewRequest, path: event.currentTarget.value }); setPreview(null) }} />
