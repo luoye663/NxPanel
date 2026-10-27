@@ -1,5 +1,6 @@
 import { ActionIcon, Alert, Badge, Button, Checkbox, Divider, Group, Modal, MultiSelect, NumberInput, Select, SimpleGrid, Stack, Switch, Table, TagsInput, Text, TextInput, Textarea, Tooltip } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
+import { modals } from '@mantine/modals'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconArrowDown, IconArrowUp, IconEdit, IconGripVertical, IconPlus, IconTrash } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
@@ -247,7 +248,21 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
         {editing.conditions.length || editing.match === 'any' ? <Select label="匹配方式" disabled={linkedProxy} value={editing.match} allowDeselect={false} data={[{ value: 'all', label: '全部条件满足（并且）' }, { value: 'any', label: '任一条件满足（或者）' }]} onChange={(value) => setEditing({ ...editing, match: value as 'all' | 'any' })} /> : <Alert color="yellow">此规则会处理所有到达它的请求，后面的规则不会再执行。</Alert>}
         {editing.conditions.map((condition, index) => <fieldset disabled={linkedProxy && index === 0} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} key={index}><Stack gap="xs">
           <Divider label={`条件 ${index + 1}`} labelPosition="left" />
-          <Group align="flex-end"><Select style={{ flex: 1 }} label="条件类型" value={condition.kind} allowDeselect={false} data={Object.entries(conditionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { kind: value as AccessCondition['kind'], operator: value === 'path' ? 'prefix' : 'in', values: [], negate: false } : item) })} /><ActionIcon variant="subtle" color="red" aria-label={`移除条件 ${index + 1}`} disabled={editing.conditions.length === 1} onClick={() => setEditing({ ...editing, conditions: editing.conditions.filter((_, ci) => ci !== index) })}><IconTrash size={16} /></ActionIcon></Group>
+          <Group align="flex-end"><Select style={{ flex: 1 }} label="条件类型" value={condition.kind} allowDeselect={false} data={Object.entries(conditionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => {
+            if (!value) return
+            setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { kind: value as AccessCondition['kind'], operator: value === 'path' ? 'prefix' : 'in', values: [], negate: false } : item) })
+            if (value === 'country' && condition.kind !== 'country') {
+              const modalId = modals.open({
+                title: '国家 / 地区功能警告',
+                centered: true,
+                closeOnClickOutside: false,
+                children: <Stack gap="md">
+                  <Alert color="yellow">国家 / 地区访问限制功能尚不完善，会造成 Nginx 内存占用过多，目前待修复，暂不建议使用。</Alert>
+                  <Group justify="flex-end"><Button color="yellow" onClick={() => modals.close(modalId)}>我已知晓</Button></Group>
+                </Stack>,
+              })
+            }
+          }} /><ActionIcon variant="subtle" color="red" aria-label={`移除条件 ${index + 1}`} disabled={editing.conditions.length === 1} onClick={() => setEditing({ ...editing, conditions: editing.conditions.filter((_, ci) => ci !== index) })}><IconTrash size={16} /></ActionIcon></Group>
           {condition.kind === 'path' ? <Select label="路径匹配" error={!['exact', 'prefix'].includes(condition.operator || '') ? '旧路径表达式需要转换：请选择匹配方式并检查匹配值。' : undefined} value={condition.operator || null} allowDeselect={false} data={[{ value: 'prefix', label: '前缀匹配' }, { value: 'exact', label: '完全相等' }]} onChange={(value) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { ...item, operator: value as 'prefix' | 'exact' } : item) })} /> : null}
           {condition.kind === 'country' ? <>
             <MultiSelect label="匹配值" required description={conditionHelp.country} placeholder={geoStatus.isFetching ? '正在加载国家 / 地区…' : '搜索并选择国家 / 地区'} data={countries} searchable clearable nothingFoundMessage="没有匹配的国家 / 地区" maxDropdownHeight={300} value={condition.values} onChange={(values) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { ...item, values } : item) })} />
