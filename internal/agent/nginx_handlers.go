@@ -42,6 +42,11 @@ type NginxDetectRequest struct {
 //  3. 验证 nginx -t 通过
 //  4. 返回检测信息
 func (s *Server) handleNginxDetect(w http.ResponseWriter, r *http.Request) {
+	if !s.executor.lifecycleMu.TryLock() {
+		writeAgentError(w, http.StatusConflict, "Nginx 控制操作正在执行，请稍后重试")
+		return
+	}
+	defer s.executor.lifecycleMu.Unlock()
 	var req NginxDetectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeAgentError(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
@@ -143,6 +148,11 @@ type NginxReloadRequest struct {
 
 // handleNginxReload 执行 nginx -s reload
 func (s *Server) handleNginxReload(w http.ResponseWriter, r *http.Request) {
+	if !s.executor.lifecycleMu.TryLock() {
+		writeAgentError(w, http.StatusConflict, "Nginx 控制操作正在执行，请稍后重试")
+		return
+	}
+	defer s.executor.lifecycleMu.Unlock()
 	var req NginxReloadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// 请求体为空时使用默认值

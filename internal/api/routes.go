@@ -79,6 +79,10 @@ func (s *Server) setupRoutes() {
 			r.Post("/nginx/include/ensure", s.handleNginxIncludeEnsure)
 			r.Post("/nginx/test", s.handleNginxTest)
 			r.Post("/nginx/reload", s.handleNginxReload)
+			r.Get("/nginx/status", s.handleNginxStatus)
+			for _, action := range []string{"start", "stop", "restart"} {
+				r.Post("/nginx/"+action, s.handleNginxControl)
+			}
 
 			r.Get("/nginx/conf", s.handleNginxConfGet)
 			r.Put("/nginx/conf", s.handleNginxConfSave)

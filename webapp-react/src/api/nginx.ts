@@ -60,3 +60,23 @@ export function getNginxParameters(): Promise<NginxParametersResponse> {
 export function saveNginxParameters(data: { parameters: Record<string, string> }): Promise<SaveNginxParametersResponse> {
   return put('/nginx/parameters', data)
 }
+
+export interface NginxRuntimeStatus {
+  running: boolean
+  master_pid: number
+  workers: number
+  processes: number
+  memory_rss: number
+  memory_pss?: number | null
+  uptime_seconds: number
+}
+
+export type NginxControlAction = 'start' | 'stop' | 'restart'
+
+export function getNginxStatus(): Promise<NginxRuntimeStatus> {
+  return get('/nginx/status')
+}
+
+export function controlNginx(action: NginxControlAction): Promise<NginxReloadResponse> {
+  return post(`/nginx/${action}`, {})
+}

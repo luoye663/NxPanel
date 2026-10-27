@@ -5,7 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { getSystemOverview } from '@/api/system'
 import { NginxActions } from '@/components/nginx/NginxActions'
 import { NginxConfEditorTab } from '@/components/nginx/NginxConfEditorTab'
-import { NginxOverviewCard } from '@/components/nginx/NginxOverviewCard'
+import { NginxRuntimeCard } from '@/components/nginx/NginxRuntimeCard'
 import { NginxParametersTab } from '@/components/nginx/NginxParametersTab'
 import { NginxUpstreamsTab } from '@/components/nginx/NginxUpstreamsTab'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
@@ -38,7 +38,7 @@ export function NginxPage() {
         </Tabs.List>
         <Tabs.Panel value="status">
           <PageShell p={0}>
-            <NginxOverviewCard overview={overviewQuery.data} loading={overviewQuery.isLoading} />
+            <NginxRuntimeCard overview={overviewQuery.isError ? undefined : overviewQuery.data} overviewLoading={overviewQuery.isLoading} />
             <NginxActions />
           </PageShell>
         </Tabs.Panel>
