@@ -246,6 +246,14 @@ release: build-frontend
 	@cd release && tar -czf nxpanel-linux-amd64.tar.gz nxpanel/
 	@echo "发布包已生成: release/nxpanel-linux-amd64.tar.gz"
 
+.PHONY: build-updater release release-update-arm64 update-fixture
+
+release-update-arm64:
+	$(MAKE) build-api build-agent GOOS=linux GOARCH=arm64 BUILD_TAGS=embed_web VERSION="$(VERSION)" BINARY_API=release/update-arm64/nxpanel-api BINARY_AGENT=release/update-arm64/nxpanel-agent
+
+update-fixture: build-frontend
+	GO="$(GO)" bash scripts/update-fixture.sh
+
 ## test-install-compat: 测试 scripts/nginx-install/install.sh 在各发行版的兼容性
 test-install-compat:
 	bash test-install-compat.sh
