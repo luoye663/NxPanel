@@ -2,6 +2,7 @@ import { Alert, Badge, Button, Divider, Group, SimpleGrid, Skeleton, Stack, Text
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconPlayerPlay, IconPlayerStop, IconRefresh, IconRotateClockwise } from '@tabler/icons-react'
 import { useRef, useState } from 'react'
+import { ApiError } from '@/api/client'
 import { controlNginx, getNginxStatus, reloadNginx, type NginxControlAction } from '@/api/nginx'
 import type { SystemOverview } from '@/api/types'
 import { NginxOverviewCard } from './NginxOverviewCard'
@@ -53,7 +54,8 @@ export function NginxRuntimeCard({ overview, overviewLoading }: { overview?: Sys
       setOperationId(result.operation_id)
       notifySuccess({ message: `Nginx ${labels[action]}成功` })
     } catch (error) {
-      showErrorModal(error, `Nginx ${labels[action]}失败`)
+      const unconfirmed = error instanceof ApiError && error.code === 'NGINX_RESTART_UNCONFIRMED'
+      showErrorModal(error, unconfirmed ? 'Nginx 重启状态未确认' : `Nginx ${labels[action]}失败`)
     } finally {
       busy.current = false
     }

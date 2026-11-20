@@ -43,20 +43,34 @@ func TestNginxControlRequestValidation(t *testing.T) {
 	}
 }
 
-func TestNginxRestartConflictAudit(t *testing.T) {
+func TestNginxRestartErrorAudit(t *testing.T) {
+	for _, scenario := range []struct {
+		status        int
+		code, message string
+	}{
+		{http.StatusConflict, app.ErrConflict, "重启目标已变化，请刷新状态后重试"},
+		{http.StatusServiceUnavailable, app.ErrNginxRestartUnconfirmed, "重启命令已执行，但运行状态未确认，请刷新状态"},
+	} {
+		t.Run(scenario.code, func(t *testing.T) {
+			assertNginxRestartErrorAudit(t, scenario.status, scenario.code, scenario.message)
+		})
+	}
+}
+
+func assertNginxRestartErrorAudit(t *testing.T, status int, code, message string) {
+	t.Helper()
 	socket := filepath.Join(t.TempDir(), "agent.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
 	generation := strings.Repeat("a", 64)
-	message := "重启目标已变化，请刷新状态后重试"
 	agent := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request nginx.RuntimeControlRequest
 		if r.URL.Path != "/internal/v1/nginx/restart" || json.NewDecoder(r.Body).Decode(&request) != nil || request.RestartGeneration != generation {
 			t.Error("unexpected agent request")
 		}
-		w.WriteHeader(http.StatusConflict)
+		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": message})
 	})}
 	go func() { _ = agent.Serve(listener) }()
@@ -67,12 +81,12 @@ func TestNginxRestartConflictAudit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.handleNginxControl(rec, httptest.NewRequest(http.MethodPost, "/api/v1/nginx/restart", strings.NewReader(`{"restart_generation":"`+generation+`"}`)))
 	var response Response
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusConflict || response.Error == nil || response.Error.Code != app.ErrConflict || response.Error.Message != message {
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != status || response.Error == nil || response.Error.Code != code || response.Error.Message != message {
 		t.Fatalf("unexpected response: %d %s", rec.Code, rec.Body)
 	}
 	opID, _ := response.Error.Details["operation_id"].(string)
 	operation, err := server.opRepo.GetByID(opID)
-	if err != nil || operation.Status != "failed" || operation.Action != "nginx.restart" || operation.ErrorCode != app.ErrConflict || operation.ErrorMessage != message {
+	if err != nil || operation.Status != "failed" || operation.Action != "nginx.restart" || operation.ErrorCode != code || operation.ErrorMessage != message {
 		t.Fatalf("unexpected audit entry: %+v %v", operation, err)
 	}
 }

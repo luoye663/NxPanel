@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRestartProcess struct {
@@ -116,7 +117,7 @@ func TestNginxManualRestartTargetsOnlyManagedInstance(t *testing.T) {
 		}
 		return CmdResult{}, nil
 	}
-	status, err := runtime.status()
+	status, err := runtime.status(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestNginxManualRestartRefusesUnsafeTargets(t *testing.T) {
 	for _, scenario := range []string{"stale confirmation", "PID collision", "PID reused", "config check", "unknown options", "custom supervisor", "stale PID file", "launch failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			runtime, pidPath, _, _ := restartFixture(t)
-			status, err := runtime.status()
+			status, err := runtime.status(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,8 +206,8 @@ func TestNginxManualRestartRefusesUnsafeTargets(t *testing.T) {
 }
 
 func TestNginxSystemdRestartDoesNotFallBack(t *testing.T) {
-	for _, fails := range []bool{false, true} {
-		t.Run(strconv.FormatBool(fails), func(t *testing.T) {
+	for _, scenario := range []string{"verified", "supervisor failed", "duplicate after command"} {
+		t.Run(scenario, func(t *testing.T) {
 			runtime, pidPath, _, addMaster := restartFixture(t)
 			runtime.systemd = true
 			masterPID := 100
@@ -230,12 +231,15 @@ func TestNginxSystemdRestartDoesNotFallBack(t *testing.T) {
 					return CmdResult{}, nil
 				case bin == "systemctl" && strings.Join(args, " ") == "restart nginx.service":
 					commands = append(commands, "restart")
-					if fails {
+					if scenario == "supervisor failed" {
 						return CmdResult{}, errors.New("systemctl failed")
 					}
 					removeRestartMaster(t, runtime, masterPID, pidPath)
 					masterPID = 101
 					addMaster(masterPID, runtime.conf)
+					if scenario == "duplicate after command" {
+						addMaster(102, runtime.conf)
+					}
 					return CmdResult{}, nil
 				default:
 					t.Fatalf("unexpected command: %s %v", bin, args)
@@ -243,8 +247,93 @@ func TestNginxSystemdRestartDoesNotFallBack(t *testing.T) {
 				}
 			}
 			_, err := runtime.restart(t.Context(), "")
-			if (err != nil) != fails || strings.Join(commands, ",") != "test,restart" {
+			if (err != nil) != (scenario != "verified") || strings.Join(commands, ",") != "test,restart" {
 				t.Fatalf("restart commands %v: %v", commands, err)
+			}
+			if errors.Is(err, errNginxRestartUnconfirmed) != (scenario == "duplicate after command") || errors.Is(err, errRuntimeConflict) {
+				t.Fatalf("post-command result: %v", err)
+			}
+		})
+	}
+}
+
+func TestNginxRuntimeResolvesInheritedWorkerTitle(t *testing.T) {
+	executor, proc, add := runtimeFixture(t)
+	runtime := loadRuntimeFixture(t, executor, proc)
+	add(100, 1, nginxMasterTitle+"nginx", 1)
+	add(101, 100, nginxMasterTitle+"nginx", 1)
+	add(102, 100, nginxMasterTitle+"nginx", 1)
+	reads := 0
+	selection, err := settleRuntimeSelection(t.Context(), func(ctx context.Context) (runtimeSelection, error) {
+		current, err := runtime.inspectOnce(ctx)
+		reads++
+		if reads == 1 {
+			if err != nil || !current.multipleMatches || current.master != nil || len(current.status.Instances) != 3 {
+				t.Fatalf("initial inherited titles incorrectly discarded: %+v %v", current.status, err)
+			}
+			writeRestartFixture(t, filepath.Join(proc, "101", "cmdline"), "nginx: worker process\x00")
+			if err := os.RemoveAll(filepath.Join(proc, "102")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return current, err
+	})
+	if err != nil || reads != 2 || selection.master == nil || selection.master.pid != 100 || len(selection.status.Instances) != 1 {
+		t.Fatalf("after worker init: %+v %v (%d scans)", selection.status, err, reads)
+	}
+}
+
+func TestNginxRuntimeSettlementHonorsRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	reads := 0
+	_, err := settleRuntimeSelection(ctx, func(context.Context) (runtimeSelection, error) {
+		reads++
+		cancel()
+		return runtimeSelection{multipleMatches: true}, nil
+	})
+	if !errors.Is(err, context.Canceled) || reads != 1 {
+		t.Fatalf("after cancellation: %v (%d scans)", err, reads)
+	}
+}
+
+func TestNginxRestartVerifiesPreviousIdentityAndSupervisorPID(t *testing.T) {
+	for _, scenario := range []string{"previous still alive", "different supervisor PID", "reused PID"} {
+		t.Run(scenario, func(t *testing.T) {
+			runtime, pidPath, _, addMaster := restartFixture(t)
+			previous, err := runtime.inspect(t.Context())
+			if err != nil || previous.master == nil {
+				t.Fatalf("initial master: %+v %v", previous.status, err)
+			}
+			supervisorPID := 101
+			switch scenario {
+			case "previous still alive":
+				writeRestartFixture(t, filepath.Join(runtime.procRoot, "100", "cmdline"), "nginx: worker process\x00")
+				addMaster(101, runtime.conf)
+			case "different supervisor PID":
+				removeRestartMaster(t, runtime, 100, pidPath)
+				addMaster(101, runtime.conf)
+				supervisorPID = 200
+			case "reused PID":
+				path := filepath.Join(runtime.procRoot, "100", "stat")
+				stat, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeRestartFixture(t, path, strings.Replace(string(stat), "10000", "10100", 1))
+				supervisorPID = 100
+			}
+			runtime.run = func(_ context.Context, bin string, args ...string) (CmdResult, error) {
+				if bin != "systemctl" || strings.Join(args, " ") != "show nginx.service --property=MainPID --value" {
+					t.Fatalf("unexpected command: %s %v", bin, args)
+				}
+				return CmdResult{Stdout: strconv.Itoa(supervisorPID)}, nil
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+			defer cancel()
+			err = runtime.verifyRestart(ctx, previous, "nginx.service", "")
+			if (scenario == "reused PID" && err != nil) || (scenario != "reused PID" && !errors.Is(err, errNginxRestartUnconfirmed)) {
+				t.Fatalf("verification: %v", err)
 			}
 		})
 	}

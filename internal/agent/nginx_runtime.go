@@ -23,21 +23,25 @@ type nginxRuntimeProcess struct {
 	sameBinary, deletedBinary bool
 }
 
-var errRuntimeConflict = errors.New("无法安全控制 Nginx")
+var (
+	errRuntimeConflict         = errors.New("无法安全控制 Nginx")
+	errNginxRestartUnconfirmed = errors.New("重启命令已执行，但运行状态未确认，请刷新状态")
+)
 
 func runtimeConflict(message string) error {
 	return fmt.Errorf("%w：%s", errRuntimeConflict, message)
 }
 
-func parseNginxProcStat(data string) (parent int, start, rss uint64, err error) {
+func parseNginxProcStat(data string) (parent int, start, rss uint64, state string, err error) {
 	end := strings.LastIndex(data, ")")
 	if end < 0 {
-		return 0, 0, 0, fmt.Errorf("invalid proc stat")
+		return 0, 0, 0, "", fmt.Errorf("invalid proc stat")
 	}
 	fields := strings.Fields(data[end+1:])
 	if len(fields) < 22 {
-		return 0, 0, 0, fmt.Errorf("short proc stat")
+		return 0, 0, 0, "", fmt.Errorf("short proc stat")
 	}
+	state = fields[0]
 	parent, err = strconv.Atoi(fields[1])
 	if err != nil {
 		return
@@ -50,7 +54,7 @@ func parseNginxProcStat(data string) (parent int, start, rss uint64, err error) 
 	return
 }
 
-func scanNginxRuntime(procRoot, bin string) ([]nginxRuntimeProcess, error) {
+func scanNginxRuntime(ctx context.Context, procRoot, bin string) ([]nginxRuntimeProcess, error) {
 	binary, err := os.Stat(bin)
 	if err != nil {
 		return nil, fmt.Errorf("无法读取 Nginx 二进制: %w", err)
@@ -68,6 +72,9 @@ func scanNginxRuntime(procRoot, bin string) ([]nginxRuntimeProcess, error) {
 	}
 	var processes []nginxRuntimeProcess
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
@@ -99,9 +106,12 @@ func scanNginxRuntime(procRoot, bin string) ([]nginxRuntimeProcess, error) {
 		if err != nil {
 			return nil, err
 		}
-		parent, start, rss, err := parseNginxProcStat(stat)
+		parent, start, rss, state, err := parseNginxProcStat(stat)
 		if err != nil {
 			return nil, err
+		}
+		if state == "Z" || state == "X" {
+			continue
 		}
 		processes = append(processes, nginxRuntimeProcess{pid: pid, parent: parent, start: start, rss: rss, title: title, sameBinary: sameBinary, deletedBinary: deletedBinary})
 	}
@@ -119,8 +129,8 @@ func hasNginxMasterTitle(path string) bool {
 	return err == nil && string(prefix[:]) == nginxMasterTitle
 }
 
-func (runtime nginxRuntime) status() (*nginx.RuntimeStatus, error) {
-	selection, err := runtime.inspect()
+func (runtime nginxRuntime) status(ctx context.Context) (*nginx.RuntimeStatus, error) {
+	selection, err := runtime.inspect(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +204,7 @@ func (s *Server) handleNginxStatus(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	status, err := runtime.status()
+	status, err := runtime.status(r.Context())
 	if err != nil {
 		writeAgentError(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -232,7 +242,11 @@ func (s *Server) handleNginxControl(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := s.executor.control(ctx, action, req.RestartGeneration)
 	if err != nil {
-		if errors.Is(err, errRuntimeConflict) {
+		switch {
+		case errors.Is(err, errNginxRestartUnconfirmed):
+			writeAgentError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		case errors.Is(err, errRuntimeConflict):
 			writeAgentError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -259,7 +273,7 @@ func (e *NginxExecutor) control(ctx context.Context, action, generation string) 
 	if action == "restart" {
 		return runtime.restart(ctx, generation)
 	}
-	selection, err := runtime.inspect()
+	selection, err := runtime.inspect(ctx)
 	if err != nil {
 		return CmdResult{}, err
 	}
@@ -292,7 +306,7 @@ func (e *NginxExecutor) control(ctx context.Context, action, generation string) 
 		if err != nil {
 			return result, err
 		}
-		return result, runtime.wait(ctx, action != "stop", nginxRuntimeProcess{}, "")
+		return result, runtime.wait(ctx, action != "stop")
 	}
 	if runtime.systemd {
 		service, err := e.runtimeSystemdUnit(ctx, masterPID, runtime.defaultConf, runtime.prefix)
@@ -303,7 +317,7 @@ func (e *NginxExecutor) control(ctx context.Context, action, generation string) 
 		if err != nil {
 			return result, err
 		}
-		return result, runtime.wait(ctx, action != "stop", nginxRuntimeProcess{}, "")
+		return result, runtime.wait(ctx, action != "stop")
 	}
 	if (action == "start") == (masterPID != 0) {
 		return CmdResult{}, nil
@@ -317,13 +331,13 @@ func (e *NginxExecutor) control(ctx context.Context, action, generation string) 
 		if err != nil {
 			return result, err
 		}
-		return result, runtime.wait(ctx, false, nginxRuntimeProcess{}, "")
+		return result, runtime.wait(ctx, false)
 	}
 	result, err = e.run(ctx, e.GetBin(), args...)
 	if err != nil {
 		return result, err
 	}
-	return result, runtime.wait(ctx, true, nginxRuntimeProcess{}, "")
+	return result, runtime.wait(ctx, true)
 }
 
 func (e *NginxExecutor) matchesSystemdExecStart(output, defaultConf, prefix string) bool {
@@ -377,31 +391,22 @@ func (e *NginxExecutor) waitRuntime(ctx context.Context, running bool) error {
 	if err != nil {
 		return err
 	}
-	return runtime.wait(ctx, running, nginxRuntimeProcess{}, "")
+	return runtime.wait(ctx, running)
 }
 
-func (runtime nginxRuntime) wait(ctx context.Context, running bool, previous nginxRuntimeProcess, service string) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
+func (runtime nginxRuntime) wait(ctx context.Context, running bool) error {
+	ticker := time.NewTicker(runtimePollInterval)
 	defer ticker.Stop()
 	for {
-		selection, err := runtime.inspect()
+		selection, err := runtime.inspect(ctx)
 		if err != nil {
 			return err
 		}
 		if selection.status.BlockedReason != "" {
 			return runtimeConflict(selection.status.BlockedReason)
 		}
-		if !running && selection.master == nil {
+		if (selection.master != nil) == running {
 			return nil
-		}
-		if running && selection.master != nil && (selection.master.pid != previous.pid || selection.master.start != previous.start) {
-			if service == "" {
-				return nil
-			}
-			pid, err := runtime.supervisorPID(ctx, service)
-			if err == nil && pid == selection.master.pid {
-				return nil
-			}
 		}
 		select {
 		case <-ctx.Done():

@@ -4,19 +4,20 @@ package app
 
 // 错误码常量
 const (
-	ErrBadRequest        = "BAD_REQUEST"
-	ErrUnauthorized      = "UNAUTHORIZED"
-	ErrForbidden         = "FORBIDDEN"
-	ErrNotFound          = "NOT_FOUND"
-	ErrConflict          = "CONFLICT"
-	ErrValidationFailed  = "VALIDATION_FAILED"
-	ErrConfigDrifted     = "CONFIG_DRIFTED"
-	ErrNginxTestFailed   = "NGINX_TEST_FAILED"
-	ErrNginxReloadFailed = "NGINX_RELOAD_FAILED"
-	ErrAgentUnavailable  = "AGENT_UNAVAILABLE"
-	ErrAgentDenied       = "AGENT_DENIED"
-	ErrBusy              = "BUSY"
-	ErrInternalError     = "INTERNAL_ERROR"
+	ErrBadRequest              = "BAD_REQUEST"
+	ErrUnauthorized            = "UNAUTHORIZED"
+	ErrForbidden               = "FORBIDDEN"
+	ErrNotFound                = "NOT_FOUND"
+	ErrConflict                = "CONFLICT"
+	ErrValidationFailed        = "VALIDATION_FAILED"
+	ErrConfigDrifted           = "CONFIG_DRIFTED"
+	ErrNginxTestFailed         = "NGINX_TEST_FAILED"
+	ErrNginxReloadFailed       = "NGINX_RELOAD_FAILED"
+	ErrNginxRestartUnconfirmed = "NGINX_RESTART_UNCONFIRMED"
+	ErrAgentUnavailable        = "AGENT_UNAVAILABLE"
+	ErrAgentDenied             = "AGENT_DENIED"
+	ErrBusy                    = "BUSY"
+	ErrInternalError           = "INTERNAL_ERROR"
 )
 
 // AppError 表示一个业务错误

@@ -64,7 +64,7 @@ func loadRuntimeFixture(t *testing.T, executor *NginxExecutor, proc string) ngin
 func TestNginxRuntimeStatus(t *testing.T) {
 	e, proc, add := runtimeFixture(t)
 	runtime := loadRuntimeFixture(t, e, proc)
-	status, err := runtime.status()
+	status, err := runtime.status(t.Context())
 	if err != nil || status.Running || status.MemoryRSS != 0 {
 		t.Fatalf("stopped: %+v %v", status, err)
 	}
@@ -72,7 +72,7 @@ func TestNginxRuntimeStatus(t *testing.T) {
 	add(101, 100, "nginx: worker process", 20)
 	add(102, 100, "nginx: cache manager process", 3)
 	add(103, 1, "nginx: worker process", 99)
-	status, err = runtime.status()
+	status, err = runtime.status(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +81,18 @@ func TestNginxRuntimeStatus(t *testing.T) {
 	}
 	add(104, 1, "nginx: master process nginx -p/other -cnginx.conf", 1)
 	add(105, 104, "nginx: worker process", 99)
-	status, err = runtime.status()
+	status, err = runtime.status(t.Context())
 	if err != nil || status.MasterPID != 100 || status.Processes != 3 || len(status.Instances) != 2 || status.Instances[1].ConfPath != "/other/nginx.conf" || !status.OtherActionsBlocked || status.RestartGeneration == "" {
 		t.Fatalf("unrelated master affected managed instance: %+v %v", status, err)
 	}
 	add(106, 1, "nginx: master process nginx", 1)
-	status, err = runtime.status()
+	status, err = runtime.status(t.Context())
 	if err != nil || status.BlockedReason == "" || status.Running || status.RestartGeneration != "" || len(status.Instances) != 3 {
 		t.Fatalf("ambiguous masters: %+v %v", status, err)
+	}
+	runtime.run = func(_ context.Context, bin string, args ...string) (CmdResult, error) {
+		t.Fatalf("must not issue a command with ambiguous masters: %s %v", bin, args)
+		return CmdResult{}, nil
 	}
 	if _, err := runtime.restart(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "多个") {
 		t.Fatalf("ambiguous restart: %v", err)
@@ -100,7 +104,7 @@ func TestNginxRuntimeRejectsDifferentConfig(t *testing.T) {
 		t.Run(args, func(t *testing.T) {
 			e, proc, add := runtimeFixture(t)
 			add(100, 1, "nginx: master process nginx "+args, 10)
-			status, err := loadRuntimeFixture(t, e, proc).status()
+			status, err := loadRuntimeFixture(t, e, proc).status(t.Context())
 			if err != nil || status.Running || !status.OtherActionsBlocked || status.Instances[0].Match != "other" {
 				t.Fatalf("different config: %+v %v", status, err)
 			}
@@ -118,7 +122,7 @@ func TestNginxRuntimeDoesNotAssumeDefaultsOfDeletedBinary(t *testing.T) {
 	if err := os.Symlink(executor.GetBin()+" (deleted)", path); err != nil {
 		t.Fatal(err)
 	}
-	status, err := loadRuntimeFixture(t, executor, proc).status()
+	status, err := loadRuntimeFixture(t, executor, proc).status(t.Context())
 	if err != nil || status.Running || status.BlockedReason == "" || status.Instances[0].Match != "unknown" {
 		t.Fatalf("deleted binary identified using a new binary's compiled defaults: %+v %v", status, err)
 	}
@@ -126,7 +130,7 @@ func TestNginxRuntimeDoesNotAssumeDefaultsOfDeletedBinary(t *testing.T) {
 
 func TestNginxRuntimeMalformedStat(t *testing.T) {
 	for _, input := range []string{"", "1 (nginx) S 1", "1 nginx S 1"} {
-		if _, _, _, err := parseNginxProcStat(input); err == nil {
+		if _, _, _, _, err := parseNginxProcStat(input); err == nil {
 			t.Fatalf("accepted %q", input)
 		}
 	}
@@ -193,7 +197,7 @@ func TestNginxRuntimePSS(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	status, err := runtime.status()
+	status, err := runtime.status(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +208,7 @@ func TestNginxRuntimePSS(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proc, "101", "smaps_rollup"), []byte("Rss: 400 kB\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	status, err = runtime.status()
+	status, err = runtime.status(t.Context())
 	if err != nil || status.MemoryPSS != nil || status.MemoryRSS != uint64(200*os.Getpagesize()) {
 		t.Fatalf("fallback: %+v %v", status, err)
 	}

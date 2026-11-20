@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,8 +15,11 @@ import (
 )
 
 const (
-	nginxMasterTitle = "nginx: master process "
-	nginxS6Service   = "/run/service/nginx-service"
+	nginxMasterTitle     = "nginx: master process "
+	nginxS6Service       = "/run/service/nginx-service"
+	runtimePollInterval  = 100 * time.Millisecond
+	runtimeSettleWindow  = 500 * time.Millisecond
+	restartVerifyTimeout = 5 * time.Second
 )
 
 type nginxRuntime struct {
@@ -155,14 +159,45 @@ func (options runtimeOptions) args() []string {
 }
 
 type runtimeSelection struct {
-	status    nginx.RuntimeStatus
-	processes []nginxRuntimeProcess
-	master    *nginxRuntimeProcess
-	options   runtimeOptions
+	status          nginx.RuntimeStatus
+	processes       []nginxRuntimeProcess
+	master          *nginxRuntimeProcess
+	options         runtimeOptions
+	multipleMatches bool
 }
 
-func (runtime nginxRuntime) inspect() (runtimeSelection, error) {
-	processes, err := scanNginxRuntime(runtime.procRoot, runtime.bin)
+func (runtime nginxRuntime) inspect(ctx context.Context) (runtimeSelection, error) {
+	return settleRuntimeSelection(ctx, runtime.inspectOnce)
+}
+
+func settleRuntimeSelection(ctx context.Context, inspect func(context.Context) (runtimeSelection, error)) (runtimeSelection, error) {
+	selection, err := inspect(ctx)
+	if err != nil || !selection.multipleMatches {
+		return selection, err
+	}
+	settleCtx, cancel := context.WithTimeout(ctx, runtimeSettleWindow)
+	defer cancel()
+	ticker := time.NewTicker(runtimePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-settleCtx.Done():
+			return selection, ctx.Err()
+		case <-ticker.C:
+			current, err := inspect(settleCtx)
+			if settleCtx.Err() != nil {
+				return selection, ctx.Err()
+			}
+			if err != nil || !current.multipleMatches {
+				return current, err
+			}
+			selection = current
+		}
+	}
+}
+
+func (runtime nginxRuntime) inspectOnce(ctx context.Context) (runtimeSelection, error) {
+	processes, err := scanNginxRuntime(ctx, runtime.procRoot, runtime.bin)
 	if err != nil {
 		return runtimeSelection{}, err
 	}
@@ -210,6 +245,7 @@ func (runtime nginxRuntime) inspect() (runtimeSelection, error) {
 	}
 	switch {
 	case matching > 1:
+		selection.multipleMatches = true
 		selection.status.BlockedReason = "有多个 Nginx 主进程使用面板配置，无法确定重启目标。请检查下方 PID 与配置文件。"
 	case unknown:
 		selection.status.BlockedReason = "存在无法确认归属的 Nginx 主进程。请检查下方 PID 与配置文件。"
@@ -280,7 +316,7 @@ func sameRuntimeOptions(left, right runtimeOptions) bool {
 }
 
 func (runtime nginxRuntime) restart(ctx context.Context, generation string) (CmdResult, error) {
-	selection, err := runtime.inspect()
+	selection, err := runtime.inspect(ctx)
 	if err != nil {
 		return CmdResult{}, err
 	}
@@ -306,7 +342,7 @@ func (runtime nginxRuntime) restart(ctx context.Context, generation string) (Cmd
 	if err != nil {
 		return result, err
 	}
-	current, err := runtime.recheck(selection)
+	current, err := runtime.recheck(ctx, selection)
 	if err != nil {
 		return CmdResult{}, err
 	}
@@ -326,18 +362,98 @@ func (runtime nginxRuntime) restart(ctx context.Context, generation string) (Cmd
 	if err != nil {
 		return result, err
 	}
-	return result, runtime.wait(ctx, true, *selection.master, service)
+	return result, runtime.verifyRestart(ctx, selection, service, "")
 }
 
-func (runtime nginxRuntime) recheck(previous runtimeSelection) (runtimeSelection, error) {
-	current, err := runtime.inspect()
+func (runtime nginxRuntime) recheck(ctx context.Context, previous runtimeSelection) (runtimeSelection, error) {
+	current, err := runtime.inspect(ctx)
 	if err != nil {
 		return current, err
+	}
+	if current.status.BlockedReason != "" {
+		return current, runtimeConflict(current.status.BlockedReason)
 	}
 	if current.master == nil || current.status.RestartGeneration != previous.status.RestartGeneration {
 		return current, runtimeConflict("重启目标已变化，请刷新状态后重试")
 	}
 	return current, nil
+}
+
+func (runtime nginxRuntime) verifyRestart(ctx context.Context, previous runtimeSelection, service, pidPath string) (result error) {
+	ctx, cancel := context.WithTimeout(ctx, restartVerifyTimeout)
+	defer cancel()
+	ticker := time.NewTicker(runtimePollInterval)
+	defer ticker.Stop()
+	var candidates []int
+	var supervisorPID int
+	reason := "等待新的主进程"
+	defer func() {
+		if result != nil {
+			slog.Warn("Nginx 重启后状态未确认", "stage", "verify_restart", "service", service,
+				"previous_pid", previous.master.pid, "candidate_pids", candidates, "supervisor_pid", supervisorPID, "reason", reason)
+		}
+	}()
+	for {
+		current, err := runtime.inspect(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				reason = "无法读取 Nginx 进程状态"
+			}
+			return errNginxRestartUnconfirmed
+		}
+		candidates = candidates[:0]
+		for _, instance := range current.status.Instances {
+			if instance.Match != "other" {
+				candidates = append(candidates, instance.PID)
+			}
+		}
+		if service != "" {
+			supervisorPID, _ = runtime.supervisorPID(ctx, service)
+		}
+		if current.status.BlockedReason != "" {
+			reason = current.status.BlockedReason
+			return errNginxRestartUnconfirmed
+		}
+		exited, err := runtime.processExited(*previous.master)
+		switch {
+		case err != nil:
+			reason = "无法核验旧主进程身份"
+			return errNginxRestartUnconfirmed
+		case !exited:
+			reason = "旧主进程尚未退出"
+		case current.master == nil:
+			reason = "未发现新的主进程"
+		case !sameRuntimeOptions(previous.options, current.options):
+			reason = "新主进程的启动配置与确认目标不一致"
+			return errNginxRestartUnconfirmed
+		case service != "" && current.master.pid != supervisorPID:
+			reason = "服务管理器报告的主进程 PID 尚未匹配"
+		case pidPath != "" && !pidFileMatches(pidPath, current.master.pid):
+			reason = "PID 文件未指向新的主进程"
+		default:
+			if ctx.Err() == nil {
+				return nil
+			}
+			return errNginxRestartUnconfirmed
+		}
+		select {
+		case <-ctx.Done():
+			return errNginxRestartUnconfirmed
+		case <-ticker.C:
+		}
+	}
+}
+
+func (runtime nginxRuntime) processExited(previous nginxRuntimeProcess) (bool, error) {
+	stat, err := procText(filepath.Join(runtime.procRoot, strconv.Itoa(previous.pid), "stat"))
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, start, _, state, err := parseNginxProcStat(stat)
+	return start != previous.start || state == "Z" || state == "X", err
 }
 
 func (runtime nginxRuntime) testRestart(ctx context.Context, options runtimeOptions) (CmdResult, error) {

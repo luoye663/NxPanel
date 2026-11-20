@@ -57,8 +57,12 @@ func (s *Server) handleNginxControl(w http.ResponseWriter, r *http.Request) {
 		stderr := err.Error()
 		if errors.As(err, &agentErr) {
 			stderr = agentErr.Message
-			if agentErr.StatusCode == http.StatusConflict {
+			switch {
+			case agentErr.StatusCode == http.StatusConflict:
 				status, code, message = http.StatusConflict, app.ErrConflict, agentErr.Message
+				stderr = ""
+			case action == "restart" && agentErr.StatusCode == http.StatusServiceUnavailable:
+				status, code, message = http.StatusServiceUnavailable, app.ErrNginxRestartUnconfirmed, agentErr.Message
 				stderr = ""
 			}
 		}

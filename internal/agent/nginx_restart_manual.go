@@ -63,7 +63,7 @@ func (runtime nginxRuntime) restartManual(ctx context.Context, selection runtime
 	if err != nil {
 		return result, err
 	}
-	current, err := runtime.recheck(selection)
+	current, err := runtime.recheck(ctx, selection)
 	if err != nil {
 		return CmdResult{}, err
 	}
@@ -82,7 +82,7 @@ func (runtime nginxRuntime) restartManual(ctx context.Context, selection runtime
 	if err := waitManualExit(ctx, process); err != nil {
 		return CmdResult{}, fmt.Errorf("已请求停止旧主进程，但未确认退出，未启动新实例: %w", err)
 	}
-	current, err = runtime.inspect()
+	current, err = runtime.inspect(ctx)
 	if err != nil || current.master != nil || current.status.BlockedReason != "" || ctx.Err() != nil {
 		return CmdResult{}, runtimeConflict("旧主进程已退出，但当前实例状态已变化，未启动新实例")
 	}
@@ -93,14 +93,7 @@ func (runtime nginxRuntime) restartManual(ctx context.Context, selection runtime
 	if err != nil {
 		return result, fmt.Errorf("旧主进程已停止，启动新实例失败: %w", err)
 	}
-	if err := runtime.wait(ctx, true, *selection.master, ""); err != nil {
-		return result, fmt.Errorf("旧主进程已停止，无法确认新实例已启动: %w", err)
-	}
-	current, err = runtime.inspect()
-	if err != nil || current.master == nil || !sameRuntimeOptions(selection.options, current.options) || !pidFileMatches(pidPath, current.master.pid) {
-		return result, runtimeConflict("旧主进程已停止，但无法核验新实例的 PID 文件，请刷新状态")
-	}
-	return result, nil
+	return result, runtime.verifyRestart(ctx, selection, "", pidPath)
 }
 
 func waitManualExit(ctx context.Context, process restartProcess) error {
