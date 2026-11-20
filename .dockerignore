@@ -28,6 +28,7 @@ data/
 # 测试与脚本产物
 test-results/
 release/
+tmp/
 
 # 文档与杂项
 *.md
@@ -39,6 +40,8 @@ docker-compose*.yml
 .env
 .env.*
 !.env.example
+**/*.key
+**/*.pem
 
 # 本地 IDE / OS
 .vscode/

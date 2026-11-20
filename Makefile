@@ -6,6 +6,8 @@ GO          ?= go
 GOFLAGS     ?= -v
 BINARY_API  = bin/nxpanel-api
 BINARY_AGENT= bin/nxpanel-agent
+BINARY_UPDATER= bin/nxpanel-updater
+BUILD_TAGS  ?=
 
 # 前端相关变量
 WEBAPP_DIR  = webapp-react
@@ -24,7 +26,7 @@ GHCR_USERNAME ?= $(GITHUB_ACTOR)
 # 版本号（可通过 -ldflags 注入）
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
 BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION)
+LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/update.TrustKeys=$(NXPANEL_UPDATE_TRUST_KEYS)
 
 # 构建目标
 .PHONY: all build build-api build-agent build-frontend clean test test-commit-message setup-git-hooks run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
@@ -33,15 +35,18 @@ LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSIO
 all: build-frontend build
 
 ## build: 构建 API 和 Agent 二进制（需先 build-frontend）
-build: build-api build-agent
+build: build-api build-agent build-updater
 
 build-api:
 	@echo "构建 nxpanel-api..."
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_API) ./cmd/nxpanel-api
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o $(BINARY_API) ./cmd/nxpanel-api
 
 build-agent:
 	@echo "构建 nxpanel-agent..."
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_AGENT) ./cmd/nxpanel-agent
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o $(BINARY_AGENT) ./cmd/nxpanel-agent
+
+build-updater:
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -tags "$(BUILD_TAGS)" -ldflags "$(LDFLAGS)" -o $(BINARY_UPDATER) ./cmd/nxpanel-updater
 
 ## build-frontend: 构建前端 React 应用 → web/dist
 build-frontend:
@@ -208,19 +213,21 @@ tidy:
 	$(GO) mod tidy
 
 ## release: 生成发布包
-release: build-frontend build
+release: build-frontend
+	$(MAKE) build BUILD_TAGS=embed_web VERSION="$(VERSION)"
 	@echo "生成发布包..."
 	@rm -rf release/
 	@mkdir -p release/nxpanel/bin release/nxpanel/web release/nxpanel/configs/templates release/nxpanel/configs/nginx release/nxpanel/scripts
 	@install -m 755 $(BINARY_API) release/nxpanel/bin/
 	@install -m 755 $(BINARY_AGENT) release/nxpanel/bin/
+	@install -m 755 $(BINARY_UPDATER) release/nxpanel/bin/
 	@install -m 644 LICENSE release/nxpanel/
 	@install -m 644 configs/config.example.yaml release/nxpanel/configs/
 	@cp -r web/dist/* release/nxpanel/web/
 	@cp -r configs/templates/* release/nxpanel/configs/templates/
 	@cp configs/nginx/nginx.conf.production release/nxpanel/configs/nginx/
 	@cp configs/nginx/nginx.conf.openresty release/nxpanel/configs/nginx/
-	@cp scripts/nxpanel-api.service scripts/nxpanel-agent.service scripts/nginx.service scripts/openresty.service release/nxpanel/scripts/
+	@cp scripts/nxpanel-api.service scripts/nxpanel-agent.service scripts/nxpanel-updater.service scripts/nginx.service scripts/openresty.service release/nxpanel/scripts/
 	@cp -r scripts/nginx-install release/nxpanel/scripts/
 	@chmod +x release/nxpanel/scripts/nginx-install/install.sh
 	@cp install.sh release/nxpanel/

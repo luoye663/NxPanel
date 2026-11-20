@@ -14,7 +14,8 @@
 [Unit]
 Description=NxPanel Agent Service
 Documentation=https://github.com/luoye663/nxpanel
-After=network.target
+After=network.target nxpanel-updater.service
+Wants=nxpanel-updater.service
 
 [Service]
 Type=simple
@@ -23,7 +24,8 @@ User=root
 Group=root
 
 # 二进制文件路径
-ExecStart=/usr/local/nxpanel/bin/nxpanel-agent -config /usr/local/nxpanel/configs/config.yaml
+ExecStart=/usr/local/nxpanel/current/nxpanel-agent -config /usr/local/nxpanel/configs/config.yaml
+Environment=NXPANEL_UPDATE_HOME=/usr/local/nxpanel
 
 # 确保 Socket 目录存在
 ExecStartPre=/usr/bin/mkdir -p /run/nxpanel

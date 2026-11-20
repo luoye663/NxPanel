@@ -93,7 +93,7 @@ confirm_yes() {
 stop_services() {
     log_step "[1/6] 停止服务..."
 
-    for svc in nxpanel-api nxpanel-agent; do
+    for svc in nxpanel-api nxpanel-agent nxpanel-updater; do
         if systemctl is-active --quiet "$svc" 2>/dev/null; then
             systemctl stop "$svc" && log_info "$svc 已停止" || log_warn "$svc 停止失败"
         else
@@ -117,7 +117,7 @@ remove_service_files() {
 
     local changed=false
 
-    for svc in nxpanel-api.service nxpanel-agent.service; do
+    for svc in nxpanel-api.service nxpanel-agent.service nxpanel-updater.service; do
         local path="/etc/systemd/system/$svc"
         if [ -f "$path" ]; then
             rm -f "$path"

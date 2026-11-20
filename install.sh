@@ -708,7 +708,11 @@ stop_existing_services() {
     fi
 
     local svc
-    for svc in nxpanel-api nxpanel-agent; do
+    if [ -f "$INSTALL_ROOT/update-control/state.json" ] && grep -Eq '"phase":"(applying|trial|restoring|verifying_previous|blocked)"' "$INSTALL_ROOT/update-control/state.json"; then
+        die "检测到未完成的面板更新；请先恢复更新事务，再执行安装"
+    fi
+
+    for svc in nxpanel-api nxpanel-agent nxpanel-updater; do
         if ! systemctl cat "$svc" >/dev/null 2>&1; then
             log_info "$svc 未安装，跳过"
             continue
@@ -719,7 +723,7 @@ stop_existing_services() {
             if systemctl stop "$svc"; then
                 log_info "$svc 已停止"
             else
-                log_warn "$svc 停止失败，继续安装可能失败"
+                die "$svc 停止失败，未替换程序文件"
             fi
         else
             log_info "$svc 未运行"
@@ -746,6 +750,16 @@ copy_files() {
 
     install -m 755 "$SOURCE_DIR/bin/nxpanel-api" "$INSTALL_ROOT/bin/"
     install -m 755 "$SOURCE_DIR/bin/nxpanel-agent" "$INSTALL_ROOT/bin/"
+    install -m 755 "$SOURCE_DIR/bin/nxpanel-updater" "$INSTALL_ROOT/bin/"
+    local legacy_templates=false
+    if [ ! -L "$INSTALL_ROOT/current" ] && compgen -G "$CONFIG_DIR/templates/*.tpl" >/dev/null &&
+        ! diff -qr "$CONFIG_DIR/templates" "$SOURCE_DIR/configs/templates" >/dev/null; then
+        legacy_templates=true
+    fi
+    ln -sfn bin "$INSTALL_ROOT/current"
+    if [ -f "$INSTALL_ROOT/update-control/state.json" ]; then
+        mv -f "$INSTALL_ROOT/update-control/state.json" "$INSTALL_ROOT/update-control/state.preinstall.json"
+    fi
 
     if [ -d "$SOURCE_DIR/web" ]; then
         cp -r "$SOURCE_DIR/web/"* "$INSTALL_ROOT/web/"
@@ -758,7 +772,11 @@ copy_files() {
     fi
 
     if [ -d "$SOURCE_DIR/configs/templates" ]; then
-        cp -r "$SOURCE_DIR/configs/templates/"* "$CONFIG_DIR/templates/"
+        cp -rn "$SOURCE_DIR/configs/templates/"* "$CONFIG_DIR/templates/"
+    fi
+    if [ "$legacy_templates" = true ] && [ ! -e "$INSTALL_ROOT/templates-local" ]; then
+        cp -r "$CONFIG_DIR/templates" "$INSTALL_ROOT/templates-local"
+        log_warn "已保留旧安装的差异模板：$INSTALL_ROOT/templates-local；审核后可移除该目录以使用内置模板"
     fi
 
     if [ -d "$SOURCE_DIR/configs/nginx" ]; then
@@ -1005,19 +1023,22 @@ install_services() {
 
     local agent_service="$SOURCE_DIR/scripts/nxpanel-agent.service"
     local api_service="$SOURCE_DIR/scripts/nxpanel-api.service"
+    local updater_service="$SOURCE_DIR/scripts/nxpanel-updater.service"
 
-    if [ ! -f "$agent_service" ] || [ ! -f "$api_service" ]; then
+    if [ ! -f "$agent_service" ] || [ ! -f "$api_service" ] || [ ! -f "$updater_service" ]; then
         die "找不到 systemd 服务文件（$SOURCE_DIR/scripts/*.service）"
     fi
 
     sed \
-        -e "s|/usr/local/nxpanel/bin/nxpanel-agent -config /usr/local/nxpanel/configs/config.yaml|$INSTALL_ROOT/bin/nxpanel-agent -config $CONFIG_DIR/config.yaml|" \
+        -e "s|/usr/local/nxpanel|$INSTALL_ROOT|g" \
         "$agent_service" > /etc/systemd/system/nxpanel-agent.service
 
     sed \
-        -e "s|/usr/local/nxpanel/bin/nxpanel-api -config /usr/local/nxpanel/configs/config.yaml|$INSTALL_ROOT/bin/nxpanel-api -config $CONFIG_DIR/config.yaml|" \
+        -e "s|/usr/local/nxpanel|$INSTALL_ROOT|g" \
         -e "s|ReadWritePaths=.*|ReadWritePaths=$DATA_DIR /run/nxpanel|" \
         "$api_service" > /etc/systemd/system/nxpanel-api.service
+
+    sed -e "s|/usr/local/nxpanel|$INSTALL_ROOT|g" "$updater_service" > /etc/systemd/system/nxpanel-updater.service
 
     systemctl daemon-reload
     log_info "systemd 服务安装成功"
@@ -1025,6 +1046,8 @@ install_services() {
 
 start_services() {
     log_step "[7/7] 启动服务..."
+
+    systemctl enable --now nxpanel-updater
 
     systemctl enable nxpanel-agent
     systemctl start nxpanel-agent
