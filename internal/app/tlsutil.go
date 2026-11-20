@@ -109,7 +109,7 @@ func IsCertExpiredOrMissing(certPath string) bool {
 	return time.Until(cert.NotAfter) < 24*time.Hour
 }
 
-func EnsureAPICertificate(tlsCfg *TLSConfig, dataDir string) (certPath, keyPath string, err error) {
+func APICertificatePaths(tlsCfg *TLSConfig, dataDir string) (certPath, keyPath string) {
 	if tlsCfg.Cert != "" && tlsCfg.Key != "" {
 		certPath = tlsCfg.Cert
 		keyPath = tlsCfg.Key
@@ -118,6 +118,11 @@ func EnsureAPICertificate(tlsCfg *TLSConfig, dataDir string) (certPath, keyPath 
 		certPath = filepath.Join(tlsDir, "api.crt")
 		keyPath = filepath.Join(tlsDir, "api.key")
 	}
+	return certPath, keyPath
+}
+
+func EnsureAPICertificate(tlsCfg *TLSConfig, dataDir string) (certPath, keyPath string, err error) {
+	certPath, keyPath = APICertificatePaths(tlsCfg, dataDir)
 
 	if !IsCertExpiredOrMissing(certPath) {
 		if _, err := os.Stat(keyPath); err == nil {

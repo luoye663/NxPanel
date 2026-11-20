@@ -204,9 +204,9 @@ func TestNormalizeVersion(t *testing.T) {
 	}{
 		{"1.2.3", "v1.2.3"},
 		{"v1.2.3", "v1.2.3"},
-		{"v1.2.3-rc1", "v1.2.3"},
+		{"v1.2.3-rc1", "v1.2.3-rc1"},
 		{"not-a-version", ""},
-		{"v2", "v2"},
+		{"v2", ""},
 	}
 	for _, c := range cases {
 		if got := normalizeVersion(c.in); got != c.want {
@@ -223,5 +223,26 @@ func TestGithubReleaseParsing(t *testing.T) {
 	}
 	if r.TagName != "v9.9.9" || r.HTMLURL == "" || r.Body == "" {
 		t.Errorf("解析结果不完整：%+v", r)
+	}
+}
+
+func TestPreviewFeedUsesFullSemVer(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"tag_name":"v1.9.0"},
+			{"tag_name":"v2.0.0-rc.1","prerelease":true},
+			{"tag_name":"v2.0.0-rc.11","prerelease":true},
+			{"tag_name":"v2.0.0-rc.3","prerelease":true},
+			{"tag_name":"v2.0.0","draft":true}
+		]`))
+	}))
+	defer fixture.Close()
+	service := NewService(app.UpgradeConfig{Enabled: true})
+	service.feed = fixture.URL + "/index.json"
+	for channel, want := range map[string]string{"stable": "v1.9.0", "preview": "v2.0.0-rc.11"} {
+		release, err := service.fetchCandidate(context.Background(), channel)
+		if err != nil || release == nil || release.TagName != want {
+			t.Errorf("%s: got %v, %v; want %s", channel, release, err, want)
+		}
 	}
 }

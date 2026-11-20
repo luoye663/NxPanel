@@ -14,12 +14,14 @@ import (
 	"os/signal"
 	"os/user"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/agent"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/nginx"
+	"github.com/luoye663/nxpanel/internal/update"
 )
 
 func main() {
@@ -52,6 +54,14 @@ func main() {
 		fmt.Println("配置迁移完成")
 		os.Exit(0)
 	}
+	bootCtx, stopBoot := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopBoot()
+	boot, err := update.AwaitBoot(bootCtx, app.Version)
+	if err != nil {
+		slog.Error("Agent 更新启动检查失败", "error", err)
+		os.Exit(1)
+	}
+	trial := boot.TrialVersion() != ""
 
 	// 自动查找配置文件
 	finalConfigPath, err := app.FindConfigFile(*configPath)
@@ -63,7 +73,11 @@ func main() {
 	slog.Info("使用配置文件", "path", finalConfigPath)
 
 	// 加载配置
-	cfg, err := app.LoadConfig(finalConfigPath)
+	loadConfig := app.LoadConfig
+	if trial {
+		loadConfig = app.LoadConfigReadOnly
+	}
+	cfg, err := loadConfig(finalConfigPath)
 	if err != nil {
 		slog.Error("加载配置失败", "error", err)
 		os.Exit(1)
@@ -109,10 +123,7 @@ func main() {
 	}
 
 	// 自动查找 Nginx 模板目录
-	cfg.Nginx.TemplatesDir = app.FindTemplatesDir(cfg.Nginx.TemplatesDir)
-
-	// 加载 Nginx 模板
-	if err := nginx.InitTemplates(cfg.Nginx.TemplatesDir); err != nil {
+	if err := nginx.InitBuiltinTemplates(cfg.Nginx.TemplatesDir); err != nil {
 		slog.Error("加载 Nginx 模板失败", "error", err)
 		os.Exit(1)
 	}
@@ -128,13 +139,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	agentServer, err := agent.NewServer(cfg)
+	newServer := agent.NewServer
+	if trial {
+		newServer = agent.NewTrialServer
+	}
+	agentServer, err := newServer(cfg)
 	if err != nil {
 		slog.Error("创建 Agent 服务器失败", "error", err)
 		os.Exit(1)
 	}
 
-	agentServer.AutoDetectIfNeeded()
+	if !trial {
+		agentServer.AutoDetectIfNeeded()
+	}
 
 	// 在 Unix Socket 上监听
 	listener, err := net.Listen("unix", cfg.Agent.SocketPath)
@@ -165,10 +182,30 @@ func main() {
 		slog.Warn("未配置 agent.socket_group，非 root 进程可能无法连接 socket")
 	}
 
-	httpServer := newAgentHTTPServer(cfg, agentServer.Handler())
+	handler := agentServer.Handler()
+	if trial {
+		var enabled atomic.Bool
+		original := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !enabled.Load() && r.URL.Path != "/internal/v1/health" {
+				http.Error(w, "update trial in progress", http.StatusServiceUnavailable)
+				return
+			}
+			original.ServeHTTP(w, r)
+		})
+		go func() {
+			if update.AwaitCommit(bootCtx, boot) == nil {
+				agentServer.StartRuntime()
+				enabled.Store(true)
+			}
+		}()
+	}
+	httpServer := newAgentHTTPServer(cfg, handler)
 
 	// 优雅关闭
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-sigCh
@@ -185,6 +222,7 @@ func main() {
 		slog.Error("Agent 服务异常退出", "error", err)
 		os.Exit(1)
 	}
+	<-shutdownDone
 
 	// 清理 socket 文件
 	_ = os.Remove(cfg.Agent.SocketPath)

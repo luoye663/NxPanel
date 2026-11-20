@@ -152,6 +152,8 @@ func (svc *Service) Close() {
 	svc.jobsWG.Wait()
 }
 
+func (svc *Service) Busy() bool { return len(svc.jobSlots) > 0 }
+
 func (svc *Service) SetTaskLogDir(dir string) {
 	svc.taskLogDir = dir
 }

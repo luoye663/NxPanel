@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/luoye663/nxpanel/internal/app"
+	"github.com/luoye663/nxpanel/internal/update"
 )
 
 type Service struct {
@@ -27,6 +29,14 @@ type Service struct {
 	mu              sync.RWMutex
 	status          *UpgradeStatus
 	lastManualCheck time.Time
+	checking        map[string]bool
+	channels        map[string]channelCache
+	channel         string
+	feed            string
+	candidate       *candidate
+	download        *Download
+	root            context.Context
+	closed          bool
 	wg              sync.WaitGroup
 	cancel          context.CancelFunc
 	startOnce       sync.Once
@@ -36,23 +46,40 @@ type Service struct {
 // manualCooldown 手动触发检查的最小间隔，避免频繁调用触发 GitHub API 限流。
 const manualCooldown = 60 * time.Second
 
+type channelCache struct {
+	status    *UpgradeStatus
+	candidate *candidate
+	checked   time.Time
+}
+
 type UpgradeStatus struct {
-	HasUpgrade     bool   `json:"has_upgrade"`
-	CurrentVersion string `json:"current_version"`
-	LatestVersion  string `json:"latest_version,omitempty"`
-	ReleaseURL     string `json:"release_url,omitempty"`
-	PublishedAt    string `json:"published_at,omitempty"`
-	Body           string `json:"body,omitempty"`
-	CheckedAt      string `json:"checked_at"`
-	Error          string `json:"error,omitempty"`
+	HasUpgrade     bool          `json:"has_upgrade"`
+	CurrentVersion string        `json:"current_version"`
+	LatestVersion  string        `json:"latest_version,omitempty"`
+	ReleaseURL     string        `json:"release_url,omitempty"`
+	PublishedAt    string        `json:"published_at,omitempty"`
+	Body           string        `json:"body,omitempty"`
+	CheckedAt      string        `json:"checked_at"`
+	Error          string        `json:"error,omitempty"`
+	Channel        string        `json:"channel"`
+	Available      bool          `json:"installable"`
+	Managed        bool          `json:"managed"`
+	Docker         bool          `json:"docker"`
+	Task           *update.State `json:"task,omitempty"`
+	Download       *Download     `json:"download,omitempty"`
 }
 
 type githubRelease struct {
-	TagName     string `json:"tag_name"`
-	HTMLURL     string `json:"html_url"`
-	PublishedAt string `json:"published_at"`
-	Body        string `json:"body"`
+	TagName     string        `json:"tag_name"`
+	HTMLURL     string        `json:"html_url"`
+	PublishedAt string        `json:"published_at"`
+	Body        string        `json:"body"`
+	Draft       bool          `json:"draft"`
+	Prerelease  bool          `json:"prerelease"`
+	Assets      []githubAsset `json:"assets"`
 }
+
+var repoName = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 func NewService(cfg app.UpgradeConfig) *Service {
 	interval := app.ParseDurationOrDefault(cfg.CheckInterval, 6*time.Hour)
@@ -64,23 +91,30 @@ func NewService(cfg app.UpgradeConfig) *Service {
 		repo:     cfg.GitHubRepo,
 		baseURL:  "https://api.github.com",
 		interval: interval,
+		feed:     update.TestFeed(),
+		channel:  "stable",
+		checking: make(map[string]bool),
+		channels: make(map[string]channelCache),
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout:       15 * time.Second,
+			CheckRedirect: validateRedirect,
 		},
 		status: &UpgradeStatus{
 			CurrentVersion: app.Version,
 			CheckedAt:      time.Time{}.UTC().Format(time.RFC3339),
+			Channel:        "stable",
 		},
 	}
 }
 
 func (s *Service) Start(ctx context.Context) {
 	s.startOnce.Do(func() {
+		ctx, s.cancel = context.WithCancel(ctx)
+		s.root = ctx
 		if !s.enabled {
 			slog.Info("升级检测已禁用")
 			return
 		}
-		ctx, s.cancel = context.WithCancel(ctx)
 		slog.Info("升级检测服务已启动", "interval", s.interval, "repo", s.repo)
 		s.wg.Add(1)
 		go func() {
@@ -92,6 +126,9 @@ func (s *Service) Start(ctx context.Context) {
 
 func (s *Service) Close() {
 	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -103,7 +140,25 @@ func (s *Service) GetStatus() *UpgradeStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	cp := *s.status
+	if s.download != nil {
+		progress := *s.download
+		cp.Download = &progress
+	}
 	return &cp
+}
+
+func (s *Service) SetChannel(channel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if channel != s.channel {
+		s.channels[s.channel] = channelCache{s.status, s.candidate, s.lastManualCheck}
+		s.channel = channel
+		cached := s.channels[channel]
+		s.status, s.candidate, s.lastManualCheck = cached.status, cached.candidate, cached.checked
+		if s.status == nil {
+			s.status = &UpgradeStatus{Channel: channel, CurrentVersion: app.Version}
+		}
+	}
 }
 
 // CheckNow 手动触发一次升级检查。
@@ -120,19 +175,7 @@ func (s *Service) CheckNow(ctx context.Context) *UpgradeStatus {
 		return s.GetStatus()
 	}
 
-	s.mu.RLock()
-	cooldown := !s.lastManualCheck.IsZero() && time.Since(s.lastManualCheck) < manualCooldown
-	s.mu.RUnlock()
-	if cooldown {
-		return s.GetStatus()
-	}
-
-	s.check(ctx)
-
-	s.mu.Lock()
-	s.lastManualCheck = time.Now()
-	s.mu.Unlock()
-
+	s.check(ctx, true)
 	return s.GetStatus()
 }
 
@@ -142,7 +185,7 @@ func (s *Service) run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-	s.check(ctx)
+	s.check(ctx, false)
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -151,22 +194,50 @@ func (s *Service) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.check(ctx)
+			s.check(ctx, false)
 		}
 	}
 }
 
-func (s *Service) check(ctx context.Context) {
-	result, err := s.fetchLatest(ctx)
+func (s *Service) check(ctx context.Context, manual bool) {
+	s.mu.Lock()
+	channel := s.channel
+	if s.checking[channel] || manual && !s.lastManualCheck.IsZero() && time.Since(s.lastManualCheck) < manualCooldown {
+		s.mu.Unlock()
+		return
+	}
+	s.checking[channel] = true
+	if manual {
+		s.lastManualCheck = time.Now()
+	}
+	s.mu.Unlock()
+
+	result, err := s.fetchCandidate(ctx, channel)
+	var install *candidate
+	if err == nil && result != nil && semver.Compare(normalizeVersion(result.TagName), normalizeVersion(app.Version)) > 0 {
+		install = s.verifyCandidate(ctx, result)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.checking[channel] = false
+	if channel != s.channel {
+		return
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	s.status.CheckedAt = now
 
 	if err != nil {
+		s.candidate = nil
+		s.status.Available = false
 		s.status.Error = "无法获取版本信息：" + err.Error()
+		return
+	}
+	s.candidate = install
+	s.status.Available = install != nil
+	if result == nil {
+		s.status = &UpgradeStatus{Channel: channel, CurrentVersion: app.Version, CheckedAt: now}
 		return
 	}
 
@@ -174,7 +245,9 @@ func (s *Service) check(ctx context.Context) {
 	latest := normalizeVersion(result.TagName)
 
 	s.status.LatestVersion = result.TagName
-	s.status.ReleaseURL = result.HTMLURL
+	if s.feed == "" {
+		s.status.ReleaseURL = "https://github.com/" + s.repo + "/releases/tag/" + result.TagName
+	}
 	s.status.PublishedAt = result.PublishedAt
 	s.status.Body = result.Body
 	s.status.CurrentVersion = app.Version
@@ -189,6 +262,9 @@ func (s *Service) check(ctx context.Context) {
 }
 
 func (s *Service) fetchLatest(ctx context.Context) (*githubRelease, error) {
+	if !validRepo(s.repo) {
+		return nil, errors.New("无效的 GitHub 仓库配置")
+	}
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", s.baseURL, s.repo)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -257,11 +333,7 @@ func normalizeVersion(v string) string {
 	if !strings.HasPrefix(v, "v") {
 		v = "v" + v
 	}
-	idx := strings.Index(v, "-")
-	if idx > 0 {
-		v = v[:idx]
-	}
-	if semver.Canonical(v) == "" {
+	if !update.ValidVersion(v) {
 		return ""
 	}
 	return v

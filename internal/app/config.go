@@ -394,6 +394,14 @@ type PreValidationConfig struct {
 // 环境变量格式：NXPANEL_{YAML键名大写}
 // 例如：NXPANEL_API_LISTEN、NXPANEL_AGENT_SOCKET_PATH
 func LoadConfig(path string) (*Config, error) {
+	return loadConfig(path, true)
+}
+
+func LoadConfigReadOnly(path string) (*Config, error) {
+	return loadConfig(path, false)
+}
+
+func loadConfig(path string, writeGeneratedPath bool) (*Config, error) {
 	cfg := defaultConfig()
 
 	absPath, _ := filepath.Abs(path)
@@ -406,7 +414,7 @@ func LoadConfig(path string) (*Config, error) {
 			// 配置文件不存在是合法的，使用默认值 + 环境变量
 			applyEnvOverrides(cfg)
 			normalizeRetentionConfig(cfg)
-			normalizeLoginPath(cfg)
+			normalizeLoginPath(cfg, writeGeneratedPath)
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
@@ -420,7 +428,7 @@ func LoadConfig(path string) (*Config, error) {
 	// 环境变量覆盖 YAML 配置（优先级最高）
 	applyEnvOverrides(cfg)
 	normalizeRetentionConfig(cfg)
-	normalizeLoginPath(cfg)
+	normalizeLoginPath(cfg, writeGeneratedPath)
 
 	return cfg, nil
 }
@@ -1263,7 +1271,7 @@ func (c *Config) WriteBack() error {
 	return os.WriteFile(c.ConfigFile, buf.Bytes(), 0600)
 }
 
-func normalizeLoginPath(cfg *Config) {
+func normalizeLoginPath(cfg *Config, writeGeneratedPath bool) {
 	if err := ValidateLoginPath(cfg.API.LoginPath); err == nil {
 		return
 	}
@@ -1278,7 +1286,7 @@ func normalizeLoginPath(cfg *Config) {
 		cfg.API.LoginPath = "/panelfallback"
 	}
 	// 随机入口尽力写回配置文件，避免重启后管理员丢失入口；失败仅记录告警继续启动。
-	if cfg.ConfigFile != "" {
+	if writeGeneratedPath && cfg.ConfigFile != "" {
 		if err := cfg.WriteBack(); err != nil {
 			slog.Warn("写回随机登录入口失败，请从启动日志记录入口", "login_path", cfg.API.LoginPath, "error", err)
 		} else {

@@ -82,6 +82,7 @@ type Server struct {
 	acmeSvc                *acme.Service
 	scheduledTaskSvc       *scheduledtask.Service
 	scheduledTaskEngine    *scheduledtask.Engine
+	scheduledTaskRunner    *scheduledtask.Runner
 	upgradeSvc             *upgrade.Service
 	upstreamSvc            *upstream.Service
 	router                 *chi.Mux
@@ -94,9 +95,20 @@ type Server struct {
 	loginPath              atomic.Value
 	needsSetup             atomic.Bool
 	publicHealth           atomic.Bool
+	updateMu               sync.Mutex
+	updatePausing          bool
+	updateWrites           int
 }
 
 func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
+	return newServer(cfg, db, false)
+}
+
+func NewTrialServer(cfg *app.Config, db *sql.DB) (*Server, error) {
+	return newServer(cfg, db, true)
+}
+
+func newServer(cfg *app.Config, db *sql.DB, trial bool) (*Server, error) {
 	s := newServerBase(cfg, db)
 	complete := false
 	defer func() {
@@ -111,18 +123,44 @@ func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
 	if err := s.initAgentBackedServices(r); err != nil {
 		return nil, err
 	}
-	// Handlers and startup-created/migrated tasks must exist before any due task
-	// can be claimed. ReloadTask calls made during setup are retained by Engine.
-	if err := s.scheduledTaskEngine.Start(); err != nil {
-		return nil, fmt.Errorf("启动计划任务中心失败: %w", err)
+	if trial {
+		if err := s.scheduledTaskEngine.Prepare(); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.StartRuntime(); err != nil {
+			return nil, err
+		}
 	}
-	s.startRuntimeServices()
 
 	s.setupMiddleware()
 	s.setupRoutes()
 
 	complete = true
 	return s, nil
+}
+
+func (s *Server) StartRuntime() error {
+	return s.startRuntime(false)
+}
+
+func (s *Server) StartPreparedRuntime() error { return s.startRuntime(true) }
+
+func (s *Server) startRuntime(prepared bool) error {
+	if s.geoAccessSvc != nil {
+		if err := s.geoAccessSvc.Reconcile(s.rootCtx); err != nil {
+			slog.Warn("对账地域访问配置失败，面板将继续启动", "error", err)
+		}
+	}
+	start := s.scheduledTaskEngine.Start
+	if prepared {
+		start = s.scheduledTaskEngine.StartPrepared
+	}
+	if err := start(); err != nil {
+		return fmt.Errorf("启动计划任务中心失败: %w", err)
+	}
+	s.startRuntimeServices()
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -340,6 +378,7 @@ func (s *Server) setupMiddleware() {
 	s.router.Use(chiMiddleware.Logger)
 	s.router.Use(middleware.Authenticate(s.authSvc))
 	s.router.Use(middleware.CSRFProtect())
+	s.router.Use(s.guardUpdateWrites)
 }
 
 type sslAgentAdapter struct {

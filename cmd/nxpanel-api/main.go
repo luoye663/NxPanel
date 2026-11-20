@@ -4,8 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"database/sql"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,11 +19,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/api"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db"
 	"github.com/luoye663/nxpanel/internal/ingress"
 	"github.com/luoye663/nxpanel/internal/nginx"
+	"github.com/luoye663/nxpanel/internal/update"
+	"github.com/luoye663/nxpanel/web"
 )
 
 func main() {
@@ -33,6 +39,14 @@ func main() {
 		fmt.Println(app.Version)
 		os.Exit(0)
 	}
+	bootCtx, stopBoot := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopBoot()
+	boot, err := update.AwaitBoot(bootCtx, app.Version)
+	if err != nil {
+		slog.Error("更新启动检查失败", "error", err)
+		os.Exit(1)
+	}
+	trial := boot.TrialVersion() != ""
 
 	// 自动查找配置文件
 	finalConfigPath, err := app.FindConfigFile(*configPath)
@@ -44,7 +58,11 @@ func main() {
 	slog.Info("使用配置文件", "path", finalConfigPath)
 
 	// 加载配置
-	cfg, err := app.LoadConfig(finalConfigPath)
+	loadConfig := app.LoadConfig
+	if trial {
+		loadConfig = app.LoadConfigReadOnly
+	}
+	cfg, err := loadConfig(finalConfigPath)
 	if err != nil {
 		slog.Error("加载配置失败", "error", err)
 		os.Exit(1)
@@ -72,6 +90,15 @@ func main() {
 
 	// 打开 SQLite 数据库
 	dbPath := filepath.Join(cfg.DataDir, "panel.db")
+	dbPath, err = filepath.Abs(dbPath)
+	if err != nil {
+		slog.Error("解析数据库路径失败", "error", err)
+		os.Exit(1)
+	}
+	if trial && dbPath != boot.DBPath {
+		slog.Error("更新期间数据库路径发生改变")
+		os.Exit(1)
+	}
 	dsn := db.DSNFromPath(dbPath, cfg.Database.BusyTimeout)
 	database, err := db.Open(dsn)
 	if err != nil {
@@ -87,10 +114,7 @@ func main() {
 	}
 
 	// 自动查找 Nginx 模板目录
-	cfg.Nginx.TemplatesDir = app.FindTemplatesDir(cfg.Nginx.TemplatesDir)
-
-	// 加载 Nginx 模板
-	if err := nginx.InitTemplates(cfg.Nginx.TemplatesDir); err != nil {
+	if err := nginx.InitBuiltinTemplates(cfg.Nginx.TemplatesDir); err != nil {
 		slog.Error("加载 Nginx 模板失败", "error", err)
 		os.Exit(1)
 	}
@@ -100,7 +124,11 @@ func main() {
 	nginx.SetAllowedLogPrefixes(cfg.Nginx.AllowedLogPrefixes)
 
 	// 创建 API 服务器（注入数据库连接）
-	server, err := api.NewServer(cfg, database)
+	newServer := api.NewServer
+	if trial {
+		newServer = api.NewTrialServer
+	}
+	server, err := newServer(cfg, database)
 	if err != nil {
 		slog.Error("创建 API 服务器失败", "error", err)
 		os.Exit(1)
@@ -112,14 +140,23 @@ func main() {
 	var certPath, keyPath string
 
 	if cfg.API.TLS.Enabled {
-		var err error
-		certPath, keyPath, err = app.EnsureAPICertificate(&cfg.API.TLS, cfg.DataDir)
+		certPath, keyPath = app.APICertificatePaths(&cfg.API.TLS, cfg.DataDir)
+		if !trial {
+			certPath, keyPath, err = app.EnsureAPICertificate(&cfg.API.TLS, cfg.DataDir)
+		}
 		if err != nil {
 			slog.Error("TLS 证书准备失败", "error", err)
 			server.Close()
 			os.Exit(1)
 		}
 		httpServer.TLSConfig = app.NewAPITLSConfig()
+		certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err != nil {
+			slog.Error("无法加载 API TLS 密钥对", "error", err)
+			server.Close()
+			os.Exit(1)
+		}
+		httpServer.TLSConfig.Certificates = []tls.Certificate{certificate}
 
 		if cfg.API.TLS.Cert == "" && cfg.API.TLS.Key == "" {
 			slog.Info("使用自动生成的自签名证书（浏览器会显示安全警告，建议替换为正式证书）", "cert", certPath)
@@ -159,6 +196,18 @@ func main() {
 		os.Exit(1)
 	}
 	limitedListener := ingress.LimitListener(listener, cfg.API.Ingress.MaxConnections, cfg.API.Ingress.MaxConnectionsPerIP)
+	if trial {
+		if err := completeUpdateTrial(bootCtx, cfg, boot, dbPath, server, database); err != nil {
+			slog.Error("更新就绪检查失败", "error", err)
+			ctx, cancel := context.WithTimeout(bootCtx, 2*time.Second)
+			_, _ = update.NewClient(update.Home()).Act(ctx, "reject", update.Action{ID: boot.ID, Version: app.Version, DBPath: dbPath})
+			cancel()
+			_ = listener.Close()
+			server.Close()
+			os.Exit(1)
+		}
+	}
+	stopBoot()
 
 	// 启动服务
 	if cfg.API.TLS.Enabled {
@@ -184,6 +233,47 @@ func main() {
 
 	slog.Info("nxpanel-api 已停止")
 	fmt.Println("nxpanel-api 已停止")
+}
+
+func completeUpdateTrial(ctx context.Context, cfg *app.Config, boot update.State, dbPath string, server *api.Server, database *sql.DB) error {
+	if boot.Phase == update.Trial && update.RejectTrial(app.Version) {
+		return fmt.Errorf("development fixture rejected this version")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 85*time.Second)
+	defer cancel()
+	assets, err := web.StaticFS()
+	if err != nil {
+		return err
+	}
+	if _, err := fs.ReadFile(assets, "index.html"); err != nil {
+		return err
+	}
+	var busy, pages, checkpointed int
+	if err := database.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &checkpointed); err != nil || busy != 0 {
+		return fmt.Errorf("无法持久化试运行数据库: busy=%d, error=%v", busy, err)
+	}
+	agent := agentclient.New(cfg.Agent.SocketPath, cfg.Agent.Token, 3*time.Second, time.Second, time.Second)
+	defer agent.Close()
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		health, err := agent.Health(ctx)
+		if err == nil && health.Status == "ok" && health.Service == "nxpanel-agent" && health.Version == app.Version {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("agent is not ready with the expected version: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+	if _, err := update.NewClient(update.Home()).Act(ctx, "ready", update.Action{ID: boot.ID, Version: app.Version, DBPath: dbPath}); err != nil {
+		return err
+	}
+	if err := update.AwaitCommit(ctx, boot); err != nil {
+		return err
+	}
+	return server.StartPreparedRuntime()
 }
 
 func newAPIHTTPServer(cfg *app.Config, handler http.Handler) *http.Server {

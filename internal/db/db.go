@@ -116,6 +116,15 @@ func RunMigrations(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("查询已应用迁移版本失败: %w", err)
 	}
+	known := make(map[int]bool, len(migrations))
+	for _, migration := range migrations {
+		known[migration.Version] = true
+	}
+	for version := range applied {
+		if !known[version] {
+			return fmt.Errorf("数据库已使用本程序不支持的迁移 %d；请启动兼容的较新版本或 Docker 镜像", version)
+		}
+	}
 
 	// 按版本号排序，依次执行
 	for _, m := range migrations {
@@ -197,12 +206,16 @@ func loadMigrations() ([]Migration, error) {
 
 // getAppliedVersions 查询已应用的迁移版本
 func getAppliedVersions(db *sql.DB) (map[int]bool, error) {
-	// schema_migrations 表由 0001_init.sql 创建
-	// 首次运行时该表可能还不存在，需要容错
+	var exists bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')").Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return make(map[int]bool), nil
+	}
 	rows, err := db.Query("SELECT version FROM schema_migrations")
 	if err != nil {
-		// 如果表不存在，说明还没运行过任何迁移
-		return make(map[int]bool), nil
+		return nil, err
 	}
 	defer rows.Close()
 

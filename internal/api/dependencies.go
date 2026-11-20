@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -178,6 +177,7 @@ func (s *Server) initScheduledTaskCenter(taskRepo *scheduledtask.Repo) error {
 	})
 	s.scheduledTaskSvc = scheduledtask.NewService(s.rootCtx, taskRepo, registry, runner, engine, s.cfg.API.AsyncJobs.ManualQueueSize, s.cfg.API.AsyncJobs.ManualWorkers)
 	s.scheduledTaskEngine = engine
+	s.scheduledTaskRunner = runner
 	return nil
 }
 
@@ -213,9 +213,6 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	}
 	if err := geoSvc.EnsureUpdateSystemTask(s.rootCtx, s.scheduledTaskSvc); err != nil {
 		return fmt.Errorf("创建 GeoIP 更新计划任务失败: %w", err)
-	}
-	if err := geoSvc.Reconcile(s.rootCtx); err != nil {
-		slog.Warn("对账地域访问配置失败，面板将继续启动", "error", err)
 	}
 	s.hotlinkSvc = hotlink.NewService(r.site, r.hotlinkRule, s.opRepo, s.agentClient, s.cfg.Nginx.PanelDir)
 	s.configSvc = config.NewService(r.site, r.proxy, r.ssl, s.opRepo, s.agentClient)
@@ -288,5 +285,9 @@ func (s *Server) startRuntimeServices() {
 	}()
 
 	s.upgradeSvc = upgrade.NewService(s.cfg.Upgrade)
+	if channel, err := s.settingsRepo.Get(upgradeChannelKey); err == nil && channel == "preview" {
+		s.upgradeSvc.SetChannel(channel)
+	}
 	s.upgradeSvc.Start(s.rootCtx)
+	s.finishUpgradeAudit()
 }
