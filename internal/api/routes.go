@@ -3,10 +3,9 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -319,19 +318,19 @@ func (s *Server) setupRoutes() {
 }
 
 func (s *Server) setupStaticFiles() {
-	webDir, err := web.StaticFS()
+	webFiles, err := web.StaticFS()
 	if err != nil {
 		slog.Error("初始化前端目录失败", "error", err)
 		return
 	}
 
-	fileServer := http.FileServer(http.Dir(webDir))
+	fileServer := http.FileServerFS(webFiles)
 	var indexOnce sync.Once
 	var indexHTML []byte
 	var indexErr error
 	loadIndex := func() ([]byte, error) {
 		indexOnce.Do(func() {
-			indexHTML, indexErr = os.ReadFile(filepath.Join(webDir, "index.html"))
+			indexHTML, indexErr = fs.ReadFile(webFiles, "index.html")
 		})
 		return indexHTML, indexErr
 	}
@@ -349,8 +348,8 @@ func (s *Server) setupStaticFiles() {
 			return
 		}
 
-		fullPath := filepath.Join(webDir, strings.TrimPrefix(path, "/"))
-		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+		fullPath := strings.TrimPrefix(path, "/")
+		if info, err := fs.Stat(webFiles, fullPath); err == nil && !info.IsDir() {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
