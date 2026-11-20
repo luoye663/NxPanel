@@ -34,6 +34,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/ssl"
 	"github.com/luoye663/nxpanel/internal/systemmetrics"
 	"github.com/luoye663/nxpanel/internal/twofa"
+	"github.com/luoye663/nxpanel/internal/update"
 	"github.com/luoye663/nxpanel/internal/upgrade"
 	"github.com/luoye663/nxpanel/internal/upstream"
 )
@@ -284,7 +285,11 @@ func (s *Server) startRuntimeServices() {
 		maintenanceLoop(s.rootCtx, policy.CleanupInterval, s.pruneRetainedData)
 	}()
 
-	s.upgradeSvc = upgrade.NewService(s.cfg.Upgrade)
+	var progress *upgrade.ProgressJournal
+	if update.Home() != "" {
+		progress = upgrade.NewProgressJournal(s.cfg.DataDir)
+	}
+	s.upgradeSvc = upgrade.NewServiceWithProgress(s.cfg.Upgrade, progress)
 	if channel, err := s.settingsRepo.Get(upgradeChannelKey); err == nil && channel == "preview" {
 		s.upgradeSvc.SetChannel(channel)
 	}

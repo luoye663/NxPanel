@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -222,13 +223,14 @@ func (s *Service) prepare(job candidate, updater *update.Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
-		s.download.Error = "下载或校验失败：" + err.Error()
+		slog.Warn("准备面板更新失败", "version", job.version, "error", err)
+		s.download.Error = "下载或校验未完成，请重试；如持续失败，请查看面板服务日志。"
 		return
 	}
 	s.download = nil
 }
 
-func (s *Service) downloadPackage(ctx context.Context, job candidate, updater *update.Client) error {
+func (s *Service) downloadPackage(ctx context.Context, job candidate, updater *update.Client) (resultErr error) {
 	state, err := updater.Status(ctx)
 	if err != nil {
 		return err
@@ -236,6 +238,16 @@ func (s *Service) downloadPackage(ctx context.Context, job candidate, updater *u
 	if state.Busy() || state.Phase == update.Prepared {
 		return errors.New("请先完成或放弃当前更新")
 	}
+	s.progress.Begin(job.version, state.ID)
+	defer func() {
+		if resultErr != nil {
+			stage := DownloadFailed
+			if s.root.Err() != nil {
+				stage = Interrupted
+			}
+			s.progress.DownloadStage(job.version, stage)
+		}
+	}()
 	client := *s.httpClient
 	client.Timeout = 14 * time.Minute
 	response, err := fetch(ctx, &client, job.url, job.asset.Size)
@@ -258,7 +270,11 @@ func (s *Service) downloadPackage(ctx context.Context, job candidate, updater *u
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	_, err = updater.Stage(ctx, job.manifest, job.signature, file)
+	s.progress.DownloadStage(job.version, Validating)
+	staged, err := updater.Stage(ctx, job.manifest, job.signature, file)
+	if err == nil {
+		s.progress.Status(staged)
+	}
 	return err
 }
 

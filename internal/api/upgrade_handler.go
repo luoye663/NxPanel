@@ -27,7 +27,10 @@ func (s *Server) enrichUpdateStatus(ctx context.Context, status *upgrade.Upgrade
 	status.Available = status.Available && status.Managed && !state.Busy() && state.Phase != update.Prepared
 	if err == nil && state.Phase != update.Idle {
 		status.Task = &update.State{ID: state.ID, Phase: state.Phase, Version: state.Version, Error: state.Error}
+	} else if err != nil {
+		state = update.State{}
 	}
+	status.Progress = s.upgradeSvc.Progress(state)
 	return status
 }
 
@@ -82,6 +85,7 @@ func (s *Server) handleUpgradeCancel(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusConflict, app.ErrBadRequest, "无法取消：更新任务已改变或不在待重启状态", nil)
 		return
 	}
+	s.upgradeSvc.RecordCancel(request.ID)
 	s.recordUpgradeAction(r, "upgrade_cancel", request.ID, "")
 	s.handleUpgradeCheck(w, r)
 }
@@ -107,7 +111,11 @@ func (s *Server) handleUpgradeActivate(w http.ResponseWriter, r *http.Request) {
 	s.recordUpgradeAction(r, "upgrade_activate", state.Version, auditID)
 	path, err := filepath.Abs(filepath.Join(s.cfg.DataDir, "panel.db"))
 	if err == nil {
-		_, err = client.Act(r.Context(), "activate", update.Action{ID: state.ID, DBPath: path})
+		var activated update.State
+		activated, err = client.Act(r.Context(), "activate", update.Action{ID: state.ID, DBPath: path})
+		if err == nil {
+			s.upgradeSvc.Progress(activated)
+		}
 	}
 	if err != nil {
 		persisted, readErr := update.ReadState(update.Home())
@@ -116,6 +124,9 @@ func (s *Server) handleUpgradeActivate(w http.ResponseWriter, r *http.Request) {
 			_ = s.opRepo.UpdateError(auditID, "failed", "UPGRADE_NOT_STARTED", "更新未能启动", "")
 			WriteError(w, r, http.StatusConflict, app.ErrBadRequest, "更新未能启动，请重新查询状态", nil)
 			return
+		}
+		if readErr == nil && persisted.ID == state.ID {
+			s.upgradeSvc.Progress(persisted)
 		}
 	}
 	WriteOK(w, r, map[string]string{"id": state.ID, "version": state.Version})

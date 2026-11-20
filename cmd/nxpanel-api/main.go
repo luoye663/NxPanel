@@ -26,6 +26,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/ingress"
 	"github.com/luoye663/nxpanel/internal/nginx"
 	"github.com/luoye663/nxpanel/internal/update"
+	"github.com/luoye663/nxpanel/internal/upgrade"
 	"github.com/luoye663/nxpanel/web"
 )
 
@@ -98,6 +99,11 @@ func main() {
 	if trial && dbPath != boot.DBPath {
 		slog.Error("更新期间数据库路径发生改变")
 		os.Exit(1)
+	}
+	var progress *upgrade.ProgressJournal
+	if update.Home() != "" {
+		progress = upgrade.NewProgressJournal(cfg.DataDir)
+		progress.Recover(boot)
 	}
 	dsn := db.DSNFromPath(dbPath, cfg.Database.BusyTimeout)
 	database, err := db.Open(dsn)
@@ -197,7 +203,7 @@ func main() {
 	}
 	limitedListener := ingress.LimitListener(listener, cfg.API.Ingress.MaxConnections, cfg.API.Ingress.MaxConnectionsPerIP)
 	if trial {
-		if err := completeUpdateTrial(bootCtx, cfg, boot, dbPath, server, database); err != nil {
+		if err := completeUpdateTrial(bootCtx, cfg, boot, dbPath, server, database, progress); err != nil {
 			slog.Error("更新就绪检查失败", "error", err)
 			ctx, cancel := context.WithTimeout(bootCtx, 2*time.Second)
 			_, _ = update.NewClient(update.Home()).Act(ctx, "reject", update.Action{ID: boot.ID, Version: app.Version, DBPath: dbPath})
@@ -235,7 +241,7 @@ func main() {
 	fmt.Println("nxpanel-api 已停止")
 }
 
-func completeUpdateTrial(ctx context.Context, cfg *app.Config, boot update.State, dbPath string, server *api.Server, database *sql.DB) error {
+func completeUpdateTrial(ctx context.Context, cfg *app.Config, boot update.State, dbPath string, server *api.Server, database *sql.DB, progress *upgrade.ProgressJournal) error {
 	if boot.Phase == update.Trial && update.RejectTrial(app.Version) {
 		return fmt.Errorf("development fixture rejected this version")
 	}
@@ -273,6 +279,12 @@ func completeUpdateTrial(ctx context.Context, cfg *app.Config, boot update.State
 	if err := update.AwaitCommit(ctx, boot); err != nil {
 		return err
 	}
+	if boot.Phase == update.VerifyOld {
+		boot.Phase = update.RolledBack
+	} else {
+		boot.Phase = update.Committed
+	}
+	progress.Status(boot)
 	return server.StartPreparedRuntime()
 }
 

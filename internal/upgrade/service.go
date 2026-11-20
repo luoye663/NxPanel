@@ -33,6 +33,7 @@ type Service struct {
 	channels        map[string]channelCache
 	channel         string
 	feed            string
+	progress        *ProgressJournal
 	candidate       *candidate
 	download        *Download
 	root            context.Context
@@ -67,6 +68,7 @@ type UpgradeStatus struct {
 	Docker         bool          `json:"docker"`
 	Task           *update.State `json:"task,omitempty"`
 	Download       *Download     `json:"download,omitempty"`
+	Progress       *Progress     `json:"progress,omitempty"`
 }
 
 type githubRelease struct {
@@ -82,6 +84,10 @@ type githubRelease struct {
 var repoName = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 func NewService(cfg app.UpgradeConfig) *Service {
+	return NewServiceWithProgress(cfg, nil)
+}
+
+func NewServiceWithProgress(cfg app.UpgradeConfig, progress *ProgressJournal) *Service {
 	interval := app.ParseDurationOrDefault(cfg.CheckInterval, 6*time.Hour)
 	if interval < 1*time.Hour {
 		interval = 1 * time.Hour
@@ -92,6 +98,7 @@ func NewService(cfg app.UpgradeConfig) *Service {
 		baseURL:  "https://api.github.com",
 		interval: interval,
 		feed:     update.TestFeed(),
+		progress: progress,
 		channel:  "stable",
 		checking: make(map[string]bool),
 		channels: make(map[string]channelCache),
@@ -105,6 +112,14 @@ func NewService(cfg app.UpgradeConfig) *Service {
 			Channel:        "stable",
 		},
 	}
+}
+
+func (s *Service) Progress(state update.State) *Progress {
+	return s.progress.Status(state)
+}
+
+func (s *Service) RecordCancel(taskID string) {
+	s.progress.Cancel(taskID)
 }
 
 func (s *Service) Start(ctx context.Context) {

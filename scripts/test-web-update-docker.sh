@@ -67,14 +67,18 @@ mutate() {
 
 mutate POST check '{}' | jq -e '.data.installable and .data.latest_version == "v0.0.2"' >/dev/null
 mutate POST prepare '{"version":"v0.0.2"}' | jq -e .success >/dev/null
-wait_for '.data.task.phase == "prepared" and .data.current_version == "v0.0.1"' >/dev/null
+prepared_log='.data.task.phase == "prepared" and .data.current_version == "v0.0.1" and .data.download == null and .data.progress.task_id == .data.task.id and [.data.progress.events[].stage] == ["downloading", "validating", "prepared"]'
+task=$(wait_for "$prepared_log" | jq -c '{id:.task.id}')
+mutate POST cancel "$task" | jq -e '.data.task == null and .data.progress.stage == "cancelled"' >/dev/null
+mutate POST prepare '{"version":"v0.0.2"}' | jq -e .success >/dev/null
+wait_for "$prepared_log" >/dev/null
 docker restart "$panel" >/dev/null
 base=https://$(docker port "$panel" 18888/tcp)
 api=$base/api/v1/upgrade-$nonce
-task=$(wait_for '.data.task.phase == "prepared" and .data.current_version == "v0.0.1"' | jq -c '{id:.task.id}')
+task=$(wait_for "$prepared_log" | jq -c '{id:.task.id}')
 nginx_pid=$(docker exec "$panel" /command/s6-svstat -o pid /run/service/nginx-service)
 mutate POST activate "$task" >/dev/null || true
-wait_for '.data.task.phase == "committed" and .data.current_version == "v0.0.2"' >/dev/null
+wait_for '.data.task.phase == "committed" and .data.current_version == "v0.0.2" and .data.progress.stage == "committed" and [.data.progress.events[].stage] == ["downloading", "validating", "prepared", "applying", "trial", "committed"]' >/dev/null
 curl -ksSf --max-time 5 -b "$cookie" "$api/system/overview" | jq -e '.data.agent.available and .data.agent.version == "v0.0.2"' >/dev/null
 printf 'Stable update committed; a restart before activation kept the original version.\n'
 
@@ -82,7 +86,7 @@ mutate PUT channel '{"channel":"preview"}' | jq -e '.data.installable and .data.
 mutate POST prepare '{"version":"v0.0.3-rc.1"}' | jq -e .success >/dev/null
 task=$(wait_for '.data.task.phase == "prepared" and .data.task.version == "v0.0.3-rc.1"' | jq -c '{id:.task.id}')
 mutate POST activate "$task" >/dev/null || true
-wait_for '.data.task.phase == "rolled_back" and .data.current_version == "v0.0.2" and .data.channel == "preview"' >/dev/null
+wait_for '.data.task.phase == "rolled_back" and .data.current_version == "v0.0.2" and .data.channel == "preview" and .data.progress.stage == "rolled_back" and ([.data.progress.events[].stage] | map(select(. != "restoring"))) == ["downloading", "validating", "prepared", "applying", "trial", "verifying_previous", "rolled_back"]' >/dev/null
 curl -ksSf --max-time 5 -b "$cookie" "$api/system/overview" | jq -e '.data.agent.available and .data.agent.version == "v0.0.2"' >/dev/null
 test "$(docker exec "$panel" /command/s6-svstat -o pid /run/service/nginx-service)" = "$nginx_pid"
-printf 'Failed preview rolled back with the original session, channel, agent and Nginx process intact.\n'
+printf 'Failed preview rolled back with progress history, session, channel, agent and Nginx process intact.\n'
