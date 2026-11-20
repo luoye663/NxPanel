@@ -22,7 +22,7 @@ export function confirmDanger({
   // 危险动作统一二次确认，避免删除、清空、覆盖等操作散落在页面中各自实现。
   modals.openConfirmModal({
     title,
-    children: message,
+    children: <div style={{ overflowWrap: 'anywhere' }}>{message}</div>,
     labels: { confirm: confirmLabel, cancel: cancelLabel },
     confirmProps: { color: 'red' },
     cancelProps: { variant: 'default' },
