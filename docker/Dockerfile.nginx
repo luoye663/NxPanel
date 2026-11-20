@@ -62,14 +62,21 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \
         -o /out/nxpanel-updater ./cmd/nxpanel-updater
 
+FROM nginx:1.27-alpine AS nginx-base
+
+FROM nginx-base AS geoip2-module
+RUN apk add --no-cache build-base linux-headers libmaxminddb-dev openssl-dev pcre2-dev zlib-dev wget ca-certificates
+COPY docker/build-geoip2.sh /tmp/build-geoip2.sh
+RUN /bin/sh /tmp/build-geoip2.sh /usr/sbin/nginx
+
 # ---- Stage 3：运行时（nginx 官方镜像）----
-FROM nginx:1.27-alpine AS runtime
+FROM nginx-base AS runtime
 
 ARG S6_VERSION=3.2.0.2
 ARG TARGETARCH
 
 # 安装 s6-overlay（noarch + arch tarball，buildx 通过 TARGETARCH 映射）
-RUN apk add --no-cache ca-certificates tzdata xz wget \
+RUN apk add --no-cache ca-certificates tzdata xz wget libmaxminddb \
  && case "$TARGETARCH" in \
       amd64) S6_ARCH=x86_64 ;; \
       arm64) S6_ARCH=aarch64 ;; \
@@ -102,6 +109,7 @@ RUN mkdir -p \
 COPY --from=backend-builder /out/nxpanel-api   /usr/local/nxpanel/bin/
 COPY --from=backend-builder /out/nxpanel-agent /usr/local/nxpanel/bin/
 COPY --from=backend-builder /out/nxpanel-updater /usr/local/nxpanel/bin/
+COPY --from=geoip2-module /out/ngx_http_geoip2_module.so /usr/local/nxpanel/modules/ngx_http_geoip2_module.so
 
 # 复制许可证（BSD 3-Clause 二进制分发要求）
 COPY LICENSE /usr/local/nxpanel/LICENSE
@@ -129,6 +137,7 @@ ENV NXPANEL_API_LISTEN=0.0.0.0:18888 \
     NXPANEL_UPDATE_HOME=/usr/local/nxpanel \
     NXPANEL_UPDATE_DOCKER=1 \
     NXPANEL_NGINX_BIN=/usr/sbin/nginx \
+    NXPANEL_NGINX_GEOIP2_MODULE=/usr/local/nxpanel/modules/ngx_http_geoip2_module.so \
     NXPANEL_NGINX_CONF_PATH=/opt/nxpanel/nginx/nginx.conf \
     NXPANEL_NGINX_PANEL_DIR=/opt/nxpanel/nginx \
     NXPANEL_NGINX_ERROR_LOG_PATH=/www/wwwlogs/error.log \
