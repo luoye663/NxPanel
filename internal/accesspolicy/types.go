@@ -1,6 +1,8 @@
 // Package accesspolicy compiles ordered site access rules to native Nginx directives.
 package accesspolicy
 
+import "net/netip"
+
 const (
 	MaxRules           = 256
 	MaxConditions      = 16
@@ -43,8 +45,8 @@ type Action struct {
 	AccountIDs   []string `json:"account_ids,omitempty"`
 }
 type RenderContext struct {
-	CountryNetworks map[string][]string
-	ServerNames     []string
+	LookupCountry func(netip.Addr) (string, error)
+	ServerNames   []string
 	// AuthFiles contains service-resolved htpasswd content, keyed by rule ID or "default".
 	AuthFiles map[string]string
 }

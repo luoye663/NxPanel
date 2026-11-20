@@ -42,8 +42,14 @@ func Preview(p Policy, req PreviewRequest, ctx RenderContext) (*PreviewResult, e
 		uri += "/"
 	}
 	country := strings.ToUpper(req.Country)
+	if country == "" && ctx.LookupCountry != nil {
+		country, err = ctx.LookupCountry(ip)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if country == "" {
-		country = lookupCountry(ip, ctx.CountryNetworks)
+		country = "ZZ"
 	}
 	result := &PreviewResult{Rules: []RulePreview{}, MatchedRuleID: "default", Action: p.DefaultAction}
 	found := false
@@ -72,20 +78,6 @@ func Preview(p Policy, req PreviewRequest, ctx RenderContext) (*PreviewResult, e
 	}
 	result.RequiresAuthentication = result.Action.Type == "auth"
 	return result, nil
-}
-func lookupCountry(ip netip.Addr, networks map[string][]string) string {
-	country := "ZZ"
-	bits := -1
-	for code, list := range networks {
-		for _, v := range list {
-			p, err := parseNetwork(v)
-			if err == nil && p.Contains(ip) && p.Bits() > bits {
-				country = strings.ToUpper(code)
-				bits = p.Bits()
-			}
-		}
-	}
-	return country
 }
 func matches(c Condition, ip netip.Addr, country, uri, referer string) bool {
 	hit := false

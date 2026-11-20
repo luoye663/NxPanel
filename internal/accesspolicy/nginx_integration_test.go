@@ -34,7 +34,7 @@ func TestNginxHTTP(t *testing.T) {
 		{ID: "office", Enabled: true, Match: "all", Conditions: []Condition{{Kind: "ip", Values: []string{"10.0.0.0/8", "2001:db8::/48"}}}, Action: Action{Type: "allow"}},
 		{ID: "region", Enabled: true, Match: "all", Conditions: []Condition{{Kind: "country", Values: []string{"CN"}}}, Action: Action{Type: "deny", StatusCode: 452, ResponseBody: "region"}},
 	}, p.Rules...)
-	ctx := RenderContext{CountryNetworks: map[string][]string{"CN": {"10.0.0.0/8", "2001:db8::/32"}}, AuthFiles: map[string]string{strings.Repeat("a", 64): "user:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n"}}
+	ctx := RenderContext{AuthFiles: map[string]string{strings.Repeat("a", 64): "user:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n"}}
 	compiled, err := Compile("native-test", "/policy", p, ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +66,7 @@ http {
  set_real_ip_from 0.0.0.0/0;
  real_ip_header X-Forwarded-For;
  real_ip_recursive on;
+ geo $nxpanel_geoip_country { default ZZ; 10.0.0.0/8 CN; 2001:db8::/32 CN; }
  include /policy/global.conf;
  server {
   listen 8080;

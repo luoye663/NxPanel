@@ -163,6 +163,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/geoip/status", s.handleGeoIPStatus)
 			r.Post("/geoip/update", s.handleGeoIPUpdate)
 			r.Post("/geoip/database", s.handleGeoIPDatabaseUpload)
+			r.Post("/geoip/migrate", s.handleGeoIPMigrate)
 			r.Get("/sites/{site_id}/geo-access", s.handleSiteGeoAccessGet)
 			r.Put("/sites/{site_id}/geo-access", s.guardLegacyAccess(s.handleSiteGeoAccessUpdate))
 			r.Post("/sites/{site_id}/geo-access/enable", s.guardLegacyAccess(s.handleSiteGeoAccessEnable))

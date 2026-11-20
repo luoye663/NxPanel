@@ -67,6 +67,22 @@ func (s *Server) handleGeoIPUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteOK(w, r, result)
 }
+func (s *Server) handleGeoIPMigrate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGeoAccess(w, r) {
+		return
+	}
+	if err := s.geoAccessSvc.Migrate(r.Context(), middleware.GetRequestID(r.Context())); err != nil {
+		writeAppError(w, r, app.ErrValidationFailedMsg(err.Error(), nil))
+		return
+	}
+	result, err := s.geoAccessSvc.GetStatus()
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+
 func (s *Server) handleGeoIPDatabaseUpload(w http.ResponseWriter, r *http.Request) {
 	if !s.requireGeoAccess(w, r) {
 		return

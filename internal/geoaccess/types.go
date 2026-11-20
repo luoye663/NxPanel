@@ -28,14 +28,15 @@ type UpdateGeoIPSettingsRequest struct {
 }
 
 type GeoIPStatusResponse struct {
-	Installed     bool     `json:"installed"`
-	Checksum      string   `json:"checksum"`
-	BuildEpoch    int64    `json:"build_epoch"`
-	Countries     []string `json:"countries"`
-	LastAttemptAt string   `json:"last_attempt_at,omitempty"`
-	LastSuccessAt string   `json:"last_success_at,omitempty"`
-	LastError     string   `json:"last_error,omitempty"`
-	EnabledSites  int      `json:"enabled_sites"`
+	Installed     bool          `json:"installed"`
+	Checksum      string        `json:"checksum"`
+	BuildEpoch    int64         `json:"build_epoch"`
+	Countries     []string      `json:"countries"`
+	LastAttemptAt string        `json:"last_attempt_at,omitempty"`
+	LastSuccessAt string        `json:"last_success_at,omitempty"`
+	LastError     string        `json:"last_error,omitempty"`
+	EnabledSites  int           `json:"enabled_sites"`
+	Runtime       RuntimeStatus `json:"runtime"`
 }
 
 type SiteAccessResponse struct {
