@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ActionIcon, Alert, Anchor, Badge, Button, Group, Modal, Paper, Progress, ScrollArea, SegmentedControl, Stack, Text, useModalsStack } from '@mantine/core'
+import { ActionIcon, Alert, Anchor, Badge, Box, Button, Group, Modal, Paper, SegmentedControl, SimpleGrid, Stack, Text, useModalsStack } from '@mantine/core'
 import { IconRefresh } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { queryKeys, useUpgradeCheckMutation } from '@/api/hooks'
@@ -7,11 +7,12 @@ import { ApiError } from '@/api/client'
 import { activateUpgrade, cancelUpgrade, getUpgradeStatus, prepareUpgrade, setUpgradeChannel } from '@/api/system'
 import type { UpgradeStatus } from '@/api/types'
 import { notifyError } from '@/utils/notify'
+import { UpgradeProgress } from './UpgradeProgress'
 
 const reconnectKey = 'nxpanel-upgrade-reconnect'
 const reconnectLimit = 15 * 60 * 1000
 
-type Reconnect = { id: string; startedAt: number }
+type Reconnect = { id: string; startedAt: number; reopen?: boolean }
 type RestartTarget = { id: string; version: string }
 
 function loadReconnect(): Reconnect | null {
@@ -39,8 +40,10 @@ function showError(error: Error) {
 export function VersionUpdate() {
   const dialogs = useModalsStack(['release', 'restart'])
   const opened = dialogs.state.release
+  const openDialog = dialogs.open
   const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null)
   const [reconnect, setReconnect] = useState(loadReconnect)
+  const [unconfirmedTask, setUnconfirmedTask] = useState<string | null>(null)
   const cache = useQueryClient()
   const query = useQuery({
     queryKey: queryKeys.upgradeStatus,
@@ -75,7 +78,12 @@ export function VersionUpdate() {
       setReconnect(null)
     }
     if (task?.id === reconnect.id && task.phase === 'committed' && status?.current_version === task.version) {
-      saveReconnect(null)
+      if (reconnect.reopen) {
+        openDialog('release')
+        finish()
+        return
+      }
+      saveReconnect({ ...reconnect, reopen: true, startedAt: Date.now() })
       window.location.reload()
       return
     }
@@ -85,16 +93,18 @@ export function VersionUpdate() {
     }
     const timeout = window.setTimeout(() => {
       finish()
+      setUnconfirmedTask(reconnect.id)
       notifyError({ message: '未能确认更新结果。请重新检查面板状态；如无法访问，请查看更新服务日志。' })
     }, Math.max(0, reconnectLimit - (Date.now() - reconnect.startedAt)))
     return () => window.clearTimeout(timeout)
-  }, [reconnect, status?.current_version, task?.id, task?.phase, task?.version])
+  }, [openDialog, reconnect, status?.current_version, task?.id, task?.phase, task?.version])
 
   function confirmRestart() {
     if (!restartTarget) return
     const pending = { id: restartTarget.id, startedAt: Date.now() }
     saveReconnect(pending)
     setReconnect(pending)
+    setUnconfirmedTask(null)
     dialogs.close('restart')
     activate.mutate(restartTarget.id)
   }
@@ -105,6 +115,8 @@ export function VersionUpdate() {
   const applying = Boolean(task && ['applying', 'trial', 'restoring', 'verifying_previous'].includes(task.phase))
   const downloading = Boolean(download && !download.error)
   const busy = check.isPending || channel.isPending || prepare.isPending || cancel.isPending || Boolean(reconnect) || applying || downloading
+  const unconfirmed = Boolean(unconfirmedTask && task?.id === unconfirmedTask && (applying || prepared))
+  const activating = Boolean(reconnect && !reconnect.reopen)
 
   return (
     <>
@@ -118,7 +130,7 @@ export function VersionUpdate() {
         程序版本: {status.current_version || '版本未知'}
       </Badge>
       <Modal.Stack>
-        <Modal {...dialogs.register('release')} title="程序更新" size="lg" centered scrollAreaComponent={ScrollArea.Autosize}
+        <Modal {...dialogs.register('release')} title="程序更新" size="lg" centered
           closeButtonProps={{ 'aria-label': '关闭程序更新' }}>
           <Stack gap="sm">
             <Group justify="space-between">
@@ -130,28 +142,32 @@ export function VersionUpdate() {
                 <IconRefresh size={16} />
               </ActionIcon>
             </Group>
-            <Group justify="space-between"><Text size="sm" c="dimmed">当前版本</Text><Text size="sm">{status.current_version}</Text></Group>
-            <Group justify="space-between"><Text size="sm" c="dimmed">通道版本</Text><Text size="sm">{status.latest_version || '尚未检查'}</Text></Group>
+            <SimpleGrid cols={2} spacing="xs">
+              <Paper withBorder bg="var(--mantine-color-default-hover)" px="sm" py="xs">
+                <Text size="xs" c="dimmed">当前版本</Text>
+                <Text fw={700} size="md" style={{ overflowWrap: 'anywhere' }}>{status.current_version || '版本未知'}</Text>
+              </Paper>
+              <Paper withBorder bg="var(--mantine-color-default-hover)" px="sm" py="xs">
+                <Text size="xs" c="dimmed">通道版本</Text>
+                <Text fw={700} size="md" c={status.has_upgrade ? 'blue' : undefined} style={{ overflowWrap: 'anywhere' }}>{status.latest_version || '尚未检查'}</Text>
+              </Paper>
+            </SimpleGrid>
+            <UpgradeProgress status={status} activating={activating} waiting={(activating || applying) && query.isError} unconfirmed={unconfirmed} />
             {status.published_at && <Text size="xs" c="dimmed">发布于 {new Date(status.published_at).toLocaleString()}</Text>}
             {status.body && (
               <Stack gap={4}>
                 <Text fw={600} size="sm">更新内容</Text>
                 <Paper withBorder p="sm">
-                  <ScrollArea.Autosize mah="min(24rem, 40dvh)" type="auto" scrollbars="y" offsetScrollbars
-                    viewportProps={{ tabIndex: 0, role: 'region', 'aria-label': '更新内容' }}>
+                  <Box tabIndex={0} role="region" aria-label="更新内容" style={{ maxHeight: 'min(24rem, 40dvh)', overflowY: 'auto' }}>
                     <Text size="sm" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{status.body}</Text>
-                  </ScrollArea.Autosize>
+                  </Box>
                 </Paper>
               </Stack>
             )}
             {status.release_url && <Anchor href={status.release_url} target="_blank" rel="noopener noreferrer" size="sm">查看发布说明</Anchor>}
             {status.error && <Alert color="red">{status.error}</Alert>}
-            {download && !download.error && (
-              <><Text size="sm">正在下载及校验 {download.version}</Text><Progress aria-label="下载进度" value={Math.min(100, 100 * download.received / Math.max(1, download.total))} /></>
-            )}
             {download?.error && <Alert color="red">{download.error}</Alert>}
-            {task?.error && <Alert color={task.phase === 'rolled_back' ? 'yellow' : 'red'}>{task.error}</Alert>}
-            {(reconnect || applying) && <Alert color="blue">正在应用更新，等待面板重新连接…</Alert>}
+            {task?.error && (!status.progress || status.progress.task_id === task.id) && <Alert color={task.phase === 'rolled_back' ? 'yellow' : 'red'}>{task.error}</Alert>}
             {status.docker && <Text size="xs" c="dimmed">仅更新容器内的面板程序；删除并重建容器后，使用所选镜像的版本。</Text>}
             {prepared && task ? (
               <>

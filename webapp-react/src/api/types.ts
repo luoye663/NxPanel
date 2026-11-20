@@ -742,6 +742,11 @@ export interface CreateProxyRequest {
 export interface UpdateProxyRequest extends CreateProxyRequest {}
 
 // === Upgrade ===
+export type UpgradeProgressStage =
+  | 'downloading' | 'validating' | 'download_failed' | 'interrupted' | 'prepared'
+  | 'applying' | 'trial' | 'restoring' | 'verifying_previous'
+  | 'committed' | 'rolled_back' | 'blocked' | 'failed' | 'cancelled'
+
 export interface UpgradeStatus {
   has_upgrade: boolean
   current_version: string
@@ -757,4 +762,10 @@ export interface UpgradeStatus {
   docker: boolean
   task?: { id: string; version: string; phase: string; error?: string }
   download?: { version: string; received: number; total: number; error?: string }
+  progress?: {
+    version: string
+    task_id?: string
+    stage: UpgradeProgressStage
+    events: { stage: UpgradeProgressStage; at: string }[]
+  }
 }
