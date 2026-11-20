@@ -751,4 +751,10 @@ export interface UpgradeStatus {
   body: string
   checked_at: string
   error: string
+  channel: 'stable' | 'preview'
+  installable: boolean
+  managed: boolean
+  docker: boolean
+  task?: { id: string; version: string; phase: string; error?: string }
+  download?: { version: string; received: number; total: number; error?: string }
 }
