@@ -647,7 +647,10 @@ data_dir/logs/tasks/
 | Nginx 站点日志切割未执行 | 检查计划任务页面中的 `nginx_log_rotation` 系统任务是否启用、执行历史是否失败 |
 | 配置回写后出现 `配置已通过 RPC 回写` | 这是 API 调用 Agent 写回配置文件的正常日志 |
 | Nginx reload 失败 | 在操作记录中查看 stderr，检查 `nginx -t` 输出和备份记录 |
+| 多个 Nginx 主进程且无法重启 | 在「Nginx 管理 → 运行状态与控制」对照 PID 和配置路径。面板只重启唯一核验的实例；检查是否有残留的同配置主进程、服务归属不一致或共用的 PID 文件。不要仅凭进程名停止实例。 |
 | 前端页面 404 | 检查 `web/dist` 是否存在，源码环境运行 `make build-frontend` |
+
+手动启动的 Nginx 只有在 Agent 能安全核验守护进程、启动配置和独立 PID 文件时才可直接重启（Linux 需支持 `pidfd`）。无法核验时，请使用该实例原本的服务管理方式。
 
 ## License
 

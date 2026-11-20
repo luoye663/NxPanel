@@ -1207,7 +1207,8 @@ func (c *Client) postJSON(ctx context.Context, path string, in any, out any) err
 		respBody, _ := io.ReadAll(resp.Body)
 		var agentResp AgentResponse
 		if json.Unmarshal(respBody, &agentResp) == nil && agentResp.Error != "" {
-			if path == "/internal/v1/transactions/apply" {
+			switch path {
+			case "/internal/v1/transactions/apply", "/internal/v1/nginx/start", "/internal/v1/nginx/stop", "/internal/v1/nginx/restart":
 				return &HTTPError{StatusCode: resp.StatusCode, Message: agentResp.Error}
 			}
 			return fmt.Errorf("agent 返回 HTTP %d: %s", resp.StatusCode, agentResp.Error)

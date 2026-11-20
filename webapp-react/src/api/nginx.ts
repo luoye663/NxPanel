@@ -69,6 +69,10 @@ export interface NginxRuntimeStatus {
   memory_rss: number
   memory_pss?: number | null
   uptime_seconds: number
+  instances: { pid: number; conf_path?: string; match: 'matching' | 'other' | 'unknown' }[]
+  blocked_reason?: string
+  other_actions_blocked?: boolean
+  restart_generation?: string
 }
 
 export type NginxControlAction = 'start' | 'stop' | 'restart'
@@ -77,6 +81,6 @@ export function getNginxStatus(): Promise<NginxRuntimeStatus> {
   return get('/nginx/status')
 }
 
-export function controlNginx(action: NginxControlAction): Promise<NginxReloadResponse> {
-  return post(`/nginx/${action}`, {})
+export function controlNginx(action: NginxControlAction, restartGeneration?: string): Promise<NginxReloadResponse> {
+  return post(`/nginx/${action}`, { restart_generation: restartGeneration })
 }
