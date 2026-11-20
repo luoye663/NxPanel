@@ -31,10 +31,12 @@ type AgentResponse struct {
 
 // TransactionRequest 文件事务请求体
 type TransactionRequest struct {
-	OperationID    string       `json:"operation_id"`    // 操作 ID
-	Changes        []FileChange `json:"changes"`         // 文件变更列表
-	TestNginx      bool         `json:"test_nginx"`      // 是否在写入后执行 nginx -t
-	ReloadNginx    bool         `json:"reload_nginx"`    // 是否在写入后执行 nginx -s reload
+	OperationID    string       `json:"operation_id"` // 操作 ID
+	Changes        []FileChange `json:"changes"`      // 文件变更列表
+	TestNginx      bool         `json:"test_nginx"`   // 是否在写入后执行 nginx -t
+	ReloadNginx    bool         `json:"reload_nginx"` // 是否在写入后执行 nginx -s reload
+	ConfirmReload  bool         `json:"confirm_reload,omitempty"`
+	PreserveBackup bool         `json:"preserve_backup,omitempty"`
 	TimeoutSeconds int          `json:"timeout_seconds"` // 超时时间（秒）
 }
 
@@ -79,6 +81,10 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 		writeAgentError(w, http.StatusBadRequest, "changes 不能为空")
 		return
 	}
+	if req.ConfirmReload && (!req.TestNginx || !req.ReloadNginx) {
+		writeAgentError(w, http.StatusBadRequest, "worker confirmation requires nginx test and reload")
+		return
+	}
 
 	// 解码 base64 编码的文件内容
 	for i := range req.Changes {
@@ -115,7 +121,7 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 	// 创建并执行事务
 	var waitForGeneration func(context.Context) error
 	for _, ch := range req.Changes {
-		if req.ReloadNginx && (ch.MaintenanceTransition || nginxpatch.HasMaintenance(string(ch.Content))) {
+		if req.ReloadNginx && (req.ConfirmReload || ch.MaintenanceTransition || nginxpatch.HasMaintenance(string(ch.Content))) {
 			var err error
 			waitForGeneration, err = s.captureReloadGeneration(ctx)
 			if err != nil {
@@ -134,13 +140,22 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 		}
 		return true
 	}
-	tx, err := NewTransaction(req.OperationID, s.cfg.Nginx.PanelDir+"/backups", s.policy,
+	backupBase := s.cfg.Nginx.PanelDir + "/backups"
+	if req.PreserveBackup {
+		backupBase = s.cfg.Nginx.PanelDir + "/geo-access/migration-backups"
+	}
+	if _, err := s.policy.Validate(backupBase); err != nil {
+		writeAgentError(w, http.StatusInternalServerError, "事务备份目录不可用")
+		return
+	}
+	tx, err := NewTransaction(req.OperationID, backupBase, s.policy,
 		s.cfg.Nginx.WebUser, s.cfg.Nginx.WebGroup)
 	if err != nil {
 		slog.Error("创建文件事务失败", "operation_id", req.OperationID, "error", err)
 		writeAgentError(w, http.StatusInternalServerError, "创建事务失败: "+err.Error())
 		return
 	}
+	tx.PreserveBackup = req.PreserveBackup
 	if err := tx.Apply(ctx, req.Changes); err != nil {
 		if errors.Is(err, ErrFileConflict) {
 			writeAgentError(w, http.StatusConflict, ErrFileConflict.Error())
@@ -165,9 +180,7 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 				"operation_id", req.OperationID,
 				"stderr", testResult.Stderr,
 				"error", testErr.Error())
-			_ = tx.Rollback(ctx)
-			writeAgentError(w, http.StatusInternalServerError,
-				fmt.Sprintf("nginx -t 失败（已回滚）: %s", errMsg))
+			rollbackTransaction(w, ctx, tx, "nginx -t 失败", errMsg)
 			return
 		}
 	}
@@ -176,7 +189,7 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 	if req.ReloadNginx {
 		reloadResult, reloadErr := s.executor.Reload(ctx)
 		if reloadErr != nil {
-			if isNginxReloadPIDError(reloadResult, reloadErr) {
+			if !req.ConfirmReload && isNginxReloadPIDError(reloadResult, reloadErr) {
 				slog.Warn("事务后 nginx reload 因 PID 无效失败，尝试启动 nginx",
 					"operation_id", req.OperationID,
 					"stderr", reloadResult.Stderr,
@@ -221,9 +234,7 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 				"operation_id", req.OperationID,
 				"stderr", reloadResult.Stderr,
 				"error", reloadErr.Error())
-			_ = tx.Rollback(ctx)
-			writeAgentError(w, http.StatusInternalServerError,
-				fmt.Sprintf("nginx reload 失败（已回滚）: %s", errMsg))
+			rollbackTransaction(w, ctx, tx, "nginx reload 失败", errMsg)
 			return
 		}
 	}
@@ -240,6 +251,14 @@ func (s *Server) handleTransactionApply(w http.ResponseWriter, r *http.Request) 
 		s.cfg.Nginx.BackupMaxCount,
 		app.ParseDurationOrDefault(s.cfg.Nginx.BackupMaxAge, 168*time.Hour),
 	)
+}
+
+func rollbackTransaction(w http.ResponseWriter, ctx context.Context, tx *Transaction, operation, message string) {
+	if err := tx.Rollback(ctx); err != nil {
+		writeAgentError(w, http.StatusInternalServerError, fmt.Sprintf("%s，配置回滚未确认: %s；%v", operation, message, err))
+		return
+	}
+	writeAgentError(w, http.StatusInternalServerError, fmt.Sprintf("%s（已回滚）: %s", operation, message))
 }
 
 // ============================================================

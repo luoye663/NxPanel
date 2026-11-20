@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -139,6 +140,12 @@ func (c *Client) ApplyTransaction(ctx context.Context, req *TransactionRequest) 
 		return nil, fmt.Errorf("解析事务响应失败: %w", err)
 	}
 	return &result, nil
+}
+
+func IsTransactionRejected(err error) bool {
+	var response *HTTPError
+	return errors.As(err, &response) && (response.StatusCode == http.StatusConflict ||
+		response.StatusCode == http.StatusBadRequest || strings.Contains(response.Message, "（已回滚）"))
 }
 
 // ============================================================
@@ -1200,6 +1207,9 @@ func (c *Client) postJSON(ctx context.Context, path string, in any, out any) err
 		respBody, _ := io.ReadAll(resp.Body)
 		var agentResp AgentResponse
 		if json.Unmarshal(respBody, &agentResp) == nil && agentResp.Error != "" {
+			if path == "/internal/v1/transactions/apply" {
+				return &HTTPError{StatusCode: resp.StatusCode, Message: agentResp.Error}
+			}
 			return fmt.Errorf("agent 返回 HTTP %d: %s", resp.StatusCode, agentResp.Error)
 		}
 		return fmt.Errorf("agent 返回 HTTP %d: %s", resp.StatusCode, string(respBody))

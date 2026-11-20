@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,12 +52,13 @@ type BackupRecord struct {
 
 // Transaction 表示一个文件事务
 type Transaction struct {
-	OperationID string         // 操作 ID（用于备份目录命名）
-	BackupDir   string         // 备份目录路径
-	Backups     []BackupRecord // 备份记录
-	Policy      *PathPolicy    // 路径安全策略
-	WebUser     string         // 网站文件所属用户（chown 时使用）
-	WebGroup    string         // 网站文件所属组（chown 时使用）
+	OperationID    string         // 操作 ID（用于备份目录命名）
+	BackupDir      string         // 备份目录路径
+	Backups        []BackupRecord // 备份记录
+	PreserveBackup bool
+	Policy         *PathPolicy // 路径安全策略
+	WebUser        string      // 网站文件所属用户（chown 时使用）
+	WebGroup       string      // 网站文件所属组（chown 时使用）
 }
 
 // NewTransaction 创建新的文件事务
@@ -142,7 +144,7 @@ func backupFileName(path string) (string, error) {
 // 工作方式：
 //   - 如果文件不存在，记录 Existed=false，不创建备份
 //   - 如果文件存在，读取内容并使用原子写入保存到备份目录
-func (tx *Transaction) backup(path string) error {
+func (tx *Transaction) backup(ctx context.Context, path string) error {
 	name, err := backupFileName(path)
 	if err != nil {
 		return err
@@ -165,10 +167,11 @@ func (tx *Transaction) backup(path string) error {
 	}
 	b.Perm = uint32(info.Mode().Perm())
 
-	data, err := os.ReadFile(path)
+	source, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("读取文件失败 %s: %w", path, err)
 	}
+	defer source.Close()
 
 	// 确保备份目录存在
 	if err := os.MkdirAll(tx.BackupDir, 0700); err != nil {
@@ -176,7 +179,7 @@ func (tx *Transaction) backup(path string) error {
 	}
 
 	// 使用原子写入保存备份
-	if err := writeFileAtomic(b.BackupPath, data, 0600); err != nil {
+	if err := writeFileAtomicFromReader(ctx, b.BackupPath, source, 0600); err != nil {
 		return fmt.Errorf("备份文件写入失败 %s: %w", b.BackupPath, err)
 	}
 
@@ -246,12 +249,17 @@ func (tx *Transaction) Apply(ctx context.Context, changes []FileChange) error {
 		if err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("%w: expected regular file", ErrFileConflict)
 		}
-		data, err := os.ReadFile(ch.Path)
+		source, err := os.Open(ch.Path)
 		if err != nil {
 			return fmt.Errorf("read precondition: %w", err)
 		}
-		actual := sha256.Sum256(data)
-		if !bytes.Equal(actual[:], hash) {
+		actual := sha256.New()
+		_, err = copyWithContext(ctx, actual, source)
+		_ = source.Close()
+		if err != nil {
+			return fmt.Errorf("read precondition: %w", err)
+		}
+		if !bytes.Equal(actual.Sum(nil), hash) {
 			return ErrFileConflict
 		}
 	}
@@ -301,8 +309,20 @@ func (tx *Transaction) Apply(ctx context.Context, changes []FileChange) error {
 		if ch.Type == "mkdir" || ch.Type == "chown" || ch.Type == "check" {
 			continue
 		}
-		if err := tx.backup(ch.Path); err != nil {
+		if err := tx.backup(ctx, ch.Path); err != nil {
 			return fmt.Errorf("备份失败: %w", err)
+		}
+	}
+	if tx.PreserveBackup {
+		manifest, err := json.MarshalIndent(tx.Backups, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(tx.BackupDir, 0700); err != nil {
+			return err
+		}
+		if err := writeFileAtomic(filepath.Join(tx.BackupDir, "manifest.json"), manifest, 0600); err != nil {
+			return fmt.Errorf("写入迁移回滚清单: %w", err)
 		}
 	}
 
@@ -385,33 +405,43 @@ func (tx *Transaction) applyOne(ch FileChange) error {
 //
 // 回滚顺序与备份顺序相反（先恢复最后修改的文件）
 func (tx *Transaction) Rollback(ctx context.Context) error {
+	ctx = context.WithoutCancel(ctx)
 	slog.Info("开始回滚事务", "operation_id", tx.OperationID)
+	var rollbackErr error
 
 	for i := len(tx.Backups) - 1; i >= 0; i-- {
 		b := tx.Backups[i]
 		if !b.Existed {
 			// 原始文件不存在，删除新创建的文件
-			_ = os.Remove(b.FilePath)
+			if err := os.Remove(b.FilePath); err != nil && !os.IsNotExist(err) {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("无法移除新文件 %s: %w", b.FilePath, err))
+			}
 			continue
 		}
 
 		// 从备份恢复
-		data, err := os.ReadFile(b.BackupPath)
+		source, err := os.Open(b.BackupPath)
 		if err != nil {
 			slog.Error("读取备份文件失败", "backup_path", b.BackupPath, "error", err)
-			return fmt.Errorf("读取备份失败 %s: %w", b.BackupPath, err)
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("读取备份失败 %s: %w", b.BackupPath, err))
+			continue
 		}
 		perm := b.Perm
 		if perm == 0 {
 			perm = 0644
 		}
-		if err := writeFileAtomic(b.FilePath, data, os.FileMode(perm)); err != nil {
+		err = writeFileAtomicFromReader(ctx, b.FilePath, source, os.FileMode(perm))
+		_ = source.Close()
+		if err != nil {
 			slog.Error("恢复文件失败", "path", b.FilePath, "error", err)
-			return fmt.Errorf("恢复文件失败 %s: %w", b.FilePath, err)
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("恢复文件失败 %s: %w", b.FilePath, err))
+			continue
 		}
 		slog.Info("文件已恢复", "path", b.FilePath, "from", b.BackupPath)
 	}
 
-	slog.Info("事务回滚完成", "operation_id", tx.OperationID)
-	return nil
+	if rollbackErr == nil {
+		slog.Info("事务回滚完成", "operation_id", tx.OperationID)
+	}
+	return rollbackErr
 }

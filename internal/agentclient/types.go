@@ -39,6 +39,8 @@ type TransactionRequest struct {
 	Changes        []FileChangeRequest `json:"changes"`
 	TestNginx      bool                `json:"test_nginx"`
 	ReloadNginx    bool                `json:"reload_nginx"`
+	ConfirmReload  bool                `json:"confirm_reload,omitempty"`
+	PreserveBackup bool                `json:"preserve_backup,omitempty"`
 	TimeoutSeconds int                 `json:"timeout_seconds"`
 }
 
