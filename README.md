@@ -259,12 +259,16 @@ https://服务器IP:18888/随机入口路径
 # 安装脚本
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/install.sh | sudo bash
 
-# 升级脚本
+# 升级脚本(0.0.6版本后废弃)
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/upgrade.sh | sudo bash
 
 # 如需卸载,执行
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh | sudo bash
 ```
+
+已安装支持在线更新的版本后，点击右上角 **程序版本**，在弹窗中选择稳定版或预览版并查看完整发布说明。**立即更新**只下载、验签和暂存；确认**重启并应用**后才切换面板，不重启站点 Nginx。旧版本需先安装一次支持在线更新的发行包或镜像；Docker 中删除并重建容器会恢复所选镜像自带的面板版本。
+
+本地联调可用 `make update-fixture` 生成签名测试包，再用 `bash scripts/test-web-update-docker.sh` 验证开发镜像中的更新和回滚。
 
 > 如果系统中已有 Nginx/OpenResty，那么在安装完 NxPanel 后，需要到 Nginx 管理页面，依次点击 检测 Nginx、安装 Include 入口 这2个按钮。
 

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ActionIcon, Alert, Anchor, Badge, Button, Group, Popover, Progress, SegmentedControl, Stack, Text } from '@mantine/core'
-import { modals } from '@mantine/modals'
+import { ActionIcon, Alert, Anchor, Badge, Button, Group, Modal, Paper, Progress, ScrollArea, SegmentedControl, Stack, Text, useModalsStack } from '@mantine/core'
 import { IconRefresh } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { queryKeys, useUpgradeCheckMutation } from '@/api/hooks'
@@ -13,6 +12,7 @@ const reconnectKey = 'nxpanel-upgrade-reconnect'
 const reconnectLimit = 15 * 60 * 1000
 
 type Reconnect = { id: string; startedAt: number }
+type RestartTarget = { id: string; version: string }
 
 function loadReconnect(): Reconnect | null {
   try {
@@ -37,7 +37,9 @@ function showError(error: Error) {
 }
 
 export function VersionUpdate() {
-  const [opened, setOpened] = useState(false)
+  const dialogs = useModalsStack(['release', 'restart'])
+  const opened = dialogs.state.release
+  const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null)
   const [reconnect, setReconnect] = useState(loadReconnect)
   const cache = useQueryClient()
   const query = useQuery({
@@ -88,18 +90,13 @@ export function VersionUpdate() {
     return () => window.clearTimeout(timeout)
   }, [reconnect, status?.current_version, task?.id, task?.phase, task?.version])
 
-  function confirmRestart(id: string, version: string) {
-    modals.openConfirmModal({
-      title: `重启并应用 ${version}？`,
-      children: <Text size="sm">面板和 Agent 会短暂断开，站点 Nginx 不重启。请不要重复确认。</Text>,
-      labels: { confirm: '重启并应用', cancel: '稍后' },
-      onConfirm: () => {
-        const pending = { id, startedAt: Date.now() }
-        saveReconnect(pending)
-        setReconnect(pending)
-        activate.mutate(id)
-      },
-    })
+  function confirmRestart() {
+    if (!restartTarget) return
+    const pending = { id: restartTarget.id, startedAt: Date.now() }
+    saveReconnect(pending)
+    setReconnect(pending)
+    dialogs.close('restart')
+    activate.mutate(restartTarget.id)
   }
 
   if (!status) return null
@@ -110,58 +107,81 @@ export function VersionUpdate() {
   const busy = check.isPending || channel.isPending || prepare.isPending || cancel.isPending || Boolean(reconnect) || applying || downloading
 
   return (
-    <Popover opened={opened} onChange={setOpened} position="bottom-end" withArrow shadow="md" width={340}>
-      <Popover.Target>
-        <Badge component="button" type="button" className="versionBadge" onClick={() => {
-          if (!opened && !busy && !prepared && (!status.checked_at || new Date(status.checked_at).getUTCFullYear() === 1)) {
-            check.mutate()
-          }
-          setOpened(!opened)
-        }}
-          color={status.has_upgrade || prepared || reconnect ? 'orange' : 'gray'} variant={status.has_upgrade ? 'light' : 'outline'}>
-          程序版本: {status.current_version || '版本未知'}
-        </Badge>
-      </Popover.Target>
-      <Popover.Dropdown>
-        <Stack gap="xs">
-          <Group justify="space-between">
-            <Text fw={600}>程序更新</Text>
-            <ActionIcon variant="subtle" aria-label="检查更新" disabled={busy} loading={check.isPending}
-              onClick={() => check.mutate(undefined, { onError: showError })}>
-              <IconRefresh size={16} />
-            </ActionIcon>
-          </Group>
-          <SegmentedControl value={status.channel || 'stable'} disabled={busy || prepared}
-            data={[{ label: '稳定版', value: 'stable' }, { label: '预览版', value: 'preview' }]}
-            onChange={(value) => channel.mutate(value === 'preview' ? 'preview' : 'stable')} />
-          <Group justify="space-between"><Text size="sm" c="dimmed">当前版本</Text><Text size="sm">{status.current_version}</Text></Group>
-          <Group justify="space-between"><Text size="sm" c="dimmed">通道版本</Text><Text size="sm">{status.latest_version || '尚未检查'}</Text></Group>
-          {status.published_at && <Text size="xs" c="dimmed">发布于 {new Date(status.published_at).toLocaleString()}</Text>}
-          {status.body && <Text size="xs" c="dimmed" lineClamp={3}>{status.body}</Text>}
-          {status.release_url && <Anchor href={status.release_url} target="_blank" rel="noopener noreferrer" size="sm">查看发布说明</Anchor>}
-          {status.error && <Alert color="red">{status.error}</Alert>}
-          {download && !download.error && (
-            <><Text size="sm">正在下载及校验 {download.version}</Text><Progress aria-label="下载进度" value={Math.min(100, 100 * download.received / Math.max(1, download.total))} /></>
-          )}
-          {download?.error && <Alert color="red">{download.error}</Alert>}
-          {task?.error && <Alert color={task.phase === 'rolled_back' ? 'yellow' : 'red'}>{task.error}</Alert>}
-          {(reconnect || applying) && <Alert color="blue">正在应用更新，等待面板重新连接…</Alert>}
-          {status.docker && <Text size="xs" c="dimmed">仅更新容器内的面板程序；删除并重建容器后，使用所选镜像的版本。</Text>}
-          {prepared && task ? (
-            <>
-              <Text size="sm">{task.version} 已通过验证，等待手动重启。</Text>
-              <Group grow>
-                <Button disabled={busy} onClick={() => confirmRestart(task.id, task.version)}>重启并应用</Button>
-                <Button variant="default" disabled={busy} onClick={() => cancel.mutate(task.id)}>放弃</Button>
-              </Group>
-            </>
-          ) : status.installable ? (
-            <Button loading={prepare.isPending} disabled={busy} onClick={() => prepare.mutate(status.latest_version)}>立即更新</Button>
-          ) : status.has_upgrade && !applying && (
-            <Text size="xs" c="dimmed">{status.managed ? '此版本没有可验证的兼容更新包。' : '当前部署未启用本机更新服务。'}</Text>
-          )}
-        </Stack>
-      </Popover.Dropdown>
-    </Popover>
+    <>
+      <Badge component="button" type="button" className="versionBadge" aria-haspopup="dialog" onClick={() => {
+        if (!busy && !prepared && (!status.checked_at || new Date(status.checked_at).getUTCFullYear() === 1)) {
+          check.mutate()
+        }
+        dialogs.open('release')
+      }}
+        color={status.has_upgrade || prepared || reconnect ? 'orange' : 'gray'} variant={status.has_upgrade ? 'light' : 'outline'}>
+        程序版本: {status.current_version || '版本未知'}
+      </Badge>
+      <Modal.Stack>
+        <Modal {...dialogs.register('release')} title="程序更新" size="lg" centered scrollAreaComponent={ScrollArea.Autosize}
+          closeButtonProps={{ 'aria-label': '关闭程序更新' }}>
+          <Stack gap="sm">
+            <Group justify="space-between">
+              <SegmentedControl value={status.channel || 'stable'} disabled={busy || prepared}
+                data={[{ label: '稳定版', value: 'stable' }, { label: '预览版', value: 'preview' }]}
+                onChange={(value) => channel.mutate(value === 'preview' ? 'preview' : 'stable')} />
+              <ActionIcon variant="subtle" aria-label="检查更新" disabled={busy} loading={check.isPending}
+                onClick={() => check.mutate(undefined, { onError: showError })}>
+                <IconRefresh size={16} />
+              </ActionIcon>
+            </Group>
+            <Group justify="space-between"><Text size="sm" c="dimmed">当前版本</Text><Text size="sm">{status.current_version}</Text></Group>
+            <Group justify="space-between"><Text size="sm" c="dimmed">通道版本</Text><Text size="sm">{status.latest_version || '尚未检查'}</Text></Group>
+            {status.published_at && <Text size="xs" c="dimmed">发布于 {new Date(status.published_at).toLocaleString()}</Text>}
+            {status.body && (
+              <Stack gap={4}>
+                <Text fw={600} size="sm">更新内容</Text>
+                <Paper withBorder p="sm">
+                  <ScrollArea.Autosize mah="min(24rem, 40dvh)" type="auto" scrollbars="y" offsetScrollbars
+                    viewportProps={{ tabIndex: 0, role: 'region', 'aria-label': '更新内容' }}>
+                    <Text size="sm" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{status.body}</Text>
+                  </ScrollArea.Autosize>
+                </Paper>
+              </Stack>
+            )}
+            {status.release_url && <Anchor href={status.release_url} target="_blank" rel="noopener noreferrer" size="sm">查看发布说明</Anchor>}
+            {status.error && <Alert color="red">{status.error}</Alert>}
+            {download && !download.error && (
+              <><Text size="sm">正在下载及校验 {download.version}</Text><Progress aria-label="下载进度" value={Math.min(100, 100 * download.received / Math.max(1, download.total))} /></>
+            )}
+            {download?.error && <Alert color="red">{download.error}</Alert>}
+            {task?.error && <Alert color={task.phase === 'rolled_back' ? 'yellow' : 'red'}>{task.error}</Alert>}
+            {(reconnect || applying) && <Alert color="blue">正在应用更新，等待面板重新连接…</Alert>}
+            {status.docker && <Text size="xs" c="dimmed">仅更新容器内的面板程序；删除并重建容器后，使用所选镜像的版本。</Text>}
+            {prepared && task ? (
+              <>
+                <Text size="sm">{task.version} 已通过验证，等待手动重启。</Text>
+                <Group grow>
+                  <Button disabled={busy} onClick={() => {
+                    setRestartTarget({ id: task.id, version: task.version })
+                    dialogs.open('restart')
+                  }}>重启并应用</Button>
+                  <Button variant="default" disabled={busy} onClick={() => cancel.mutate(task.id)}>放弃</Button>
+                </Group>
+              </>
+            ) : status.installable ? (
+              <Button loading={prepare.isPending} disabled={busy} onClick={() => prepare.mutate(status.latest_version)}>立即更新</Button>
+            ) : status.has_upgrade && !applying && (
+              <Text size="xs" c="dimmed">{status.managed ? '此版本没有可验证的兼容更新包。' : '当前部署未启用本机更新服务。'}</Text>
+            )}
+          </Stack>
+        </Modal>
+        <Modal {...dialogs.register('restart')} title={`重启并应用 ${restartTarget?.version ?? ''}？`} centered
+          closeButtonProps={{ 'aria-label': '关闭重启确认' }}>
+          <Stack gap="sm">
+            <Text size="sm">面板和 Agent 会短暂断开，站点 Nginx 不重启。请不要重复确认。</Text>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => dialogs.close('restart')}>稍后</Button>
+              <Button onClick={confirmRestart}>重启并应用</Button>
+            </Group>
+          </Stack>
+        </Modal>
+      </Modal.Stack>
+    </>
   )
 }
