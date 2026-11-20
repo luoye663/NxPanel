@@ -268,7 +268,7 @@ curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh 
 
 已安装支持在线更新的版本后，点击右上角 **程序版本**，在弹窗中选择稳定版或预览版并查看完整发布说明。**立即更新**只下载、验签和暂存；确认**重启并应用**后才切换面板，不重启站点 Nginx。旧版本需先安装一次支持在线更新的发行包或镜像；Docker 中删除并重建容器会恢复所选镜像自带的面板版本。
 
-本地联调可用 `make update-fixture` 生成签名测试包，再用 `bash scripts/test-web-update-docker.sh` 验证开发镜像中的更新和回滚。
+开发环境可参考[本地 Nginx 联调](#本地-nginx-联调)配置测试更新源。
 
 > 如果系统中已有 Nginx/OpenResty，那么在安装完 NxPanel 后，需要到 Nginx 管理页面，依次点击 检测 Nginx、安装 Include 入口 这2个按钮。
 
@@ -436,6 +436,37 @@ sudo ./bin/nxpanel-agent -config configs/config.yaml
 ```text
 https://127.0.0.1:18888
 ```
+
+### 本地 Nginx 联调
+
+在仓库根目录运行 `make update-fixture` 生成签名测试包，把 `tmp/update-fixture/feed` 整个目录交给 Nginx 托管。例如在一个终端运行：
+
+```bash
+docker run --rm -p 127.0.0.1:18080:80 \
+  --mount "type=bind,source=$PWD/tmp/update-fixture/feed,target=/usr/share/nginx/html,readonly" \
+  nginx:alpine
+```
+
+按前面的源码构建步骤准备配置，确保 `upgrade.enabled: true` 并启动 Agent。启动开发 API 时，用环境变量指定完整的索引 URL 和测试公钥内容：
+
+```bash
+curl -fsS http://127.0.0.1:18080/index.json
+NXPANEL_UPDATE_TEST_FEED=http://127.0.0.1:18080/index.json \
+NXPANEL_UPDATE_TEST_KEYS="$(cat tmp/update-fixture/trust.pub)" \
+make run-api BUILD_TAGS=update_dev VERSION=v0.0.1
+```
+
+`NXPANEL_UPDATE_TEST_FEED` 不写入 `config.yaml`，更改后需重启 API。你也可以填写已有 Nginx 上的索引 URL，例如 `http://localhost:18080/nxpanel-test/index.json`，版本子目录须与索引文件同级。正式构建忽略测试环境变量。直接运行源码版 API 可以检查版本，但未接入更新器，不能安装更新。
+
+要验证完整更新与回滚，构建开发镜像后运行自动联调脚本：
+
+```bash
+docker build -f docker/Dockerfile.nginx --build-arg VERSION=v0.0.1 \
+  --build-arg UPDATE_BUILD_TAGS=embed_web,update_dev -t nxpanel:update-dev .
+bash scripts/test-web-update-docker.sh nxpanel:update-dev
+```
+
+脚本在临时 Docker 网络内托管测试源并设置 `NXPANEL_UPDATE_TEST_FEED=http://update-feed/index.json`，无需手动配置。手动启动容器时用 `docker run -e` 传入这两个变量，URL 应使用面板容器可访问的地址；容器内 `127.0.0.1` 不是宿主机或另一个 Nginx 容器。
 
 ## 配置
 
