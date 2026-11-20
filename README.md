@@ -270,6 +270,8 @@ curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh 
 
 开发环境可参考[本地 Nginx 联调](#本地-nginx-联调)配置测试更新源。
 
+使用国家／地区访问限制时，请查看 [GeoIP2 升级与回滚](docs/access-policy.md#geoip2-升级与回滚)：旧 Docker 容器需要更新镜像，宿主机需要加载与当前 Nginx/OpenResty 匹配的模块。
+
 > 如果系统中已有 Nginx/OpenResty，那么在安装完 NxPanel 后，需要到 Nginx 管理页面，依次点击 检测 Nginx、安装 Include 入口 这2个按钮。
 
 ![图片.png](https://img.326333.xyz/i/f36433dFKiyMXiazqroHpkYAn.webp)
