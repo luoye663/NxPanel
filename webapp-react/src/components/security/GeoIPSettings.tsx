@@ -3,7 +3,7 @@ import { useForm } from '@mantine/form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconDatabase, IconDeviceFloppy, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
-import { geoAccessKeys, getGeoIPSettings, getGeoIPStatus, updateGeoIPDatabase, updateGeoIPSettings, uploadGeoIPDatabase } from '@/api/geoAccess'
+import { geoAccessKeys, getGeoIPSettings, getGeoIPStatus, migrateGeoIP, updateGeoIPDatabase, updateGeoIPSettings, uploadGeoIPDatabase } from '@/api/geoAccess'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SectionCard } from '@/components/common/SectionCard'
 import { showErrorModal } from '@/utils/errorModal'
@@ -36,14 +36,23 @@ export function GeoIPSettingsPanel() {
   })
   const updateMutation = useMutation({
     mutationFn: updateGeoIPDatabase,
-    onSuccess: async () => { notifySuccess({ message: 'GeoLite2 数据库已更新' }); await queryClient.invalidateQueries({ queryKey: geoAccessKeys.status }) },
+    onSuccess: () => notifySuccess({ message: 'GeoLite2 数据库已更新' }),
     onError: (error) => showErrorModal(error, '更新 GeoLite2 数据库失败'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: geoAccessKeys.status }),
   })
   const uploadMutation = useMutation({
     mutationFn: uploadGeoIPDatabase,
-    onSuccess: async () => { setDatabaseFile(null); notifySuccess({ message: 'GeoLite2 数据库已安装' }); await queryClient.invalidateQueries({ queryKey: geoAccessKeys.status }) },
+    onSuccess: () => { setDatabaseFile(null); notifySuccess({ message: 'GeoLite2 数据库已安装' }) },
     onError: (error) => showErrorModal(error, '上传 GeoLite2 数据库失败'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: geoAccessKeys.status }),
   })
+  const migrateMutation = useMutation({
+    mutationFn: migrateGeoIP,
+    onSuccess: (status) => notifySuccess({ message: status.runtime?.state === 'ready' ? 'GeoIP2 查询已确认' : '未发现需要迁移的地域配置' }),
+    onError: (error) => showErrorModal(error, 'GeoIP2 迁移未完成'),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: geoAccessKeys.status }),
+  })
+  const runtime = statusQuery.data?.runtime
 
   return (
     <Stack gap="md">
@@ -53,6 +62,14 @@ export function GeoIPSettingsPanel() {
         <Stack gap="md">
           <Group gap="xs"><IconDatabase size={18} /><Text fw={500}>{statusQuery.data?.installed ? '已安装' : '未安装'}</Text></Group>
           {statusQuery.data?.last_error ? <Alert color="red">{statusQuery.data.last_error}</Alert> : null}
+          {runtime ? <Alert color={runtime.state === 'ready' ? 'green' : runtime.state === 'idle' ? 'blue' : 'yellow'} title="Nginx / OpenResty GeoIP2">
+            <Stack gap="xs">
+              <Text size="sm">{runtime.state === 'ready' ? '共享 MMDB 查询已就绪。' : runtime.state === 'idle' ? '尚未启用共享查询，首次应用地域规则时将检查模块。' : runtime.message}</Text>
+              {runtime.legacy_includes > 0 ? <Text size="sm">仍有 {runtime.legacy_includes} 份旧地域配置，相关站点的内存占用尚未修复。</Text> : null}
+              {runtime.state !== 'ready' && runtime.state !== 'idle' ? <Text size="sm">宿主机请加载匹配的 GeoIP2 模块；旧 Docker 容器请用新版官方镜像和原数据卷重建。</Text> : null}
+              {runtime.state !== 'ready' && runtime.state !== 'idle' ? <Group><Button size="xs" variant="light" loading={migrateMutation.isPending} onClick={() => migrateMutation.mutate()}>重新检查并迁移</Button></Group> : null}
+            </Stack>
+          </Alert> : null}
           {statusQuery.data?.installed ? <Text size="sm" c="dimmed">国家/地区 {statusQuery.data.countries.length} 个，启用站点 {statusQuery.data.enabled_sites} 个，构建时间 {new Date(statusQuery.data.build_epoch * 1000).toLocaleString()}</Text> : null}
           <Group align="end">
             <FileInput flex={1} label="手动上传 MMDB" placeholder="选择 GeoLite2-Country.mmdb" accept=".mmdb,application/octet-stream" value={databaseFile} onChange={setDatabaseFile} leftSection={<IconUpload size={16} />} />
