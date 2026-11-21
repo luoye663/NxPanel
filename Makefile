@@ -26,7 +26,7 @@ GHCR_USERNAME ?= $(GITHUB_ACTOR)
 # 版本号（可通过 -ldflags 注入）
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
 BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/update.TrustKeys=$(NXPANEL_UPDATE_TRUST_KEYS)
+LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/update.TrustKeys=$(NXPANEL_UPDATE_TRUST_KEYS) -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=$(NXPANEL_MODULE_TRUST_KEYS)
 
 # 构建目标
 .PHONY: all build build-api build-agent build-frontend clean test test-commit-message setup-git-hooks run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
@@ -246,13 +246,16 @@ release: build-frontend
 	@cd release && tar -czf nxpanel-linux-amd64.tar.gz nxpanel/
 	@echo "发布包已生成: release/nxpanel-linux-amd64.tar.gz"
 
-.PHONY: build-updater release release-update-arm64 update-fixture
+.PHONY: build-updater release release-update-arm64 update-fixture module-fixture
 
 release-update-arm64:
 	$(MAKE) build-api build-agent GOOS=linux GOARCH=arm64 BUILD_TAGS=embed_web VERSION="$(VERSION)" BINARY_API=release/update-arm64/nxpanel-api BINARY_AGENT=release/update-arm64/nxpanel-agent
 
 update-fixture: build-frontend
 	GO="$(GO)" bash scripts/update-fixture.sh
+
+module-fixture:
+	GO="$(GO)" bash scripts/module-fixture.sh "$(MODULE_NGINX_BIN)"
 
 ## test-install-compat: 测试 scripts/nginx-install/install.sh 在各发行版的兼容性
 test-install-compat:
@@ -272,6 +275,7 @@ help:
 	@echo "  build-api        仅构建 API"
 	@echo "  build-agent      仅构建 Agent"
 	@echo "  build-frontend   构建前端 React 应用 → web/dist"
+	@echo "  module-fixture   隔离编译 GeoIP2 并生成本地签名测试源（需 MODULE_NGINX_BIN）"
 	@echo "  build-all        完整构建（前端 + 后端）"
 	@echo "  build-docker      （已移除）使用 docker-build-nginx / docker-build-openresty"
 	@echo "  docker-build-nginx     构建 nginx 变体镜像（独享模式）"

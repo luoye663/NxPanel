@@ -29,6 +29,10 @@ data/
 test-results/
 release/
 tmp/
+local-module-repos/
+module-builds/
+module-candidate/
+module-release/
 
 # 文档与杂项
 *.md

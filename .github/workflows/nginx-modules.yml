@@ -1,0 +1,140 @@
+name: Publish Nginx modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Public module asset repository (owner/repo)
+        required: true
+        type: string
+      tag:
+        description: Tag of the published candidate release
+        required: true
+        type: string
+      candidate_sha256:
+        description: SHA-256 of the reviewed candidate.json
+        required: true
+        type: string
+      runtime_images:
+        description: JSON array of pinned test images, architectures and Nginx binary paths
+        required: true
+        type: string
+
+concurrency:
+  group: nginx-module-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      architectures: ${{ steps.targets.outputs.architectures }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download the reviewed candidate
+        env:
+          ASSET_REPO: ${{ inputs.repository }}
+          ASSET_TAG: ${{ inputs.tag }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
+        run: |
+          bash scripts/nginx-module-smoke/fetch-candidate.sh "$ASSET_REPO" "$ASSET_TAG" "$CANDIDATE_SHA" module-candidate
+      - id: targets
+        env:
+          RUNTIME_IMAGES: ${{ inputs.runtime_images }}
+        run: |
+          set -euo pipefail
+          architectures=$(jq -cer '[.assets[].target.arch] | unique | select(length > 0 and all(.[]; IN("amd64", "arm64")))' module-candidate/candidate.json)
+          jq -e --argjson arch "$architectures" '[.[].arch] | unique == $arch' <<< "$RUNTIME_IMAGES"
+          printf 'architectures=%s\n' "$architectures" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: module-candidate
+          path: |
+            module-candidate/candidate.json
+            module-candidate/*.sh
+            module-candidate/*.so
+          if-no-files-found: error
+
+  verify:
+    needs: fetch
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(needs.fetch.outputs.architectures) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: module-candidate
+          path: module-candidate
+      - name: Run both lifecycle actions on every target
+        env:
+          RUNTIME_IMAGES: ${{ inputs.runtime_images }}
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/nginx-module-smoke/verify-candidate.sh module-candidate "$RUNTIME_IMAGES" "$ARCH"
+
+  sign-and-publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: module-signing
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: module-candidate
+          path: module-candidate
+      - name: Sign tested bytes without executing them
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
+          NXPANEL_MODULE_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
+          NXPANEL_MODULE_SIGNING_KEYS: ${{ secrets.NXPANEL_MODULE_SIGNING_KEYS }}
+          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  module-candidate/candidate.json\n' "$CANDIDATE_SHA" | sha256sum -c --status
+          go run ./cmd/nxpanel-module-catalog -candidate -input module-candidate -sequence "$(date +%s)"
+      - name: Open a catalog update PR
+        env:
+          GH_TOKEN: ${{ secrets.NXPANEL_MODULE_CATALOG_TOKEN }}
+        run: |
+          set -euo pipefail
+          path=catalog/nginx-modules/nxpanel-nginx-modules.json
+          signed=module-release/nxpanel-nginx-modules.json
+          sequence() { jq -er '.catalog | @base64d | fromjson | .sequence' "$1"; }
+          new=$(sequence "$signed")
+          gh auth setup-git
+          git fetch origin main
+          git switch --detach origin/main
+          if [[ -f "$path" ]]; then
+            prior=$(sequence "$path")
+            [[ "$prior" =~ ^[1-9][0-9]{0,14}$ && "$new" -gt "$prior" ]]
+          fi
+          branch="automation/nginx-modules-$new"
+          test "$(gh pr list --base main --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("automation/nginx-modules-"))] | length')" = 0
+          mkdir -p "$(dirname "$path")"
+          cp "$signed" "$path"
+          git add -- "$path"
+          git -c user.name='nxpanel-module-publisher' -c user.email='nxpanel-module-publisher@users.noreply.github.com' commit -m "Publish Nginx module catalog $new"
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --base main --head "$branch" --title "Publish Nginx module catalog $new" --body 'Review the signed directory for the tested module release before merging.'

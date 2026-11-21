@@ -28,7 +28,9 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
 
 ARG VERSION=0.1.0-dev
 ARG UPDATE_BUILD_TAGS=embed_web
+ARG MODULE_AGENT_BUILD_TAGS
 ARG NXPANEL_UPDATE_TRUST_KEYS
+ARG NXPANEL_MODULE_TRUST_KEYS
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG TARGETOS
 ARG TARGETARCH
@@ -55,28 +57,21 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${UPDATE_BUILD_TAGS}" \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \
         -o /out/nxpanel-api ./cmd/nxpanel-api \
- && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${MODULE_AGENT_BUILD_TAGS}" \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS} -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=${NXPANEL_MODULE_TRUST_KEYS}" \
         -o /out/nxpanel-agent ./cmd/nxpanel-agent \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${UPDATE_BUILD_TAGS}" \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \
         -o /out/nxpanel-updater ./cmd/nxpanel-updater
 
-FROM openresty/openresty:alpine AS openresty-base
-
-FROM openresty-base AS geoip2-module
-RUN apk add --no-cache build-base linux-headers libmaxminddb-dev openssl-dev pcre2-dev zlib-dev wget ca-certificates
-COPY docker/build-geoip2.sh /tmp/build-geoip2.sh
-RUN /bin/sh /tmp/build-geoip2.sh /usr/local/openresty/nginx/sbin/nginx
-
 # ---- Stage 3：运行时（OpenResty 官方镜像）----
-FROM openresty-base AS runtime
+FROM openresty/openresty:alpine AS runtime
 
 ARG S6_VERSION=3.2.0.2
 ARG TARGETARCH
 
 # 安装 s6-overlay（noarch + arch tarball，buildx 通过 TARGETARCH 映射）
-RUN apk add --no-cache ca-certificates tzdata xz wget libmaxminddb \
+RUN apk add --no-cache ca-certificates tzdata xz wget \
  && case "$TARGETARCH" in \
       amd64) S6_ARCH=x86_64 ;; \
       arm64) S6_ARCH=aarch64 ;; \
@@ -109,7 +104,6 @@ RUN mkdir -p \
 COPY --from=backend-builder /out/nxpanel-api   /usr/local/nxpanel/bin/
 COPY --from=backend-builder /out/nxpanel-agent /usr/local/nxpanel/bin/
 COPY --from=backend-builder /out/nxpanel-updater /usr/local/nxpanel/bin/
-COPY --from=geoip2-module /out/ngx_http_geoip2_module.so /usr/local/nxpanel/modules/ngx_http_geoip2_module.so
 
 # 复制许可证（BSD 3-Clause 二进制分发要求）
 COPY LICENSE /usr/local/nxpanel/LICENSE
@@ -138,7 +132,6 @@ ENV NXPANEL_API_LISTEN=0.0.0.0:18888 \
     NXPANEL_UPDATE_HOME=/usr/local/nxpanel \
     NXPANEL_UPDATE_DOCKER=1 \
     NXPANEL_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \
-    NXPANEL_NGINX_GEOIP2_MODULE=/usr/local/nxpanel/modules/ngx_http_geoip2_module.so \
     NXPANEL_NGINX_CONF_PATH=/opt/nxpanel/nginx/nginx.conf \
     NXPANEL_NGINX_PANEL_DIR=/opt/nxpanel/nginx \
     NXPANEL_NGINX_ERROR_LOG_PATH=/www/wwwlogs/error.log \
