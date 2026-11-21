@@ -84,3 +84,51 @@ export function getNginxStatus(): Promise<NginxRuntimeStatus> {
 export function controlNginx(action: NginxControlAction, restartGeneration?: string): Promise<NginxReloadResponse> {
   return post(`/nginx/${action}`, { restart_generation: restartGeneration })
 }
+
+export interface NginxModule {
+  id: string
+  name: string
+  description?: string
+  state: 'available' | 'enabled' | 'configured' | 'unavailable' | 'busy' | 'drifted' | 'needs_attention'
+  present: boolean
+  loaded: boolean
+  configured: boolean
+  runtime?: string
+  version?: string
+  reason?: string
+  action?: 'install'
+  confirmation?: string
+  uninstall_confirmation?: string
+}
+
+export interface NginxModuleJob {
+  id: string
+  module_id: string
+  action: 'install' | 'uninstall'
+  state: 'pending' | 'success' | 'failed' | 'needs_attention'
+  message?: string
+  script_detail?: string
+}
+
+export function getNginxModules(refresh = false): Promise<{
+  modules: NginxModule[]
+  feed_state: 'online' | 'stale' | 'error' | 'busy'
+  feed_message?: string
+  busy?: boolean
+  test_feed?: boolean
+  latest_job?: NginxModuleJob
+}> {
+  return get(refresh ? '/nginx/modules?refresh=1' : '/nginx/modules', { timeout: 26_000 })
+}
+
+export function installNginxModule(id: NginxModule['id'], confirmation: string): Promise<NginxModuleJob> {
+  return post('/nginx/modules/install', { id, confirmation })
+}
+
+export function uninstallNginxModule(id: string, confirmation: string): Promise<NginxModuleJob> {
+  return post('/nginx/modules/uninstall', { id, confirmation })
+}
+
+export function getNginxModuleJob(id: string): Promise<NginxModuleJob> {
+  return get(`/nginx/modules/jobs/${encodeURIComponent(id)}`)
+}

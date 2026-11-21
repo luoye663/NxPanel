@@ -3,6 +3,7 @@ import { useForm } from '@mantine/form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconDatabase, IconDeviceFloppy, IconRefresh, IconUpload } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { geoAccessKeys, getGeoIPSettings, getGeoIPStatus, migrateGeoIP, updateGeoIPDatabase, updateGeoIPSettings, uploadGeoIPDatabase } from '@/api/geoAccess'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SectionCard } from '@/components/common/SectionCard'
@@ -66,7 +67,8 @@ export function GeoIPSettingsPanel() {
             <Stack gap="xs">
               <Text size="sm">{runtime.state === 'ready' ? '共享 MMDB 查询已就绪。' : runtime.state === 'idle' ? '尚未启用共享查询，首次应用地域规则时将检查模块。' : runtime.message}</Text>
               {runtime.legacy_includes > 0 ? <Text size="sm">仍有 {runtime.legacy_includes} 份旧地域配置，相关站点的内存占用尚未修复。</Text> : null}
-              {runtime.state !== 'ready' && runtime.state !== 'idle' ? <Text size="sm">宿主机请加载匹配的 GeoIP2 模块；旧 Docker 容器请用新版官方镜像和原数据卷重建。</Text> : null}
+              {runtime.module === 'available' ? <Text size="sm">Nginx 已加载 GeoIP2 模块。</Text> : null}
+              {runtime.state !== 'ready' || runtime.module !== 'available' ? <Text size="sm">可在 <Link to="/nginx?tab=modules">Nginx → 模块管理</Link> 检查或安装模块。</Text> : null}
               {runtime.state !== 'ready' && runtime.state !== 'idle' ? <Group><Button size="xs" variant="light" loading={migrateMutation.isPending} onClick={() => migrateMutation.mutate()}>重新检查并迁移</Button></Group> : null}
             </Stack>
           </Alert> : null}
