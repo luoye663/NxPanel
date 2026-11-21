@@ -123,6 +123,23 @@ func needsCountry(p Policy) bool {
 	return false
 }
 
+func (s *Service) CheckGeoIP2Removal() error {
+	items, err := s.store.List()
+	if err != nil {
+		return fmt.Errorf("无法核验统一访问策略，未卸载")
+	}
+	for _, item := range items {
+		applied, err := s.store.GetApplied(item.SiteID)
+		if err != nil {
+			return fmt.Errorf("无法核验已应用访问策略，未卸载")
+		}
+		if needsCountry(item.Policy) || applied != nil && needsCountry(*applied) {
+			return fmt.Errorf("仍有已应用或待应用的地域访问策略（站点 %s），请先停用并同步", item.SiteID)
+		}
+	}
+	return nil
+}
+
 func (s *Service) renderContext(site *repo.Site, p Policy) (RenderContext, []string, error) {
 	if err := s.validateAccountReferences(site.ID, p); err != nil {
 		return RenderContext{}, nil, err

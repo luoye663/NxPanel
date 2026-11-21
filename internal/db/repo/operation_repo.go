@@ -110,6 +110,12 @@ func (r *OperationRepo) GetByID(id string) (*Operation, error) {
 	return o, nil
 }
 
+func (r *OperationRepo) InterruptAction(ctx context.Context, action, code, message string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE operations SET status = 'failed', error_code = ?, error_message = ?, finished_at = ? WHERE action = ? AND status = 'pending'`,
+		code, message, time.Now().UTC().Format(time.RFC3339), action)
+	return err
+}
+
 // List 分页查询操作记录
 func (r *OperationRepo) List(page, pageSize int, targetType, targetID string) ([]*Operation, int, error) {
 	where := "WHERE 1=1"
@@ -136,7 +142,7 @@ func (r *OperationRepo) List(page, pageSize int, targetType, targetID string) ([
 		request_id, actor, ip, user_agent,
 		message, error_code, error_message, stderr,
 		created_at, finished_at
-	FROM operations ` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	FROM operations ` + where + ` ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
 	args = append(args, pageSize, offset)
 
 	rows, err := r.db.Query(querySQL, args...)

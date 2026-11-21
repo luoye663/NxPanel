@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -14,12 +15,14 @@ import (
 	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/georuntime"
 	"github.com/luoye663/nxpanel/internal/nginx"
+	"github.com/luoye663/nxpanel/internal/nginxmodule"
 )
 
 type geoRuntimeTestAgent struct {
 	*geoServiceTestAgent
-	applyErr error
-	applied  int
+	applied   int
+	module    nginxmodule.Status
+	moduleErr error
 }
 
 func (a *geoRuntimeTestAgent) FilesList(_ context.Context, dir string) (*agentclient.FilesListResponse, error) {
@@ -44,11 +47,50 @@ func (*geoRuntimeTestAgent) NginxStatus(context.Context) (*nginx.RuntimeStatus, 
 	return &nginx.RuntimeStatus{Running: true}, nil
 }
 
+func (a *geoRuntimeTestAgent) GeoIP2ModuleStatus(context.Context) (nginxmodule.Status, error) {
+	return a.module, a.moduleErr
+}
+
+func TestGeoIP2RuntimeDoesNotModifyModuleLoading(t *testing.T) {
+	service, _, base := newGeoServiceTest(t, "server {}")
+	agent := &geoRuntimeTestAgent{geoServiceTestAgent: base}
+	service.agent = agent
+	for _, test := range []struct {
+		name   string
+		module nginxmodule.Status
+		err    error
+	}{
+		{name: "missing"},
+		{name: "status unavailable", err: errors.New("Agent unavailable")},
+		{name: "busy", module: nginxmodule.Status{State: "busy", Configured: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent.module, agent.moduleErr = test.module, test.err
+			if err := service.applyRuntime(t.Context(), nil, "/data/test.mmdb", nil, false, "test"); err == nil || agent.last != nil {
+				t.Fatalf("an unverified module must not trigger a write: %v, %+v", err, agent.last)
+			}
+		})
+	}
+	agent.module, agent.moduleErr = nginxmodule.Status{State: "enabled", Configured: true, Loaded: true}, nil
+	path := georuntime.ConfigPath(service.panelDir)
+	if err := service.applyRuntime(t.Context(), nil, "/data/test.mmdb", nil, false, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if changes := agent.last.Changes; len(changes) != 1 || changes[0].Path != path {
+		t.Fatalf("shared query must not modify loading: %+v", changes)
+	}
+	if err := service.retireRuntime(t.Context(), map[string]georuntime.Snapshot{path: {Prefix: agent.files[path]}}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range agent.last.Changes {
+		if change.Path != path {
+			t.Fatalf("retiring shared query must not modify loading: %+v", change)
+		}
+	}
+}
+
 func (a *geoRuntimeTestAgent) ApplyTransaction(_ context.Context, request *agentclient.TransactionRequest) (*agentclient.TransactionResponse, error) {
 	a.last = request
-	if a.applyErr != nil {
-		return nil, a.applyErr
-	}
 	a.applied++
 	for _, change := range request.Changes {
 		switch change.Type {
@@ -69,7 +111,7 @@ func TestLegacyGeoMigrationPreservesActiveRulesWithoutModule(t *testing.T) {
 	service, store, baseAgent := newGeoServiceTest(t, "server {}")
 	agent := &geoRuntimeTestAgent{geoServiceTestAgent: baseAgent}
 	service.agent = agent
-	service.ConfigureRuntime("", "", func(context.Context, map[string]georuntime.Snapshot, func() (map[string][]string, error)) ([]agentclient.FileChangeRequest, int, int, error) {
+	service.ConfigureRuntime(func(context.Context, map[string]georuntime.Snapshot, func() (map[string][]string, error)) ([]agentclient.FileChangeRequest, int, int, error) {
 		return nil, 0, 0, nil
 	})
 	const siteID = "site_geo_service"
@@ -96,7 +138,6 @@ func TestLegacyGeoMigrationPreservesActiveRulesWithoutModule(t *testing.T) {
 	}
 	agent.files[old.GlobalPath] = []byte(old.GlobalContent)
 	agent.files["/panel/conf.d/custom.conf"] = []byte("# untouched")
-	agent.applyErr = &agentclient.HTTPError{StatusCode: 500, Message: `nginx -t 失败（已回滚）: unknown directive "geoip2"`}
 	if err := service.Migrate(context.Background(), "test"); err == nil {
 		t.Fatal("missing module was not reported")
 	}
@@ -107,7 +148,7 @@ func TestLegacyGeoMigrationPreservesActiveRulesWithoutModule(t *testing.T) {
 	if string(agent.files[old.GlobalPath]) != old.GlobalContent || agent.applied != 0 {
 		t.Fatal("existing geo rules must still be applied")
 	}
-	agent.applyErr = nil
+	agent.module = nginxmodule.Status{State: "enabled", Configured: true, Loaded: true}
 	if err := service.Migrate(context.Background(), "retry"); err != nil {
 		t.Fatal(err)
 	}

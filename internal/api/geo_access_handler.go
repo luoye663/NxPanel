@@ -54,6 +54,19 @@ func (s *Server) handleGeoIPStatus(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, r, err)
 		return
 	}
+	if s.agentClient != nil {
+		module, err := s.agentClient.GeoIP2ModuleStatus(r.Context())
+		switch {
+		case err != nil || module.State == "busy" || module.State == "drifted" || module.State == "needs_attention":
+			result.Runtime.Module = "unchecked"
+		case module.Loaded:
+			result.Runtime.Module = "available"
+		case module.Configured || module.Present:
+			result.Runtime.Module = "unloaded"
+		default:
+			result.Runtime.Module = "unavailable"
+		}
+	}
 	WriteOK(w, r, result)
 }
 func (s *Server) handleGeoIPUpdate(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -209,7 +208,7 @@ func (s *Server) initAgentBackedServices(r repos) error {
 	s.siteSvc.SetAccessPolicyHooks(s.accessPolicySvc.PrepareSiteCreate, s.accessPolicySvc.FinishSiteCreate, s.accessPolicySvc.SiteDeleteFiles)
 	s.proxySvc.SetAccessPolicyHooks(s.accessPolicySvc.Managed, s.accessPolicySvc.PrepareProxyChange, s.accessPolicySvc.ProxyWriteGuard)
 	geoSvc.SetAccessPolicyHooks(s.accessPolicySvc.Managed, s.accessPolicySvc.RefreshActive)
-	geoSvc.ConfigureRuntime(s.cfg.Nginx.ConfPath, os.Getenv("NXPANEL_NGINX_GEOIP2_MODULE"), s.accessPolicySvc.PrepareGeoMigration)
+	geoSvc.ConfigureRuntime(s.accessPolicySvc.PrepareGeoMigration)
 	s.accessLimitSvc.SetAccessPolicyHooks(s.accessPolicySvc.Managed, s.accessPolicySvc.CheckAccountChange, s.accessPolicySvc.RefreshActive)
 	if err := geoSvc.AttachScheduledTasks(s.scheduledTaskSvc); err != nil {
 		return fmt.Errorf("注册 GeoIP 更新计划任务失败: %w", err)

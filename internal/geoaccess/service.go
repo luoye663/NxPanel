@@ -54,8 +54,6 @@ type Service struct {
 	policyRefresh func(context.Context, string) error
 	runtimeMu     sync.Mutex
 	runtimeState  RuntimeStatus
-	mainConfig    string
-	modulePath    string
 	policyMigrate func(context.Context, map[string]georuntime.Snapshot, func() (map[string][]string, error)) ([]agentclient.FileChangeRequest, int, int, error)
 }
 

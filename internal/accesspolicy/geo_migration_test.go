@@ -66,3 +66,35 @@ func TestGeoMigrationRequiresMatchingConfirmedConfiguration(t *testing.T) {
 		t.Fatalf("pending policy changed: %#v %v", stored, err)
 	}
 }
+
+func TestGeoIP2RemovalChecksDesiredAndAppliedPolicies(t *testing.T) {
+	service := &Service{store: NewRepo(policyTestDB(t))}
+	const siteID = "site_policy"
+	plain := serviceAllowPolicy()
+	regional := plain
+	regional.Rules = []Rule{{ID: "geo", Enabled: true, Match: "all", Conditions: []Condition{{Kind: "country", Values: []string{"CN"}}}, Action: Action{Type: "deny", StatusCode: 403}}}
+	if err := service.CheckGeoIP2Removal(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.store.SaveDesired(siteID, regional, 0); err != nil {
+		t.Fatal(err)
+	}
+	if service.CheckGeoIP2Removal() == nil {
+		t.Fatal("pending regional policy did not block removal")
+	}
+	if err := service.store.MarkApplied(siteID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.store.SaveDesired(siteID, plain, 1); err != nil {
+		t.Fatal(err)
+	}
+	if service.CheckGeoIP2Removal() == nil {
+		t.Fatal("last applied regional policy did not block removal")
+	}
+	if err := service.store.MarkApplied(siteID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CheckGeoIP2Removal(); err != nil {
+		t.Fatal(err)
+	}
+}

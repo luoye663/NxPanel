@@ -14,9 +14,30 @@ import (
 	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/georuntime"
 	"github.com/luoye663/nxpanel/internal/nginx"
+	"github.com/luoye663/nxpanel/internal/nginxmodule"
 )
 
-const moduleMarker = "# NXPANEL-GEOIP2-MODULE\n"
+func (s *Service) WithModuleRemoval(checkUnified func() error, apply func() (nginxmodule.Result, error)) (nginxmodule.Result, error) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	legacy, err := s.repo.ListEnabledSiteSettings()
+	if err != nil {
+		return nginxmodule.Result{State: "failed", Message: "无法核验站点地域设置，未卸载"}, nil
+	}
+	for _, setting := range legacy {
+		if s.policyManaged == nil || !s.policyManaged(setting.SiteID) {
+			return nginxmodule.Result{State: "failed", Message: "仍有站点启用了旧版地域访问规则，请先停用并同步"}, nil
+		}
+	}
+	if err := checkUnified(); err != nil {
+		return nginxmodule.Result{State: "failed", Message: err.Error()}, nil
+	}
+	result, err := apply()
+	if err != nil || result.State == "success" || result.State == "needs_attention" {
+		s.runtimeState = RuntimeStatus{State: "idle", Module: "unchecked"}
+	}
+	return result, err
+}
 
 type RuntimeStatus struct {
 	State            string `json:"state"`
@@ -31,10 +52,11 @@ type runtimeAgent interface {
 	FilesList(context.Context, string) (*agentclient.FilesListResponse, error)
 	FilesDownload(context.Context, string) (*http.Response, error)
 	NginxStatus(context.Context) (*nginx.RuntimeStatus, error)
+	GeoIP2ModuleStatus(context.Context) (nginxmodule.Status, error)
 }
 
-func (s *Service) ConfigureRuntime(mainConfig, modulePath string, prepare func(context.Context, map[string]georuntime.Snapshot, func() (map[string][]string, error)) ([]agentclient.FileChangeRequest, int, int, error)) {
-	s.mainConfig, s.modulePath, s.policyMigrate = mainConfig, modulePath, prepare
+func (s *Service) ConfigureRuntime(prepare func(context.Context, map[string]georuntime.Snapshot, func() (map[string][]string, error)) ([]agentclient.FileChangeRequest, int, int, error)) {
+	s.policyMigrate = prepare
 }
 
 func (s *Service) runtimeFiles(ctx context.Context, inspectLegacy bool) (map[string]georuntime.Snapshot, error) {
@@ -294,6 +316,22 @@ func (s *Service) legacyRenderData() ([]*repo.SiteGeoSettings, map[string][]*rep
 }
 
 func (s *Service) applyRuntime(ctx context.Context, files map[string]georuntime.Snapshot, databasePath string, changes []agentclient.FileChangeRequest, migration bool, requestID string) error {
+	client, ok := s.agent.(runtimeAgent)
+	if !ok {
+		return fmt.Errorf("Agent 不支持 GeoIP2 模块状态检查")
+	}
+	module, err := client.GeoIP2ModuleStatus(ctx)
+	switch {
+	case err != nil:
+		s.runtimeState.Module = "unchecked"
+		return fmt.Errorf("无法核验 GeoIP2 模块，请在 Nginx 模块管理中检查：%w", err)
+	case module.State == "busy" || module.State == "needs_attention" || module.State == "drifted":
+		s.runtimeState.Module = "unchecked"
+		return fmt.Errorf("GeoIP2 模块状态未就绪：%s", module.Reason)
+	case !module.Configured:
+		s.runtimeState.Module = "unavailable"
+		return fmt.Errorf("请先在 Nginx 模块管理中安装 GeoIP2")
+	}
 	config, err := georuntime.Config(databasePath)
 	if err != nil {
 		return err
@@ -306,25 +344,6 @@ func (s *Service) applyRuntime(ctx context.Context, files map[string]georuntime.
 	shared := fileWrite(path, config, 0644)
 	shared.ExpectedHash = current.Hash
 	changes = append(changes, shared)
-	if s.modulePath != "" {
-		module, err := georuntime.QuotePath(s.modulePath)
-		if err != nil {
-			return err
-		}
-		main, hash, err := s.agent.ReadFile(ctx, s.mainConfig)
-		if err != nil {
-			return err
-		}
-		directive := "load_module " + module + ";\n"
-		if !strings.Contains(string(main), "\n"+directive) && !strings.HasPrefix(string(main), directive) {
-			if strings.Contains(string(main), moduleMarker) {
-				return fmt.Errorf("现有 GeoIP2 模块标记已修改，未覆盖 Nginx 主配置")
-			}
-			change := fileWrite(s.mainConfig, moduleMarker+directive+string(main), 0644)
-			change.ExpectedHash, change.FollowSymlink = hash, true
-			changes = append(changes, change)
-		}
-	}
 	return s.commitRuntime(ctx, changes, migration, requestID)
 }
 
@@ -337,22 +356,6 @@ func (s *Service) retireRuntime(ctx context.Context, files map[string]georuntime
 	changes := []agentclient.FileChangeRequest{
 		{Type: "check", Path: path, ExpectedHash: current.Hash},
 		{Type: "remove", Path: path},
-	}
-	if s.modulePath != "" {
-		module, err := georuntime.QuotePath(s.modulePath)
-		if err != nil {
-			return err
-		}
-		main, hash, err := s.agent.ReadFile(ctx, s.mainConfig)
-		if err != nil {
-			return err
-		}
-		remaining, present := strings.CutPrefix(string(main), moduleMarker+"load_module "+module+";\n")
-		if present {
-			change := fileWrite(s.mainConfig, remaining, 0644)
-			change.ExpectedHash, change.FollowSymlink = hash, true
-			changes = append(changes, change)
-		}
 	}
 	return s.commitRuntime(ctx, changes, false, requestID)
 }

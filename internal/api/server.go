@@ -98,6 +98,7 @@ type Server struct {
 	updateMu               sync.Mutex
 	updatePausing          bool
 	updateWrites           int
+	nginxModuleInstalling  bool
 }
 
 func NewServer(cfg *app.Config, db *sql.DB) (*Server, error) {
@@ -147,6 +148,13 @@ func (s *Server) StartRuntime() error {
 func (s *Server) StartPreparedRuntime() error { return s.startRuntime(true) }
 
 func (s *Server) startRuntime(prepared bool) error {
+	if s.opRepo != nil {
+		for _, action := range []string{nginxModuleInstallAction, nginxModuleUninstallAction} {
+			if err := s.opRepo.InterruptAction(s.Context(), action, nginxModuleUnconfirmed, "面板重启前未确认模块操作结果，请刷新模块状态并检查 Nginx"); err != nil {
+				slog.Warn("无法恢复模块任务状态", "error", err)
+			}
+		}
+	}
 	if s.geoAccessSvc != nil {
 		if err := s.geoAccessSvc.Reconcile(s.rootCtx); err != nil {
 			slog.Warn("对账地域访问配置失败，面板将继续启动", "error", err)
@@ -216,6 +224,9 @@ func (s *Server) Close() {
 		if s.twofaSvc != nil {
 			s.twofaSvc.Stop()
 		}
+		s.updateMu.Lock()
+		s.updatePausing = true
+		s.updateMu.Unlock()
 		s.backgroundWG.Wait()
 		if s.agentClient != nil {
 			_ = s.agentClient.Close()
