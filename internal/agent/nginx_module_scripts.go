@@ -147,8 +147,16 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 	}
 	defer s.transactionMu.Unlock()
 	instance, version, err := s.inspectModuleRuntime(ctx)
-	if err != nil || instance.selection.master == nil || !instance.localRootMaster(instance.selection.master.pid) {
-		return failure("无法锁定运行中的 Nginx 实例")
+	if err != nil {
+		return failure("无法核验 Nginx 实例：" + err.Error())
+	}
+	id := offer.module.ID
+	previous, err := instance.activeWorkers(instance.selection)
+	if err != nil {
+		return failure("无法核验 Nginx worker 状态：" + err.Error())
+	}
+	if err := s.moduleActionReadiness(ctx, instance, len(previous) != 0, id, offer.path); err != nil {
+		return failure(err.Error())
 	}
 	currentTarget, err := moduleTarget(instance, version)
 	if err != nil || currentTarget != offer.asset.Target || !offer.expires.IsZero() && !time.Now().Before(offer.expires) {
@@ -158,11 +166,9 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 	if err != nil {
 		return failure(err.Error())
 	}
-	id := offer.module.ID
 	entry := managed[id]
-	paths, static, loaded, err := instance.moduleCurrent(offer.module, entry)
-	previous, workerErr := instance.activeWorkers(instance.selection)
-	precondition := err == nil && workerErr == nil && len(previous) != 0 && !static
+	paths, static, loaded, err := instance.moduleCurrent(offer.module, entry, len(previous) != 0)
+	precondition := err == nil && !static
 	if uninstall {
 		digest, err := fingerprintModuleBinary(ctx, entry.path)
 		precondition = precondition && err == nil && digest == offer.asset.SHA256 && entry.path == offer.path && len(paths) == 1 && instance.moduleRefs[entry.path] == 1 && entry.identity() == offer.managed.identity() && moduleConfirmation(instance, offer.identity) == offer.status.UninstallConfirmation
@@ -248,7 +254,11 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		return uncertain("脚本结束后无法核验托管配置")
 	}
 	currentEntry := currentManaged[id]
-	currentPaths, currentStatic, currentLoaded, inspectErr := current.moduleCurrent(offer.module, currentEntry)
+	workers, inspectErr := current.activeWorkers(current.selection)
+	if inspectErr != nil {
+		return uncertain("无法核验模块操作后的 Nginx worker 状态")
+	}
+	currentPaths, currentStatic, currentLoaded, inspectErr := current.moduleCurrent(offer.module, currentEntry, len(workers) != 0)
 	if inspectErr != nil || currentStatic {
 		return uncertain("无法核验模块最终状态")
 	}
@@ -268,8 +278,7 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		keep = false
 		return failure(moduleScriptDiagnostic(output, err))
 	}
-	workers, inspectErr := current.activeWorkers(current.selection)
-	if inspectErr != nil || len(workers) == 0 {
+	if len(workers) == 0 {
 		return uncertain("未确认 Nginx 新一代 worker 接管")
 	}
 	for worker := range workers {

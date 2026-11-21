@@ -36,6 +36,7 @@
 | --- | --- |
 | 在线目录不可用 | 点击**刷新在线目录**。检查 Agent 能否访问 GitHub，以及是否已有正式签名目录。缓存只供查看，不能用于新安装。 |
 | 没有「安装」按钮 | 目录必须包含与当前系统、架构、Nginx/OpenResty 版本及二进制 SHA-256 完全匹配的构建。不要拿相近版本的 `.so` 替代。 |
+| Nginx 已运行，但模块页提示无法核验实例或挂载路径 | 在「状态管理」确认面板实例和 worker。用 systemd 部署时保留 `PrivateTmp`、`ProtectSystem` 等安全加固，检查 unit 的主进程、启动配置，以及 Agent 和 Nginx 是否看到同一份主配置和模块目录。 |
 | 提示仍有依赖或缺少卸载凭据 | 先处理仍引用模块的规则或配置。凭据缺失、损坏或其签名公钥已撤销时，面板不会执行卸载。 |
 | 提示「需人工检查」 | 查看操作记录和 Nginx 日志。备份当前配置、`/var/lib/nxpanel-nginx-modules/script-task.json` 和记录中的工作目录。对比 `*.before`，确认配置和运行状态恢复后再归档记录，不要强行重试。 |
 
@@ -71,7 +72,7 @@
 
 ### 二进制联调（Linux VM）
 
-1. 在 NxPanel 源码根目录生成测试源。以下以 OpenResty 为例，路径替换成测试 VM 上的实际二进制。其他运行时版本可能需要设置 `MODULE_RUNTIME_SHA256`。
+1. 在 NxPanel 源码根目录生成测试源。此命令只构建模块和签名测试目录，不启动任何服务；安装模块前，另行启动测试 VM 上面板管理的 Nginx/OpenResty。以下以 OpenResty 为例，路径替换成实际二进制。其他运行时版本可能需要设置 `MODULE_RUNTIME_SHA256`。
 
    ```sh
    make module-fixture MODULE_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx

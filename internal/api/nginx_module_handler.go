@@ -50,8 +50,8 @@ func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var latest *nginxModuleJob
-	if operations, _, err := s.opRepo.List(1, 1, nginxModuleTargetType, ""); err == nil && len(operations) > 0 {
-		job := moduleJobFromOperation(operations[0])
+	if operation, err := s.opRepo.LatestByActions(r.Context(), nginxModuleTargetType, nginxModuleInstallAction, nginxModuleUninstallAction); err == nil && operation != nil {
+		job := moduleJobFromOperation(operation)
 		latest = &job
 	}
 	WriteOK(w, r, struct {

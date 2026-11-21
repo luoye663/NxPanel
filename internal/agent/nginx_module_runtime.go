@@ -217,7 +217,7 @@ func (s *Server) inspectModuleRuntime(ctx context.Context) (moduleRuntime, CmdRe
 	return module, version, config.read(options.conf)
 }
 
-func (instance moduleRuntime) moduleCurrent(module nginxmodule.Module, managed managedModule) (map[string]bool, bool, bool, error) {
+func (instance moduleRuntime) moduleCurrent(module nginxmodule.Module, managed managedModule, hasWorkers bool) (map[string]bool, bool, bool, error) {
 	paths := make(map[string]bool)
 	symbol := module.Symbol
 	if managed.path != "" {
@@ -230,9 +230,8 @@ func (instance moduleRuntime) moduleCurrent(module nginxmodule.Module, managed m
 		}
 	}
 	static := instance.staticSymbols[symbol]
-	workers, err := instance.activeWorkers(instance.selection)
-	if err != nil || len(workers) == 0 || static || len(paths) == 0 {
-		return paths, static, static && len(workers) > 0, err
+	if !hasWorkers || static || len(paths) == 0 {
+		return paths, static, static && hasWorkers, nil
 	}
 	loaded, err := instance.masterHasModule(instance.selection, func(path string) bool {
 		return paths[path]

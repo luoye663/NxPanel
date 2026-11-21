@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/agentclient"
+	"github.com/luoye663/nxpanel/internal/db/repo"
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
 )
 
@@ -72,6 +73,17 @@ func TestNginxModuleRoutesAndAsyncAudit(t *testing.T) {
 	if response := request(http.MethodPost, installPath, body, true, false); response.Code != http.StatusForbidden {
 		t.Fatalf("install without CSRF = %d", response.Code)
 	}
+	legacyJob := &repo.Operation{ID: "old-preflight", Action: "nginx.module.preflight", TargetType: nginxModuleTargetType,
+		TargetID: nginxmodule.GeoIP2, Status: "success", CreatedAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}
+	if err := server.opRepo.Create(legacyJob); err != nil {
+		t.Fatal(err)
+	}
+	if response := request(http.MethodGet, listPath, "", true, false); response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"latest_job"`) {
+		t.Fatalf("legacy preflight was returned as a module job: %d %s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodGet, listPath+"/jobs/"+legacyJob.ID, "", true, false); response.Code != http.StatusNotFound {
+		t.Fatalf("legacy preflight job lookup = %d", response.Code)
+	}
 	response := request(http.MethodPost, installPath, body, true, true)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("install = %d %s", response.Code, response.Body.String())
@@ -105,6 +117,20 @@ func TestNginxModuleRoutesAndAsyncAudit(t *testing.T) {
 			response := request(http.MethodGet, listPath+"/jobs/"+op.ID, "", true, false)
 			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"success"`) {
 				t.Fatalf("job status = %d %s", response.Code, response.Body.String())
+			}
+			uninstall := &repo.Operation{ID: "uninstall-job", Action: nginxModuleUninstallAction, TargetType: nginxModuleTargetType,
+				TargetID: nginxmodule.GeoIP2, Status: "success", CreatedAt: op.CreatedAt}
+			if err := server.opRepo.Create(uninstall); err != nil {
+				t.Fatal(err)
+			}
+			response = request(http.MethodGet, listPath, "", true, false)
+			var listing struct {
+				Data struct {
+					Latest nginxModuleJob `json:"latest_job"`
+				}
+			}
+			if err := json.NewDecoder(response.Body).Decode(&listing); err != nil || response.Code != http.StatusOK || listing.Data.Latest.ID != uninstall.ID || listing.Data.Latest.Action != "uninstall" {
+				t.Fatalf("latest job = %+v (HTTP %d): %v", listing.Data.Latest, response.Code, err)
 			}
 			return
 		}

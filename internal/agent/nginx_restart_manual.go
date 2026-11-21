@@ -156,6 +156,10 @@ func manualCgroups(groups, selfGroups string) bool {
 }
 
 func (runtime nginxRuntime) localRootMaster(pid int) bool {
+	return runtime.rootMasterInScope(pid, "ns/pid", "ns/mnt", "ns/user", "ns/net")
+}
+
+func (runtime nginxRuntime) rootMasterInScope(pid int, namespaces ...string) bool {
 	dir := filepath.Join(runtime.procRoot, strconv.Itoa(pid))
 	status, err := procText(filepath.Join(dir, "status"))
 	if err != nil {
@@ -171,14 +175,21 @@ func (runtime nginxRuntime) localRootMaster(pid int) bool {
 	if !root {
 		return false
 	}
-	for _, path := range []string{"root", "ns/pid", "ns/mnt", "ns/user", "ns/net"} {
-		peer, err := os.Stat(filepath.Join(dir, path))
-		self, selfErr := os.Stat(filepath.Join(runtime.procRoot, "self", path))
-		if err != nil || selfErr != nil || !os.SameFile(peer, self) {
+	for _, path := range append([]string{"root"}, namespaces...) {
+		if _, same, err := runtime.masterPathIdentity(pid, path); err != nil || !same {
 			return false
 		}
 	}
 	return true
+}
+
+func (runtime nginxRuntime) masterPathIdentity(pid int, path string) (os.FileInfo, bool, error) {
+	peer, err := os.Stat(filepath.Join(runtime.procRoot, strconv.Itoa(pid), path))
+	if err != nil {
+		return nil, false, err
+	}
+	self, err := os.Stat(filepath.Join(runtime.procRoot, "self", path))
+	return peer, err == nil && os.SameFile(peer, self), err
 }
 
 func (runtime nginxRuntime) checkPIDFiles(selection runtimeSelection, options runtimeOptions, targetPID int, requireDaemon bool) (string, error) {

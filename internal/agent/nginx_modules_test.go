@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
 )
 
 func TestModuleManagedConfig(t *testing.T) {
@@ -93,5 +97,139 @@ func TestModuleWorkersDoNotRequireReadingWorkerExecutable(t *testing.T) {
 	workers, err := module.activeWorkers(selection)
 	if err != nil || !workers[nginxProcess{pid: "101", start: "10000"}] {
 		t.Fatalf("worker scan failed without access to executable: %v %v", workers, err)
+	}
+}
+
+func TestModuleActionReadiness(t *testing.T) {
+	server := &Server{cfg: &app.Config{}}
+	for _, scenario := range []struct {
+		name, reason string
+	}{
+		{"not running", "未找到面板管理"},
+		{"no worker", "未发现活跃 worker"},
+		{"maintenance", "主配置仍包含面板维护模式"},
+		{"same mount namespace", ""},
+		{"verified systemd service", ""},
+		{"different root user", "root 身份"},
+		{"different PID namespace", "运行环境"},
+		{"missing mount namespace", "无法核验 Nginx 主进程的挂载命名空间"},
+		{"different mount with no systemd", "不属于可核验的 systemd 服务"},
+		{"different systemd PID", "无法核验其 systemd 服务归属"},
+		{"different systemd arguments", "无法核验其 systemd 服务归属"},
+		{"missing config in runtime view", "挂载路径不一致"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			runtime, _, _, _ := restartFixture(t)
+			runtime.systemd = scenario.name != "different mount with no systemd"
+			mainPID := "100"
+			serviceConfig := runtime.conf
+			masterDir := filepath.Join(runtime.procRoot, mainPID)
+			for _, path := range []string{masterDir, filepath.Join(runtime.procRoot, "self")} {
+				if err := os.Remove(filepath.Join(path, "root")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("/", filepath.Join(path, "root")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario.name != "same mount namespace" {
+				namespaces := filepath.Join(runtime.prefix, "master-namespaces")
+				if err := os.Remove(filepath.Join(masterDir, "ns")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(namespaces, 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(namespaces, filepath.Join(masterDir, "ns")); err != nil {
+					t.Fatal(err)
+				}
+				for _, namespace := range []string{"pid", "user", "net"} {
+					if scenario.name == "different PID namespace" && namespace == "pid" {
+						writeRestartFixture(t, filepath.Join(namespaces, namespace), "other namespace")
+					} else if err := os.Symlink(filepath.Join(runtime.prefix, namespace), filepath.Join(namespaces, namespace)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if scenario.name != "missing mount namespace" {
+					writeRestartFixture(t, filepath.Join(namespaces, "mnt"), "other mount namespace")
+				}
+			}
+			runtime.run = func(_ context.Context, bin string, args ...string) (CmdResult, error) {
+				if bin != "systemctl" || args[0] != "show" {
+					t.Fatalf("unexpected command: %s %v", bin, args)
+				}
+				if args[1] != "openresty.service" {
+					return CmdResult{Stdout: "0\n"}, nil
+				}
+				if args[2] == "--property=MainPID" {
+					return CmdResult{Stdout: mainPID}, nil
+				}
+				return CmdResult{Stdout: fmt.Sprintf("Id=openresty.service\nExecStart={ path=%s ; argv[]=%s -p %s -c %s ; }\n", runtime.bin, runtime.bin, runtime.prefix, serviceConfig)}, nil
+			}
+			selection, err := runtime.inspect(t.Context())
+			if err != nil || selection.master == nil {
+				t.Fatalf("could not select fixture master: %v", err)
+			}
+			instance := moduleRuntime{nginxRuntime: runtime, selection: selection, confPath: runtime.conf}
+			switch scenario.name {
+			case "not running":
+				instance.selection.master = nil
+			case "maintenance":
+				instance.conf = []byte(nginxpatch.MaintenanceStart + "site")
+			case "different root user":
+				writeRestartFixture(t, filepath.Join(masterDir, "status"), "Uid:\t33\t33\t33\t33\n")
+			case "different systemd PID":
+				mainPID = "101"
+			case "different systemd arguments":
+				serviceConfig += ".other"
+			case "missing config in runtime view":
+				if err := os.Remove(runtime.conf); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = server.moduleActionReadiness(t.Context(), instance, scenario.name != "no worker", "fixture-http", "")
+			if scenario.reason == "" && err != nil || scenario.reason != "" && (err == nil || !strings.Contains(err.Error(), scenario.reason)) {
+				t.Fatalf("readiness = %v, want %q", err, scenario.reason)
+			}
+			if scenario.name == "verified systemd service" && runtime.localRootMaster(100) {
+				t.Fatal("module exception also relaxed the manual restart check")
+			}
+		})
+	}
+}
+
+func TestModulePathSharing(t *testing.T) {
+	hostDir, peerDir := t.TempDir(), t.TempDir()
+	for _, dir := range []string{hostDir, peerDir} {
+		if err := os.Mkdir(filepath.Join(dir, "config"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hostConf, peerConf := filepath.Join(hostDir, "config", "nginx.conf"), filepath.Join(peerDir, "config", "nginx.conf")
+	writeRestartFixture(t, hostConf, "events {}")
+	if err := os.Link(hostConf, peerConf); err != nil {
+		t.Fatal(err)
+	}
+	host, err := os.OpenRoot(hostDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	peer, err := os.OpenRoot(peerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	if !modulePathShared(host, host, "/config/nginx.conf", false, true) || !modulePathShared(host, host, "/config/new/asset.so", true, true) {
+		t.Fatal("shared config or future asset path rejected")
+	}
+	if modulePathShared(host, peer, "/config/nginx.conf", false, true) || modulePathShared(host, peer, "/config/new/asset.so", true, true) {
+		t.Fatal("same file inode or missing paths accepted under different parent directories")
+	}
+	if err := os.Symlink("missing", filepath.Join(hostDir, "config", "new")); err != nil {
+		t.Fatal(err)
+	}
+	if modulePathShared(host, host, "/config/new/asset.so", true, true) {
+		t.Fatal("dangling symlink treated as an unallocated module path")
 	}
 }

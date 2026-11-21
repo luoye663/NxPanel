@@ -85,17 +85,14 @@ func (r *OperationRepo) UpdateErrorContext(ctx context.Context, id, status, erro
 	return nil
 }
 
-// GetByID 根据 ID 获取操作记录
-func (r *OperationRepo) GetByID(id string) (*Operation, error) {
-	o := &Operation{}
-	err := r.db.QueryRow(
-		`SELECT id, action, target_type, target_id, status,
+const operationFields = `id, action, target_type, target_id, status,
 			request_id, actor, ip, user_agent,
 			message, error_code, error_message, stderr,
-			created_at, finished_at
-		FROM operations WHERE id = ?`,
-		id,
-	).Scan(
+			created_at, finished_at`
+
+func scanOperation(row interface{ Scan(...any) error }) (*Operation, error) {
+	o := &Operation{}
+	err := row.Scan(
 		&o.ID, &o.Action, &o.TargetType, &o.TargetID, &o.Status,
 		&o.RequestID, &o.Actor, &o.IP, &o.UserAgent,
 		&o.Message, &o.ErrorCode, &o.ErrorMessage, &o.Stderr,
@@ -104,10 +101,22 @@ func (r *OperationRepo) GetByID(id string) (*Operation, error) {
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	return o, err
+}
+
+// GetByID 根据 ID 获取操作记录
+func (r *OperationRepo) GetByID(id string) (*Operation, error) {
+	op, err := scanOperation(r.db.QueryRow(`SELECT `+operationFields+` FROM operations WHERE id = ?`, id))
 	if err != nil {
 		return nil, fmt.Errorf("查询操作记录失败 id=%s: %w", id, err)
 	}
-	return o, nil
+	return op, nil
+}
+
+func (r *OperationRepo) LatestByActions(ctx context.Context, targetType, firstAction, secondAction string) (*Operation, error) {
+	return scanOperation(r.db.QueryRowContext(ctx, `SELECT `+operationFields+` FROM operations
+		WHERE target_type = ? AND action IN (?, ?) ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+		targetType, firstAction, secondAction))
 }
 
 func (r *OperationRepo) InterruptAction(ctx context.Context, action, code, message string) error {
@@ -138,11 +147,7 @@ func (r *OperationRepo) List(page, pageSize int, targetType, targetID string) ([
 	}
 
 	offset := (page - 1) * pageSize
-	querySQL := `SELECT id, action, target_type, target_id, status,
-		request_id, actor, ip, user_agent,
-		message, error_code, error_message, stderr,
-		created_at, finished_at
-	FROM operations ` + where + ` ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
+	querySQL := `SELECT ` + operationFields + ` FROM operations ` + where + ` ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
 	args = append(args, pageSize, offset)
 
 	rows, err := r.db.Query(querySQL, args...)
@@ -153,16 +158,11 @@ func (r *OperationRepo) List(page, pageSize int, targetType, targetID string) ([
 
 	var ops []*Operation
 	for rows.Next() {
-		o := &Operation{}
-		if err := rows.Scan(
-			&o.ID, &o.Action, &o.TargetType, &o.TargetID, &o.Status,
-			&o.RequestID, &o.Actor, &o.IP, &o.UserAgent,
-			&o.Message, &o.ErrorCode, &o.ErrorMessage, &o.Stderr,
-			&o.CreatedAt, &o.FinishedAt,
-		); err != nil {
+		op, err := scanOperation(rows)
+		if err != nil {
 			return nil, 0, err
 		}
-		ops = append(ops, o)
+		ops = append(ops, op)
 	}
 
 	return ops, total, rows.Err()

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
-	"github.com/luoye663/nxpanel/internal/nginxpatch"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -196,7 +195,12 @@ func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, ver
 		return offer
 	}
 	status.Runtime = strings.TrimSpace(strings.SplitN(version.Stderr+version.Stdout, "\n", 2)[0])
-	paths, static, loaded, err := instance.moduleCurrent(module, managed)
+	workers, err := instance.activeWorkers(instance.selection)
+	if err != nil {
+		status.Reason = "无法核验 Nginx worker 状态：" + err.Error()
+		return offer
+	}
+	paths, static, loaded, err := instance.moduleCurrent(module, managed, len(workers) != 0)
 	if err != nil {
 		status.Reason = "无法核验模块加载状态：" + err.Error()
 		return offer
@@ -212,11 +216,11 @@ func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, ver
 		status.State, status.Reason = "drifted", "Nginx 二进制已变化，请核对模块兼容性和主配置"
 		return offer
 	}
-	workers, workerErr := instance.activeWorkers(instance.selection)
-	ready := workerErr == nil && instance.selection.master != nil && len(workers) > 0 && instance.localRootMaster(instance.selection.master.pid) && !nginxpatch.HasMaintenance(string(instance.conf))
 	target, targetErr := moduleTarget(instance, version)
-	if actions && ready && targetErr == nil && !static && managed.path != "" && len(paths) == 1 && paths[managed.path] && instance.moduleRefs[managed.path] == 1 {
-		if err := s.uninstallOffer(ctx, &offer, target); err == nil {
+	if actions && targetErr == nil && !static && managed.path != "" && len(paths) == 1 && paths[managed.path] && instance.moduleRefs[managed.path] == 1 {
+		if err := s.moduleActionReadiness(ctx, instance, len(workers) != 0, module.ID, managed.path); err != nil {
+			status.Reason = err.Error()
+		} else if err := s.uninstallOffer(ctx, &offer, target); err == nil {
 			status.UninstallConfirmation = moduleConfirmation(instance, offer.identity)
 			status.Version = offer.asset.Version
 		} else {
@@ -235,21 +239,23 @@ func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, ver
 		status.Reason = "运行中未加载模块"
 		return offer
 	}
-	if !ready {
-		status.Reason = "请先启动面板管理的 Nginx 实例，确认 worker 正常并退出维护模式"
-		return offer
-	}
 	asset, found := feed.catalog.Match(module.ID, target)
-	if found && !status.Present {
-		if file, err := openRuntimeRegular(s.moduleSource.assetPath(module.ID, asset.SHA256)); err == nil {
+	var assetPath string
+	if found {
+		assetPath = s.moduleSource.assetPath(module.ID, asset.SHA256)
+		if file, err := openRuntimeRegular(assetPath); err == nil {
 			status.Present = true
 			_ = file.Close()
 		}
 	}
+	if err := s.moduleActionReadiness(ctx, instance, len(workers) != 0, module.ID, assetPath); err != nil {
+		status.Reason = err.Error()
+		return offer
+	}
 	switch {
 	case fresh && found && targetErr == nil:
 		offer.asset, offer.expires = asset, feed.catalog.ExpiresAt
-		offer.path = s.moduleSource.assetPath(module.ID, asset.SHA256)
+		offer.path = assetPath
 		offer.identity = "install " + module.ID + " " + feed.floor.Digest + " " + asset.SHA256 + " " + module.Install.SHA256
 		offer.receipt.Envelope = feed.envelope
 		status.Version, status.Action = asset.Version, "install"
