@@ -77,6 +77,14 @@ func NewDefaultPathPolicy() *PathPolicy {
 // Validate 检查路径是否在允许的目录内
 // 返回清理后的路径和错误
 func (p *PathPolicy) Validate(path string) (string, error) {
+	for _, protected := range []string{moduleStateDir, moduleTestStateDir} {
+		clean := filepath.Clean(path)
+		_, inside := security.CleanAbsWithin(path, []string{protected})
+		_, contains := security.CleanAbsWithin(protected, []string{clean})
+		if clean == "/" || clean == protected || strings.HasPrefix(clean, protected+"/") || strings.HasPrefix(protected, clean+"/") || inside == nil || contains == nil {
+			return "", errors.New("模块系统目录不允许通过文件管理访问")
+		}
+	}
 	if p.protected != "" {
 		clean := filepath.Clean(path)
 		ancestor := clean == "/" || strings.HasPrefix(p.protected, clean+"/")

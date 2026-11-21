@@ -16,6 +16,9 @@ type runtimeConfig struct {
 	noDaemon  bool
 	budget    *runtimeConfigBudget
 	active    map[string]bool
+	module    func(string) error
+	configDir func(string) error
+	open      func(string) (*os.File, error)
 }
 
 var errRuntimeConfig = errors.New("配置不是可核验的静态 Nginx 配置，或超出读取上限")
@@ -75,11 +78,15 @@ func (config *runtimeConfig) read(path string) error {
 		return errRuntimeConfig
 	}
 	for _, dir := range []string{filepath.Dir(path), filepath.Dir(real)} {
-		if _, err := trustedRuntimeDir(dir); err != nil {
+		if err := config.checkDir(dir); err != nil {
 			return err
 		}
 	}
-	file, err := openRuntimeRegular(real)
+	open := config.open
+	if open == nil {
+		open = openRuntimeRegular
+	}
+	file, err := open(real)
 	if err != nil {
 		return err
 	}
@@ -141,6 +148,13 @@ func (config *runtimeConfig) scan(text string) error {
 
 func (config *runtimeConfig) directive(name, value string, count int) error {
 	switch name {
+	case "load_module":
+		if config.module != nil {
+			if count != 2 || !plainRuntimePath(value, false) {
+				return errRuntimeConfig
+			}
+			return config.module(value)
+		}
 	case "pid":
 		if count != 2 || config.pid != "" || !plainRuntimePath(value, false) {
 			return errRuntimeConfig
@@ -175,7 +189,12 @@ func (config *runtimeConfig) include(path string) error {
 	if strings.ContainsAny(dir, "*?") {
 		return errRuntimeConfig
 	}
-	if _, err := trustedRuntimeDir(dir); err != nil {
+	if isModuleInclude(path) {
+		if _, err := os.Lstat(dir); os.IsNotExist(err) {
+			return nil
+		}
+	}
+	if err := config.checkDir(dir); err != nil {
 		return err
 	}
 	if _, err := filepath.Match(pattern, ""); err != nil || config.budget.entries <= 0 {
@@ -203,6 +222,14 @@ func (config *runtimeConfig) include(path string) error {
 		}
 	}
 	return nil
+}
+
+func (config *runtimeConfig) checkDir(dir string) error {
+	if config.configDir != nil {
+		return config.configDir(dir)
+	}
+	_, err := trustedRuntimeDir(dir)
+	return err
 }
 
 func nextRuntimeConfigToken(text string) (string, byte, string, error) {

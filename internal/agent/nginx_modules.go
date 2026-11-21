@@ -1,0 +1,301 @@
+package agent
+
+import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/nginxpatch"
+	"github.com/luoye663/nxpanel/internal/update"
+)
+
+type moduleOffer struct {
+	status   nginxmodule.Status
+	module   nginxmodule.Module
+	asset    nginxmodule.Asset
+	managed  managedModule
+	path     string
+	identity string
+	expires  time.Time
+	receipt  moduleReceipt
+}
+
+func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
+	local := strings.HasSuffix(r.URL.Path, "/local")
+	listing := nginxmodule.Listing{Modules: []nginxmodule.Status{}, FeedState: "busy", TestFeed: s.moduleSource.test}
+	respond := func() {
+		if local {
+			if len(listing.Modules) == 0 {
+				listing.Modules = append(listing.Modules, nginxmodule.Status{ID: nginxmodule.GeoIP2, State: "busy", Reason: "模块操作或检查正在进行"})
+			}
+			writeAgentOK(w, listing.Modules)
+			return
+		}
+		writeAgentOK(w, listing)
+	}
+	if !s.moduleMu.TryLock() {
+		listing.Busy = true
+		respond()
+		return
+	}
+	defer s.moduleMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 23*time.Second)
+	defer cancel()
+	var feed moduleFeed
+	if !local {
+		var err error
+		feed, err = s.loadModuleFeed(ctx, r.URL.Query().Get("refresh") == "1")
+		listing.FeedState = "online"
+		if err != nil {
+			listing.FeedState, listing.FeedMessage = "error", err.Error()
+			feed = s.cachedModuleFeed()
+			if !feed.fetched.IsZero() {
+				listing.FeedState = "stale"
+			}
+		}
+	}
+	instance, version, managed, runtimeErr := s.moduleSnapshot(ctx)
+	listing.Busy = runtimeErr == errModuleBusy
+	recoveryErr := s.moduleSource.checkScriptJournal()
+	modules := feed.catalog.Modules
+	if local {
+		modules = []nginxmodule.Module{nginxmodule.GeoIP2Module()}
+	} else {
+		modules = append([]nginxmodule.Module(nil), modules...)
+		seen := make(map[string]bool, len(modules))
+		for _, module := range modules {
+			seen[module.ID] = true
+		}
+		if !seen[nginxmodule.GeoIP2] && (instance.static || len(instance.loadedPaths) != 0 || managed[nginxmodule.GeoIP2].path != "") {
+			modules = append(modules, nginxmodule.GeoIP2Module())
+		}
+		var ids []string
+		for id := range managed {
+			if id != nginxmodule.GeoIP2 && !seen[id] {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			modules = append(modules, nginxmodule.Module{ID: id, Name: id, Kind: nginxmodule.DynamicKind, Symbol: managed[id].symbol})
+		}
+	}
+	for _, module := range modules {
+		offer := s.describeModule(ctx, instance, version, module, managed[module.ID], feed, !local, listing.FeedState == "online", runtimeErr)
+		if recoveryErr != nil {
+			offer.status.State, offer.status.Reason = "needs_attention", recoveryErr.Error()
+			offer.status.Confirmation, offer.status.UninstallConfirmation, offer.status.Action = "", "", ""
+		}
+		listing.Modules = append(listing.Modules, offer.status)
+	}
+	respond()
+}
+
+var errModuleBusy = fmt.Errorf("Nginx 控制操作或配置事务正在执行")
+
+func (s *Server) moduleSnapshot(ctx context.Context) (moduleRuntime, CmdResult, map[string]managedModule, error) {
+	if !s.executor.lifecycleMu.TryLock() {
+		return moduleRuntime{}, CmdResult{}, nil, errModuleBusy
+	}
+	defer s.executor.lifecycleMu.Unlock()
+	if !s.transactionMu.TryLock() {
+		return moduleRuntime{}, CmdResult{}, nil, errModuleBusy
+	}
+	defer s.transactionMu.Unlock()
+	instance, version, err := s.inspectModuleRuntime(ctx)
+	if err != nil {
+		return instance, version, nil, err
+	}
+	managed, err := s.moduleSource.managedModules(instance)
+	return instance, version, managed, err
+}
+
+func (s *Server) handleNginxModuleInstall(w http.ResponseWriter, r *http.Request) {
+	s.handleNginxModuleAction(w, r, false)
+}
+
+func (s *Server) handleNginxModuleUninstall(w http.ResponseWriter, r *http.Request) {
+	s.handleNginxModuleAction(w, r, true)
+}
+
+func (s *Server) handleNginxModuleAction(w http.ResponseWriter, r *http.Request, uninstall bool) {
+	var request nginxmodule.InstallRequest
+	if update.Decode(http.MaxBytesReader(w, r.Body, 1024), &request) != nil || !nginxmodule.ValidID(request.ID) || !nginxmodule.ValidDigest(request.Confirmation) {
+		writeAgentError(w, http.StatusBadRequest, "无效的模块操作确认")
+		return
+	}
+	if !s.moduleMu.TryLock() {
+		writeAgentOK(w, nginxmodule.Result{State: "failed", Message: "另一个模块操作或检查正在执行，请重试"})
+		return
+	}
+	defer s.moduleMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), nginxmodule.ActionTimeout)
+	defer cancel()
+	if err := s.moduleSource.checkScriptJournal(); err != nil {
+		writeAgentOK(w, nginxmodule.Result{State: "needs_attention", Message: err.Error()})
+		return
+	}
+	var feed moduleFeed
+	var feedErr error
+	if !uninstall {
+		feed, feedErr = s.loadModuleFeed(ctx, true)
+	}
+	instance, version, managed, runtimeErr := s.moduleSnapshot(ctx)
+	module := nginxmodule.Module{ID: request.ID, Kind: nginxmodule.DynamicKind, Symbol: managed[request.ID].symbol}
+	if request.ID == nginxmodule.GeoIP2 {
+		module = nginxmodule.GeoIP2Module()
+	}
+	for _, candidate := range feed.catalog.Modules {
+		if candidate.ID == request.ID {
+			module = candidate
+			break
+		}
+	}
+	offer := s.describeModule(ctx, instance, version, module, managed[request.ID], feed, true, feedErr == nil && len(feed.envelope) != 0, runtimeErr)
+	ticket := offer.status.Confirmation
+	if uninstall {
+		ticket = offer.status.UninstallConfirmation
+	}
+	if ticket != request.Confirmation {
+		message := "模块目录、运行时或配置已变化，请刷新后重新确认"
+		if feedErr != nil {
+			message += "：" + feedErr.Error()
+		} else if offer.status.Reason != "" {
+			message += "：" + offer.status.Reason
+		}
+		writeAgentOK(w, nginxmodule.Result{State: "failed", Message: message})
+		return
+	}
+	result := s.runModuleAction(ctx, offer, uninstall)
+	if result.State != "success" {
+		slog.Warn("Nginx 模块操作未完成", "module", request.ID, "uninstall", uninstall, "state", result.State, "reason", result.Message)
+	}
+	writeAgentOK(w, result)
+}
+
+func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, version CmdResult, module nginxmodule.Module, managed managedModule, feed moduleFeed, actions, fresh bool, runtimeErr error) moduleOffer {
+	offer := moduleOffer{module: module, managed: managed, status: nginxmodule.Status{ID: module.ID, Name: module.Name, Description: module.Description, State: "unavailable", TestFeed: s.moduleSource.test}}
+	status := &offer.status
+	if runtimeErr != nil {
+		status.Reason = runtimeErr.Error()
+		if runtimeErr == errModuleBusy {
+			status.State = "busy"
+		}
+		return offer
+	}
+	if module.Kind != nginxmodule.DynamicKind && managed.path == "" {
+		status.Reason = "当前 Agent 不支持此模块的安装类型"
+		return offer
+	}
+	status.Runtime = strings.TrimSpace(strings.SplitN(version.Stderr+version.Stdout, "\n", 2)[0])
+	paths, static, loaded, err := instance.moduleCurrent(module, managed)
+	if err != nil {
+		status.Reason = "无法核验模块加载状态：" + err.Error()
+		return offer
+	}
+	status.Configured, status.Loaded = static || len(paths) > 0, loaded
+	status.Present = static || loaded
+	for path := range paths {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			status.Present = true
+		}
+	}
+	if managed.binaryHash != "" && managed.binaryHash != instance.binaryHash {
+		status.State, status.Reason = "drifted", "Nginx 二进制已变化，请核对模块兼容性和主配置"
+		return offer
+	}
+	workers, workerErr := instance.activeWorkers(instance.selection)
+	ready := workerErr == nil && instance.selection.master != nil && len(workers) > 0 && instance.localRootMaster(instance.selection.master.pid) && !nginxpatch.HasMaintenance(string(instance.conf))
+	target, targetErr := moduleTarget(instance, version)
+	if actions && ready && targetErr == nil && !static && managed.path != "" && len(paths) == 1 && paths[managed.path] && instance.moduleRefs[managed.path] == 1 {
+		if err := s.uninstallOffer(ctx, &offer, target); err == nil {
+			status.UninstallConfirmation = moduleConfirmation(instance, offer.identity)
+			status.Version = offer.asset.Version
+		} else {
+			status.Reason = err.Error()
+		}
+	}
+	if loaded {
+		status.State = "enabled"
+		return offer
+	}
+	if status.Configured {
+		status.State, status.Reason = "configured", "模块已写入配置，但未确认加载；请检查 Nginx 配置和日志"
+		return offer
+	}
+	if !actions {
+		status.Reason = "运行中未加载模块"
+		return offer
+	}
+	if !ready {
+		status.Reason = "请先启动面板管理的 Nginx 实例，确认 worker 正常并退出维护模式"
+		return offer
+	}
+	asset, found := feed.catalog.Match(module.ID, target)
+	if found && !status.Present {
+		if file, err := openRuntimeRegular(s.moduleSource.assetPath(module.ID, asset.SHA256)); err == nil {
+			status.Present = true
+			_ = file.Close()
+		}
+	}
+	switch {
+	case fresh && found && targetErr == nil:
+		offer.asset, offer.expires = asset, feed.catalog.ExpiresAt
+		offer.path = s.moduleSource.assetPath(module.ID, asset.SHA256)
+		offer.identity = "install " + module.ID + " " + feed.floor.Digest + " " + asset.SHA256 + " " + module.Install.SHA256
+		offer.receipt.Envelope = feed.envelope
+		status.Version, status.Action = asset.Version, "install"
+	case !fresh:
+		status.Reason = "未获取到可用于安装的已验证目录"
+		return offer
+	default:
+		status.Reason = "当前系统、架构与 Nginx 二进制没有匹配的模块构建"
+		return offer
+	}
+	status.State = "available"
+	status.Confirmation = moduleConfirmation(instance, offer.identity)
+	return offer
+}
+
+func (entry managedModule) identity() string {
+	return sha256Text(entry.fragment)
+}
+
+func moduleConfirmation(instance moduleRuntime, identity string) string {
+	value := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%x", instance.selection.status.RestartGeneration, instance.binaryHash, identity, instance.confPath, sha256.Sum256(instance.conf))
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+func inModuleContainer() bool {
+	_, err := os.Stat("/.dockerenv")
+	return err == nil
+}
+
+func (s *Server) lockNginxFileMutation(paths ...string) func() {
+	var conf, panel string
+	if s.executor != nil {
+		conf = s.executor.GetConfPath()
+	}
+	if s.cfg != nil {
+		panel = s.cfg.Nginx.PanelDir
+	}
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		if filepath.IsAbs(conf) && (pathsOverlap(path, filepath.Dir(conf)) || pathsOverlap(path, conf)) ||
+			filepath.IsAbs(panel) && pathsOverlap(path, panel) {
+			s.transactionMu.Lock()
+			return s.transactionMu.Unlock
+		}
+	}
+	return func() {}
+}

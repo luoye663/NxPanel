@@ -27,6 +27,9 @@ type Server struct {
 	executor           *NginxExecutor
 	timeouts           NginxTimeouts
 	transactionMu      sync.Mutex // Held through test/reload/rollback, not just the file write.
+	moduleMu           sync.Mutex
+	moduleFeed         moduleFeed
+	moduleSource       moduleSource
 	reloadProbeForTest func(context.Context) (func(context.Context) error, error)
 	// restoreSnapshotHook is only set by tests that inject a post-snapshot fault.
 	restoreSnapshotHook func(string)
@@ -49,11 +52,12 @@ func newServer(cfg *app.Config, trial bool) (*Server, error) {
 		Detect: app.ParseDurationOrDefault(cfg.Nginx.DetectTimeout, 10*time.Second),
 	}
 	s := &Server{
-		cfg:      cfg,
-		router:   chi.NewRouter(),
-		policy:   NewPathPolicyFromConfig(cfg),
-		executor: NewNginxExecutor(cfg.Nginx.Bin, cfg.Nginx.ConfPath, timeouts),
-		timeouts: timeouts,
+		cfg:          cfg,
+		router:       chi.NewRouter(),
+		policy:       NewPathPolicyFromConfig(cfg),
+		executor:     NewNginxExecutor(cfg.Nginx.Bin, cfg.Nginx.ConfPath, timeouts),
+		timeouts:     timeouts,
+		moduleSource: configuredModuleSource(),
 	}
 	s.executor.SetOutputLimits(s.commandOutputLimits())
 
