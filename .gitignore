@@ -9,10 +9,15 @@ node_modules
 /nxpanel-agent
 release
 tmp
+/local-module-repos/
+/module-builds/
+/module-candidate/
+/module-release/
 test-results
 docs/dev-spec
 docs/doc-change
-docs/function
+/docs/function/*
+!/docs/function/nginx-modules.md
 
 # ------------------------------
 # Editor / AI tools

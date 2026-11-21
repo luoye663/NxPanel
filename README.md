@@ -162,7 +162,7 @@ NxPanel 面向单机部署(后续可能支持主从控制)，采用 **API + Agen
 | 访问限制 | Basic Auth 加密访问、禁止访问规则、防盗链规则 |
 | 完整配置编辑 | 编辑站点完整 Nginx 配置，支持 marker 迁移 |
 | 访问分析 | 站点日志扫描、格式检测、趋势、路径/IP 聚合、异常洞察、CSV 导出 |
-| Nginx 管理 | 检测、安装 include 入口、`nginx -t`、reload、主配置编辑、常用参数管理 |
+| Nginx 管理 | 检测、安装 include 入口、`nginx -t`、reload、主配置编辑、常用参数管理、[在线模块目录与管理](docs/function/nginx-modules.md) |
 | 文件管理 | 全局文件管理和站点级文件管理，支持读写、上传、下载、复制、移动、压缩、解压、权限和属主修改 |
 | 日志管理 | 站点 access/error 日志 tail、搜索、下载、实时追踪、历史切割日志查看和删除 |
 | 服务日志 | API/Agent 运行日志 tail、实时流、清空，支持内置切割 |
@@ -270,7 +270,7 @@ curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh 
 
 开发环境可参考[本地 Nginx 联调](#本地-nginx-联调)配置测试更新源。
 
-使用国家／地区访问限制时，请查看 [GeoIP2 升级与回滚](docs/access-policy.md#geoip2-升级与回滚)：旧 Docker 容器需要更新镜像，宿主机需要加载与当前 Nginx/OpenResty 匹配的模块。
+使用国家／地区访问限制时，请先在 [Nginx 模块管理](docs/function/nginx-modules.md) 安装 GeoIP2。生产镜像不预装模块；宿主机和 Docker 都从签名目录匹配构建，由 Agent 验证并执行独立模块仓库提供的安装脚本。删除容器不会保留在线安装的模块。迁移已有规则请查看 [GeoIP2 升级与回滚](docs/access-policy.md#geoip2-升级与回滚)。
 
 > 如果系统中已有 Nginx/OpenResty，那么在安装完 NxPanel 后，需要到 Nginx 管理页面，依次点击 检测 Nginx、安装 Include 入口 这2个按钮。
 
