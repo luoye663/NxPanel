@@ -91,21 +91,8 @@ func Decode(reader io.Reader, target any) error {
 
 func Verify(raw, signature []byte, keys map[string]ed25519.PublicKey) (Manifest, Asset, error) {
 	var manifest Manifest
-	var signatures map[string]string
-	if len(raw) > MetadataMax || len(signature) > MetadataMax || Decode(bytes.NewReader(signature), &signatures) != nil || len(signatures) > 8 {
-		return manifest, Asset{}, errors.New("invalid update signature envelope")
-	}
-	verified := false
-	for id, encoded := range signatures {
-		key := keys[id]
-		decoded, err := base64.StdEncoding.DecodeString(encoded)
-		if len(key) == ed25519.PublicKeySize && err == nil && ed25519.Verify(key, raw, decoded) {
-			verified = true
-			break
-		}
-	}
-	if !verified {
-		return manifest, Asset{}, errors.New("update signature not trusted")
+	if err := VerifySignature(raw, signature, keys, ""); err != nil {
+		return manifest, Asset{}, err
 	}
 	if err := Decode(bytes.NewReader(raw), &manifest); err != nil {
 		return manifest, Asset{}, fmt.Errorf("invalid signed update manifest: %w", err)
@@ -113,6 +100,33 @@ func Verify(raw, signature []byte, keys map[string]ed25519.PublicKey) (Manifest,
 	if manifest.Product != "nxpanel" || manifest.Protocol != Protocol || !ValidVersion(manifest.Version) || manifest.Channel != Channel(manifest.Version) {
 		return manifest, Asset{}, errors.New("incompatible update manifest")
 	}
+	return selectUpdateAsset(manifest)
+}
+
+func VerifySignature(raw, signature []byte, keys map[string]ed25519.PublicKey, purpose string) error {
+	var signatures map[string]string
+	if len(raw) > MetadataMax || len(signature) > MetadataMax || Decode(bytes.NewReader(signature), &signatures) != nil || len(signatures) > 8 {
+		return errors.New("invalid signature envelope")
+	}
+	message := SignatureMessage(purpose, raw)
+	for id, encoded := range signatures {
+		key := keys[id]
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if len(key) == ed25519.PublicKeySize && err == nil && ed25519.Verify(key, message, decoded) {
+			return nil
+		}
+	}
+	return errors.New("release signature not trusted")
+}
+
+func SignatureMessage(purpose string, raw []byte) []byte {
+	if purpose == "" {
+		return raw
+	}
+	return append([]byte(purpose+"\x00"), raw...)
+}
+
+func selectUpdateAsset(manifest Manifest) (Manifest, Asset, error) {
 	var selected Asset
 	seen := make(map[string]bool)
 	for _, asset := range manifest.Assets {
