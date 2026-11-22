@@ -19,6 +19,11 @@ const labels: Record<UpgradeProgressStage, string> = {
 }
 
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+const failureStages = new Set(['download_failed', 'interrupted', 'rolled_back', 'blocked', 'failed'])
+
+export function isApplyingUpdate(phase?: string) {
+  return phase === 'applying' || phase === 'trial' || phase === 'restoring' || phase === 'verifying_previous'
+}
 
 function stageLabel(stage: string) {
   return Object.prototype.hasOwnProperty.call(labels, stage) ? labels[stage as UpgradeProgressStage] : '更新状态未知'
@@ -34,12 +39,16 @@ type Props = {
 export function UpgradeProgress({ status, activating, waiting, unconfirmed }: Props) {
   const { download, progress, task } = status
   const inFlight = Boolean(download && !download.error)
-  const matchingDownload = inFlight && progress?.version === download?.version && (
-    progress?.stage === 'downloading' || progress?.stage === 'validating' || (progress?.task_id && progress.task_id === task?.id && task.phase === 'prepared')
-  )
-  const history = inFlight && !matchingDownload ? undefined : progress
-  const stage = history?.stage || (download ? (download.error ? 'download_failed' : 'downloading') : task?.phase)
-  const version = history?.version || download?.version || task?.version
+  const activeTask = task && (task.phase === 'prepared' || isApplyingUpdate(task.phase)) ? task : undefined
+  const matchingDownload = progress?.version === download?.version && (progress?.stage === 'downloading' || progress?.stage === 'validating')
+  const history = activeTask
+    ? (progress?.task_id === activeTask.id && progress.stage === activeTask.phase ? progress : undefined)
+    : inFlight && !matchingDownload ? undefined : progress
+  const reportedStage = activeTask?.phase || (inFlight ? history?.stage || 'downloading'
+    : download?.error || (task && failureStages.has(task.phase)) ? undefined : history?.stage || task?.phase)
+  const stage = reportedStage && !failureStages.has(reportedStage) && (inFlight || (reportedStage !== 'downloading' && reportedStage !== 'validating'))
+    ? reportedStage : undefined
+  const version = stage && (activeTask?.version || (inFlight ? download?.version : history?.version || task?.version))
 
   if (!stage && !activating && !waiting && !unconfirmed) return null
 
@@ -65,7 +74,7 @@ export function UpgradeProgress({ status, activating, waiting, unconfirmed }: Pr
             <Text size="xs" w={38} ta="right">{percent}%</Text>
           </Group>
         )}
-        {history && (
+        {stage && history?.stage === stage && (
           <Box tabIndex={0} role="region" aria-label="更新日志" style={{ maxHeight: 'min(8rem, 24dvh)', overflowY: 'auto' }}>
             <Stack component="ol" gap={4} m={0} p={0} style={{ listStyle: 'none' }}>
               {history.events.slice().reverse().map((event) => (

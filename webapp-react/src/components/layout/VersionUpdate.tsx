@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ActionIcon, Alert, Anchor, Badge, Box, Button, Group, Modal, Paper, SegmentedControl, SimpleGrid, Stack, Text, useModalsStack } from '@mantine/core'
 import { IconRefresh } from '@tabler/icons-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -7,13 +7,14 @@ import { ApiError } from '@/api/client'
 import { activateUpgrade, cancelUpgrade, getUpgradeStatus, prepareUpgrade, setUpgradeChannel } from '@/api/system'
 import type { UpgradeStatus } from '@/api/types'
 import { notifyError } from '@/utils/notify'
-import { UpgradeProgress } from './UpgradeProgress'
+import { isApplyingUpdate, UpgradeProgress } from './UpgradeProgress'
 
 const reconnectKey = 'nxpanel-upgrade-reconnect'
 const reconnectLimit = 15 * 60 * 1000
 
 type Reconnect = { id: string; startedAt: number; reopen?: boolean }
 type RestartTarget = { id: string; version: string }
+type DownloadAttempt = { version: string; previousStartedAt?: string }
 
 function loadReconnect(): Reconnect | null {
   try {
@@ -37,6 +38,15 @@ function showError(error: Error) {
   notifyError({ message: error.message })
 }
 
+function activationFailure(task: NonNullable<UpgradeStatus['task']>) {
+  switch (task.phase) {
+    case 'rolled_back': return task.error || '更新失败，已恢复原版本。'
+    case 'blocked': return task.error || '自动恢复失败，请查看更新服务日志。'
+    case 'failed': return task.error || '应用更新失败，请查看更新服务日志。'
+    default: return null
+  }
+}
+
 export function VersionUpdate() {
   const dialogs = useModalsStack(['release', 'restart'])
   const opened = dialogs.state.release
@@ -44,6 +54,8 @@ export function VersionUpdate() {
   const [restartTarget, setRestartTarget] = useState<RestartTarget | null>(null)
   const [reconnect, setReconnect] = useState(loadReconnect)
   const [unconfirmedTask, setUnconfirmedTask] = useState<string | null>(null)
+  const downloadAttempt = useRef<DownloadAttempt | null>(null)
+  const localActivation = useRef<string | null>(null)
   const cache = useQueryClient()
   const query = useQuery({
     queryKey: queryKeys.upgradeStatus,
@@ -58,12 +70,28 @@ export function VersionUpdate() {
   const updateCache = (data: UpgradeStatus) => cache.setQueryData(queryKeys.upgradeStatus, data)
   const check = useUpgradeCheckMutation()
   const channel = useMutation({ mutationFn: setUpgradeChannel, onSuccess: updateCache, onError: showError })
-  const prepare = useMutation({ mutationFn: prepareUpgrade, onSuccess: updateCache, onError: showError })
+  const prepare = useMutation({
+    mutationFn: prepareUpgrade,
+    onMutate: () => {
+      downloadAttempt.current = null
+      return cache.getQueryData<UpgradeStatus>(queryKeys.upgradeStatus)?.progress?.events[0]?.at
+    },
+    onSuccess: async (data, version, previousStartedAt) => {
+      await cache.cancelQueries({ queryKey: queryKeys.upgradeStatus, exact: true })
+      if (data.download?.version === version) {
+        if (data.download.error) notifyError({ message: data.download.error })
+        else downloadAttempt.current = { version, previousStartedAt }
+      }
+      updateCache(data)
+    },
+    onError: showError,
+  })
   const cancel = useMutation({ mutationFn: cancelUpgrade, onSuccess: updateCache, onError: showError })
   const activate = useMutation({
     mutationFn: activateUpgrade,
     onError: (error) => {
       if (error instanceof ApiError && error.status === 409) {
+        localActivation.current = null
         setReconnect(null)
         saveReconnect(null)
         showError(error)
@@ -72,8 +100,26 @@ export function VersionUpdate() {
   })
 
   useEffect(() => {
+    const attempt = downloadAttempt.current
+    if (!attempt || !status) return
+    const download = status.download?.version === attempt.version ? status.download : undefined
+    if (download && !download.error) return
+    downloadAttempt.current = null
+    if (download?.error) {
+      notifyError({ message: download.error })
+      return
+    }
+    const progress = status.progress
+    if (!status.download && progress?.version === attempt.version && progress.events[0]?.at !== attempt.previousStartedAt) {
+      if (progress.stage === 'interrupted') notifyError({ message: '下载或校验已中断，请重试。' })
+      if (progress.stage === 'download_failed') notifyError({ message: '下载或校验失败，请重试；如持续失败，请查看面板服务日志。' })
+    }
+  }, [status])
+
+  useEffect(() => {
     if (!reconnect) return
     const finish = () => {
+      localActivation.current = null
       saveReconnect(null)
       setReconnect(null)
     }
@@ -87,9 +133,14 @@ export function VersionUpdate() {
       window.location.reload()
       return
     }
-    if (task?.id === reconnect.id && ['rolled_back', 'blocked', 'failed'].includes(task.phase)) {
-      finish()
-      return
+    if (task?.id === reconnect.id) {
+      const failure = activationFailure(task)
+      if (failure) {
+        const notify = localActivation.current === task.id
+        finish()
+        if (notify) notifyError({ message: failure })
+        return
+      }
     }
     const timeout = window.setTimeout(() => {
       finish()
@@ -97,11 +148,12 @@ export function VersionUpdate() {
       notifyError({ message: '未能确认更新结果。请重新检查面板状态；如无法访问，请查看更新服务日志。' })
     }, Math.max(0, reconnectLimit - (Date.now() - reconnect.startedAt)))
     return () => window.clearTimeout(timeout)
-  }, [openDialog, reconnect, status?.current_version, task?.id, task?.phase, task?.version])
+  }, [openDialog, reconnect, status?.current_version, task])
 
   function confirmRestart() {
     if (!restartTarget) return
     const pending = { id: restartTarget.id, startedAt: Date.now() }
+    localActivation.current = pending.id
     saveReconnect(pending)
     setReconnect(pending)
     setUnconfirmedTask(null)
@@ -112,11 +164,12 @@ export function VersionUpdate() {
   if (!status) return null
 
   const prepared = task?.phase === 'prepared'
-  const applying = Boolean(task && ['applying', 'trial', 'restoring', 'verifying_previous'].includes(task.phase))
+  const applying = isApplyingUpdate(task?.phase)
+  const blocked = task?.phase === 'blocked'
   const downloading = Boolean(download && !download.error)
   const busy = check.isPending || channel.isPending || prepare.isPending || cancel.isPending || Boolean(reconnect) || applying || downloading
   const unconfirmed = Boolean(unconfirmedTask && task?.id === unconfirmedTask && (applying || prepared))
-  const activating = Boolean(reconnect && !reconnect.reopen)
+  const activating = Boolean(reconnect && !reconnect.reopen && !(task?.id === reconnect.id && activationFailure(task)))
   const checked = Boolean(status.checked_at && new Date(status.checked_at).getUTCFullYear() > 1)
   const channelVersion = status.latest_version || (
     status.error ? '检查失败' : !checked ? '尚未检查' : status.channel === 'preview' ? '暂无预览版' : '暂无稳定版'
@@ -170,8 +223,7 @@ export function VersionUpdate() {
             )}
             {status.release_url && <Anchor href={status.release_url} target="_blank" rel="noopener noreferrer" size="sm">查看发布说明</Anchor>}
             {status.error && <Alert color="red">{status.error}</Alert>}
-            {download?.error && <Alert color="red">{download.error}</Alert>}
-            {task?.error && (!status.progress || status.progress.task_id === task.id) && <Alert color={task.phase === 'rolled_back' ? 'yellow' : 'red'}>{task.error}</Alert>}
+            {blocked && <Alert color="red">{activationFailure(task)}</Alert>}
             {status.docker && <Text size="xs" c="dimmed">仅更新容器内的面板程序；删除并重建容器后，使用所选镜像的版本。</Text>}
             {prepared && task ? (
               <>
@@ -186,7 +238,7 @@ export function VersionUpdate() {
               </>
             ) : status.installable ? (
               <Button loading={prepare.isPending} disabled={busy} onClick={() => prepare.mutate(status.latest_version)}>立即更新</Button>
-            ) : status.has_upgrade && !applying && (
+            ) : status.has_upgrade && !applying && !blocked && (
               <Text size="xs" c="dimmed">{status.managed ? '此版本没有可验证的兼容更新包。' : '当前部署未启用本机更新服务。'}</Text>
             )}
           </Stack>
