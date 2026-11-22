@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "geoip2",
+    "name": "GeoIP2（HTTP）",
+    "description": "使用 MaxMind MMDB 查询客户端国家或地区。",
+    "repository": "luoye663/NxPanel-NginxModel-GeoIP2",
+    "symbol": "ngx_http_geoip2_module",
+    "keys": "geoip2-1:BYiLbH98bo/EUasUHAeKuGCncKNyEiD6eqWeyBOYTgg="
+  }
+]
