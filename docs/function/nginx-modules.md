@@ -105,13 +105,13 @@
 
 ## 官方发布
 
-**模块仓库发版本，NxPanel 主仓库提供通用工具并登记模块及其公钥。** GeoIP2 的宿主机和 Alpine 构建、安装／卸载脚本、目标矩阵与发布工作流都在独立模块仓库。编译不依赖 NxPanel checkout；候选包打包、验收与签名仍使用固定版本的 NxPanel 工具。
+**模块仓库独立发版，NxPanel 主仓库维护发布工具和模块索引。** GeoIP2 的构建目标配置、安装／卸载脚本和发布工作流都在独立模块仓库。已登记的模块发新版不需要改主仓库。
 
 ### 发布新版本
 
 1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。所有目标的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，在模块仓库维护目标配方与构建脚本；不存在匹配配方的环境不会被标为支持。
 2. 在模块仓库 **Actions → Publish GeoIP2 module → Run workflow** 选择默认分支，只填一个新 tag，例如 `v3.4.0`。Actions 在各目标的临时容器内编译，打包后用实际运行时测试安装、查询和卸载。无需预先上传文件或创建 prerelease。
-3. 全部目标通过后审核签名任务。Actions 上传 `.so`、安装／卸载脚本及签名清单，再发布正式版。已登记的模块无需改主仓库；新模块先完成下方登记。
+3. 全部目标通过后审核签名任务。Actions 上传 `.so`、安装／卸载脚本及签名清单，再发布正式版。新模块可以先发布，但完成下方登记后，面板才会列出它。
 
 **本地构建**：在独立模块仓库执行下列命令。脚本源码在 `modules/geoip2/`，要提交；`.work/builds/` 是编译中间目录，`.work/bundle/` 是唯一候选包，两者都不提交。命令不签名、不上传。
 
@@ -154,10 +154,18 @@ cat "$HOME/nxpanel-geoip2-release-key/trust.pub"
 
 签名环境 `module-release-signing` 只允许默认分支，并要求审批。用维护者提供的完整模板（工作流和 `.github/nxpanel-tools.sha`）；工具版本已固定，**不用在 Actions 填 SHA**。
 
-<details>
-<summary>维护发布模板或从旧版切换</summary>
+#### 固定发布工具版本
 
-开发模板未附工具版本时，发布会在构建前停止。兼容工具合入 NxPanel `main` 后，模板维护者将已审核、已发布的完整 40 位提交 SHA 作为单独一行写入 `.github/nxpanel-tools.sha`，随 GeoIP2 和通用模板一同交付。打包、验收和签名读取固定版本，不使用分支名、标签或占位值。仅修改 GeoIP2 构建或目标配方不需要更新此 SHA。
+发布工作流检出两份代码：模块仓库使用触发 Actions 的提交，决定发布哪份模块代码；NxPanel 主仓库使用 `.github/nxpanel-tools.sha` 指定的提交，提供宿主机编译、安装验证和发布清单签名工具。固定 SHA 让构建、验证和签名使用同一份经过审核的工具，不受 `main` 后续更新影响。它不是 GeoIP2 的 Release tag，也不决定用户安装哪个 NxPanel 版本。
+
+如果出现 `Expected a checked-in .github/nxpanel-tools.sha file`，先检查触发发布的默认分支提交是否包含该文件。开发模板可能还未附带它，工作流会在编译或创建 tag 前停止。首次初始化按以下顺序处理：
+
+1. **先合入工具。** 在 NxPanel 主仓库审核独立 Release 协议和兼容的发布工具，运行 `go test ./cmd/nxpanel-module-catalog ./internal/nginxmodule`，通过 CI 后合入远端 `main`。首次合入时保持索引为空，模块另开 PR 登记。不要使用尚未包含这些工具的 `main` 提交。
+2. **再提交 SHA。** 从合入后的 `main` 选取包含上述工具的已审核提交，把完整 40 位小写十六进制 SHA 单独一行写入模块仓库的 `.github/nxpanel-tools.sha`，提交并推送到默认分支。GeoIP2 和通用模板使用同一个工具提交；不要填模块仓库的 SHA、分支名、标签或占位值。
+3. **重跑发布。** 在模块仓库默认分支重新运行 **Publish GeoIP2 module**。如果原 tag 没被其他操作占用，可以继续用。等构建、打包和安装／卸载验证通过后再审批签名，并确认正式 Release 的资产齐全。不需要修改工作流或更换签名密钥。
+
+<details>
+<summary>从旧版切换</summary>
 
 在测试仓库确认下面的签名回写和 PR 检查正常后，旧部署可删除主仓库的 `NXPANEL_MODULE_CATALOG_TOKEN` Secret、撤销仅为此用途创建的令牌，并删除模块仓库的 `NXPANEL_TOOLS_REF` 变量。现有密钥和已安装模块不需要迁移。
 
@@ -168,6 +176,23 @@ cat "$HOME/nxpanel-geoip2-release-key/trust.pub"
 1. **开一个 PR。** 在 NxPanel 主仓库从最新 `main` 建分支，只改 [`catalog/nginx-modules/modules.json`](../../catalog/nginx-modules/modules.json)，填 `id`、`name`、`description`、`repository`（`owner/repo`）、`symbol` 和 `keys`（经可信渠道取得的模块公钥）。向 `main` 开非草稿 PR，不填 Release tag，不手写签名。外部投稿由维护者在主仓库开分支，签名流程不向 fork 回写。
 2. **按 PR 编号签名。** 主仓库 **Actions → Sign Nginx module index → Run workflow** 选择 `main`，只填 `pr_number`（例如 `123`）。审批人核对准备任务记录的提交、仓库地址和公钥，再批准签名。Actions 将 `modules.sig.json` 提交到原 PR，不另开 PR。
 3. **运行检查并合并原 PR。** 回到 PR，有仓库写权限的维护者在合并区点击 **Approve workflows to run**。这是批准运行回写后的检查，不是再次签名。等最新提交通过 **Nginx module index** 和其他必过检查后再审核合并。如果审批期间 PR 或 `main` 有更新，签名会停止；更新分支后按原 PR 编号重新签名。
+
+以空索引首次登记 GeoIP2 为例，`modules.json` 的完整内容如下：
+
+```json
+[
+  {
+    "id": "geoip2",
+    "name": "GeoIP2（HTTP）",
+    "description": "使用 MaxMind MMDB 查询客户端国家或地区。",
+    "repository": "owner/geoip2",
+    "symbol": "ngx_http_geoip2_module",
+    "keys": "geoip2-1:BASE64_PUBLIC_KEY"
+  }
+]
+```
+
+提交前，将 `repository` 替换为实际模块仓库的 `owner/repo`，将 `keys` 替换为经可信渠道取得的模块 `trust.pub` 完整一行（`key-id:BASE64`），不要填写私钥。如果索引已有其他模块，只在数组中追加新条目或修改对应的条目，不要覆盖整份索引。
 
 已登记的模块发新版不需要操作主仓库。更换模块密钥时，可以在 `keys` 用逗号分隔新旧公钥；删除旧公钥会撤销相应 Release 和卸载凭据的信任，非紧急情况先提醒用户卸载。
 
