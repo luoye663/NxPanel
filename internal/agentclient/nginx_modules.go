@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
@@ -43,6 +45,36 @@ func (c *Client) NginxModuleList(ctx context.Context, refresh bool) (nginxmodule
 
 func (c *Client) InstallNginxModule(ctx context.Context, request nginxmodule.InstallRequest) (nginxmodule.Result, error) {
 	return c.nginxModuleAction(ctx, "install", request)
+}
+
+func (c *Client) NginxModuleReleases(ctx context.Context, id string, page int) (nginxmodule.ReleasePage, error) {
+	var resp struct {
+		OK   bool                    `json:"ok"`
+		Data nginxmodule.ReleasePage `json:"data"`
+	}
+	query := url.Values{"id": {id}, "page": {strconv.Itoa(page)}}
+	if err := c.get(ctx, "/internal/v1/nginx/modules/releases?"+query.Encode(), &resp); err != nil {
+		return resp.Data, err
+	}
+	if !resp.OK || resp.Data.Tags == nil {
+		return resp.Data, fmt.Errorf("Agent 模块 Release 响应无效")
+	}
+	return resp.Data, nil
+}
+
+func (c *Client) NginxModulePreflight(ctx context.Context, id, tag string) (nginxmodule.Preflight, error) {
+	var resp struct {
+		OK   bool                  `json:"ok"`
+		Data nginxmodule.Preflight `json:"data"`
+	}
+	query := url.Values{"id": {id}, "tag": {tag}}
+	if err := c.get(ctx, "/internal/v1/nginx/modules/preflight?"+query.Encode(), &resp); err != nil {
+		return resp.Data, err
+	}
+	if !resp.OK || resp.Data.Tag != tag || resp.Data.Reason == "" && !nginxmodule.ValidDigest(resp.Data.Confirmation) {
+		return resp.Data, fmt.Errorf("Agent 模块预检响应无效")
+	}
+	return resp.Data, nil
 }
 
 func (c *Client) UninstallNginxModule(ctx context.Context, request nginxmodule.InstallRequest) (nginxmodule.Result, error) {

@@ -21,7 +21,9 @@ import (
 )
 
 type moduleReceipt struct {
-	Envelope  []byte `json:"envelope"`
+	Tag       string `json:"tag"`
+	Manifest  []byte `json:"manifest"`
+	Signature []byte `json:"signature"`
 	Uninstall []byte `json:"uninstall"`
 }
 
@@ -71,22 +73,26 @@ func (s *Server) uninstallOffer(ctx context.Context, offer *moduleOffer, target 
 	var receipt moduleReceipt
 	err := modulePrivateDir(source.receiptDir(), false)
 	if err == nil {
-		err = readModuleState(source.receiptPath(offer.module.ID), 2*(nginxmodule.MaxEnvelope+nginxmodule.MaxScript), &receipt)
+		err = readModuleState(source.receiptPath(offer.module.ID), 2*(2*nginxmodule.MaxEnvelope+nginxmodule.MaxScript), &receipt)
 	}
 	if err != nil {
 		return fmt.Errorf("已安装模块的卸载凭据无法读取")
 	}
-	keys, err := source.trustKeys()
+	feed, err := source.savedIndex()
+	if err != nil {
+		return fmt.Errorf("无法读取最近已验证的模块索引：%w", err)
+	}
+	entry, registered := feed.entry(offer.module.ID)
+	if !registered || !nginxmodule.ValidTag(receipt.Tag) {
+		return fmt.Errorf("已安装模块的发布授权已移除或凭据无效")
+	}
+	manifest, err := nginxmodule.VerifyManifest(receipt.Manifest, receipt.Signature, entry, receipt.Tag, source.test)
 	if err != nil {
 		return err
 	}
-	catalog, floor, err := nginxmodule.VerifyInstalled(receipt.Envelope, keys, time.Now(), source.test)
-	if err != nil {
-		return err
-	}
-	module, exists := catalog.Module(offer.module.ID)
-	asset, found := catalog.Match(offer.module.ID, target)
-	if !exists || !found || module.Kind != nginxmodule.DynamicKind || module.Symbol != offer.managed.symbol {
+	module := manifest.Module
+	asset, found := manifest.Match(target)
+	if !found || module.Symbol != offer.managed.symbol {
 		return fmt.Errorf("没有与已安装模块匹配的签名卸载脚本")
 	}
 	digest, err := fingerprintModuleBinary(ctx, offer.managed.path)
@@ -94,7 +100,7 @@ func (s *Server) uninstallOffer(ctx context.Context, offer *moduleOffer, target 
 		return fmt.Errorf("已安装模块或卸载脚本的 SHA-256 无法核验")
 	}
 	offer.module, offer.asset, offer.receipt, offer.path = module, asset, receipt, offer.managed.path
-	offer.identity = "uninstall " + module.ID + " " + floor.Digest + " " + module.Uninstall.SHA256 + " " + offer.managed.identity()
+	offer.identity = "uninstall " + module.ID + " " + sha256Text(receipt.Manifest) + " " + module.Uninstall.SHA256 + " " + offer.managed.identity()
 	return nil
 }
 
@@ -159,8 +165,8 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		return failure(err.Error())
 	}
 	currentTarget, err := moduleTarget(instance, version)
-	if err != nil || currentTarget != offer.asset.Target || !offer.expires.IsZero() && !time.Now().Before(offer.expires) {
-		return failure("Nginx 运行时或签名目录已变化，请刷新后重新确认")
+	if err != nil || currentTarget != offer.asset.Target {
+		return failure("Nginx 运行时已变化，请重新确认")
 	}
 	managed, err := source.managedModules(instance)
 	if err != nil {
@@ -173,7 +179,7 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		digest, err := fingerprintModuleBinary(ctx, entry.path)
 		precondition = precondition && err == nil && digest == offer.asset.SHA256 && entry.path == offer.path && len(paths) == 1 && instance.moduleRefs[entry.path] == 1 && entry.identity() == offer.managed.identity() && moduleConfirmation(instance, offer.identity) == offer.status.UninstallConfirmation
 	} else {
-		precondition = precondition && !loaded && len(paths) == 0 && entry.path == "" && moduleConfirmation(instance, offer.identity) == offer.status.Confirmation
+		precondition = precondition && !loaded && len(paths) == 0 && entry.path == "" && moduleConfirmation(instance, offer.identity) == offer.confirmation
 	}
 	if !precondition || ctx.Err() != nil || !moduleScriptMatches(scriptBody, script) {
 		return failure("模块、配置或运行时状态已变化，未启动脚本")
@@ -211,9 +217,6 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 	argv := instance.selection.options.args()
 	if ctx.Err() != nil {
 		return failure("模块任务已取消，未启动脚本")
-	}
-	if !offer.expires.IsZero() && !time.Now().Before(offer.expires) {
-		return failure("签名目录已过期，未启动脚本")
 	}
 	journal := source.scriptJournal()
 	if err := writeModuleState(journal, moduleScriptTask{Module: id, Version: offer.asset.Version, Action: action, SHA256: script.SHA256, Directory: dir}); err != nil {

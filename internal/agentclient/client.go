@@ -1234,9 +1234,13 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, agentErrorBodyMaxBytes))
 		var agentResp AgentResponse
 		if json.Unmarshal(respBody, &agentResp) == nil && agentResp.Error != "" {
+			switch req.URL.Path {
+			case "/internal/v1/nginx/modules/releases", "/internal/v1/nginx/modules/preflight":
+				return &HTTPError{StatusCode: resp.StatusCode, Message: agentResp.Error}
+			}
 			return fmt.Errorf("agent 返回 HTTP %d: %s", resp.StatusCode, agentResp.Error)
 		}
 		return fmt.Errorf("agent 返回 HTTP %d: %s", resp.StatusCode, string(respBody))

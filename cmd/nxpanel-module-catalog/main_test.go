@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -14,106 +13,102 @@ import (
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
 )
 
-func TestSignCatalogRoundTrip(t *testing.T) {
-	public, private, err := ed25519.GenerateKey(rand.Reader)
+func TestIndependentReleaseRoundTrip(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	encoded := "test:" + base64.StdEncoding.EncodeToString(public)
-	t.Setenv("NXPANEL_MODULE_TRUST_KEYS", encoded)
-	t.Setenv("NXPANEL_MODULE_SIGNING_KEYS", "test:"+base64.StdEncoding.EncodeToString(private.Seed()))
-	t.Setenv("NXPANEL_UPDATE_TRUST_KEYS", "")
-	input, output := t.TempDir(), t.TempDir()
+	t.Setenv("NXPANEL_MODULE_RELEASE_TRUST_KEYS", encoded)
+	t.Setenv("NXPANEL_MODULE_RELEASE_SIGNING_KEYS", "test:"+base64.StdEncoding.EncodeToString(private.Seed()))
 	target := nginxmodule.Target{OS: "rocky:9", Arch: "arm64", Runtime: "openresty", RuntimeVersion: "1.27.1.2", BinarySHA256: strings.Repeat("e", 64)}
-	dir := filepath.Join(input, "geoip2", "host")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	input, prepared, output := t.TempDir(), t.TempDir(), t.TempDir()
+	builds := map[string][]byte{
+		"geoip2/install.sh":                   []byte("#!/bin/sh\nexit 0\n"),
+		"geoip2/uninstall.sh":                 []byte("#!/bin/sh\nexit 0\n"),
+		"geoip2/host/" + nginxmodule.Filename: []byte("tested build"),
+	}
+	if err := addJSON(builds, "geoip2/host/target.json", target); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"install.sh", "uninstall.sh"} {
-		if err := os.WriteFile(filepath.Join(filepath.Dir(dir), name), []byte("#!/bin/sh\nexit 0\n"), 0644); err != nil {
+	if err := writeFiles(input, builds); err != nil {
+		t.Fatal(err)
+	}
+	module := nginxmodule.GeoIP2Module()
+	module.Release = nginxmodule.Release{Repository: "official/geoip2", Tag: "v3.4.0"}
+	manifest, files, err := assembleManifest(input, moduleDefinition{Module: module, Version: "v3.4.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := releaseCandidate{Modules: []nginxmodule.Module{manifest.Module}, Assets: manifest.Assets}
+	if err := addJSON(files, "candidate.json", candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFiles(prepared, files); err != nil {
+		t.Fatal(err)
+	}
+	if err := signRelease(prepared, output); err != nil {
+		t.Fatal(err)
+	}
+	read := func(dir, name string) []byte {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
 			t.Fatal(err)
 		}
+		return body
 	}
-	data, err := json.Marshal(target)
+	entry := indexEntry(manifest, encoded)
+	verified, err := nginxmodule.VerifyManifest(read(output, nginxmodule.ManifestName), read(output, nginxmodule.ManifestSig), entry, module.Release.Tag, false)
+	if asset, ok := verified.Match(target); err != nil || !ok || string(read(output, asset.Name)) != "tested build" {
+		t.Fatalf("release did not contain the expected build: %+v %v", asset, err)
+	}
+	assetPath := filepath.Join(prepared, manifest.Assets[0].Name)
+	priorWrite := time.Unix(123456789, 0)
+	if err := os.Chtimes(assetPath, priorWrite, priorWrite); err != nil {
+		t.Fatal(err)
+	}
+	if err := signRelease(prepared, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(assetPath); err != nil || !info.ModTime().Equal(priorWrite) {
+		t.Fatalf("signing in place rewrote the verified module asset: %v %v", info, err)
+	}
+	if _, err := nginxmodule.VerifyManifest(read(prepared, nginxmodule.ManifestName), read(prepared, nginxmodule.ManifestSig), entry, module.Release.Tag, false); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(output, "fixture")
+	if err := writeTestFixture(prepared, fixture, "", 41); err != nil {
+		t.Fatal(err)
+	}
+	trust, err := nginxmodule.Keys(strings.TrimSpace(string(read(fixture, "trust.pub"))), encoded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "target.json"), data, 0644); err != nil {
+	feed := filepath.Join(fixture, "feed")
+	entries, _, err := nginxmodule.VerifyIndex(read(feed, nginxmodule.IndexName), read(feed, nginxmodule.IndexSigName), trust, nil, nginxmodule.Floor{}, true)
+	if err != nil || len(entries) != 1 || entries[0].Keys == encoded {
+		t.Fatalf("invalid fixture index: %+v %v", entries, err)
+	}
+	release := filepath.Join(feed, "repos", module.Release.Repository, "releases", "download", module.Release.Tag)
+	if _, err := nginxmodule.VerifyManifest(read(release, nginxmodule.ManifestName), read(release, nginxmodule.ManifestSig), entries[0], module.Release.Tag, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, nginxmodule.Filename), []byte("tested build"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(prepared, manifest.Module.Uninstall.Name), []byte("#!/bin/sh\nexit 1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC().Truncate(time.Second)
-	module := nginxmodule.GeoIP2Module()
-	module.Release = nginxmodule.Release{Repository: "official/modules", Tag: "nginx-modules-v3"}
-	prepared := t.TempDir()
-	candidate := newCatalog(1, now, false)
-	files, err := assembleCatalog(&candidate, input, []moduleDefinition{{Module: module, Version: "v3.4.0"}}, now, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest, err := json.Marshal(releaseCandidate{Modules: candidate.Modules, Assets: candidate.Assets})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFiles(prepared, files, "candidate.json", manifest); err != nil {
-		t.Fatal(err)
-	}
-	if err := signCatalog(input, t.TempDir(), 41, now); !os.IsNotExist(err) {
-		t.Fatalf("production signing must require a candidate manifest: %v", err)
-	}
-	if err := signCatalog(prepared, output, 42, now); err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := os.ReadFile(filepath.Join(output, nginxmodule.CatalogName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	catalog, floor, err := nginxmodule.Verify(envelope, map[string]ed25519.PublicKey{"test": public}, now, nginxmodule.Floor{})
-	if err != nil || floor.Sequence != 42 {
-		t.Fatalf("signed catalog verification failed: %+v %v", floor, err)
-	}
-	asset, ok := catalog.Match(nginxmodule.GeoIP2, target)
-	if !ok {
-		t.Fatalf("catalog omitted target: %+v", target)
-	}
-	payload, err := os.ReadFile(filepath.Join(output, asset.Name))
-	if err != nil || string(payload) != "tested build" || int64(len(payload)) != asset.Size {
-		t.Fatalf("wrong publication payload: %q %v", payload, err)
-	}
-
-	fixture := filepath.Join(output, "test-fixture")
-	if err := writeTestFixture(input, fixture, 41, now, []moduleDefinition{{Module: nginxmodule.GeoIP2Module(), Version: "v3.4.0"}}); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(fixture)
-	if err != nil || len(entries) != 2 || entries[0].Name() != "feed" || entries[1].Name() != "trust.pub" {
-		t.Fatalf("test fixture persisted unexpected files: %v %v", entries, err)
-	}
-	keyFile, err := os.ReadFile(filepath.Join(fixture, "trust.pub"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := nginxmodule.Keys(strings.TrimSpace(string(keyFile)), encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testEnvelope, err := os.ReadFile(filepath.Join(fixture, "feed", nginxmodule.CatalogName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := nginxmodule.VerifyTest(testEnvelope, keys, now, nginxmodule.Floor{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := nginxmodule.Verify(testEnvelope, keys, now, nginxmodule.Floor{}); err == nil {
-		t.Fatal("production trusted the local fixture")
-	}
-
-	if err := os.WriteFile(filepath.Join(prepared, candidate.Modules[0].Uninstall.Name), []byte("#!/bin/sh\nexit 1\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := signCatalog(prepared, t.TempDir(), 44, now); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+	if err := signRelease(prepared, t.TempDir()); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Fatalf("modified script must not be signed: %v", err)
+	}
+	candidate.Modules = append(candidate.Modules, candidate.Modules[0])
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared, "candidate.json"), raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readCandidate(prepared); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("batch publication was accepted: %v", err)
 	}
 }

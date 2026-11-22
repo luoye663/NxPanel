@@ -29,7 +29,7 @@ func parseModuleSource(feed, keys string, container bool) moduleSource {
 	}
 	address, err := url.Parse(feed)
 	if err != nil || address.Scheme != "http" && address.Scheme != "https" || address.User != nil || address.RawQuery != "" || address.ForceQuery || address.Fragment != "" || address.RawPath != "" ||
-		!strings.HasSuffix(address.Path, "/"+nginxmodule.CatalogName) || strings.ContainsAny(address.Path, "\\\t\r\n") || strings.Contains(address.Path, "/../") || strings.Contains(address.Path, "/./") {
+		!strings.HasSuffix(address.Path, "/"+nginxmodule.IndexName) || strings.ContainsAny(address.Path, "\\\t\r\n") || strings.Contains(address.Path, "/../") || strings.Contains(address.Path, "/./") {
 		source.err = fmt.Errorf("测试源须为本地 HTTP(S) 的完整模块目录 URL")
 		return source
 	}
@@ -53,7 +53,7 @@ func parseModuleSource(feed, keys string, container bool) moduleSource {
 		_, source.err = nginxmodule.Keys(keys, nginxmodule.TrustKeys)
 	}
 	if source.err == nil {
-		address.Path = strings.TrimSuffix(address.Path, nginxmodule.CatalogName)
+		address.Path = strings.TrimSuffix(address.Path, nginxmodule.IndexName)
 		source.base = address.String()
 	}
 	return source

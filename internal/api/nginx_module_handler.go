@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/api/middleware"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
@@ -64,6 +67,48 @@ func (s *Server) handleNginxModuleInstall(w http.ResponseWriter, r *http.Request
 	s.handleNginxModuleChange(w, r, false)
 }
 
+func (s *Server) handleNginxModuleReleases(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 || page > nginxmodule.MaxReleasePage || !nginxmodule.ValidID(id) {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "无效的模块或分页参数", nil)
+		return
+	}
+	if s.agentClient == nil {
+		WriteError(w, r, http.StatusServiceUnavailable, app.ErrAgentUnavailable, "Agent 不可用", nil)
+		return
+	}
+	data, err := s.agentClient.NginxModuleReleases(r.Context(), id, page)
+	writeModuleLookup(w, r, data, err)
+}
+
+func (s *Server) handleNginxModulePreflight(w http.ResponseWriter, r *http.Request) {
+	id, tag := r.URL.Query().Get("id"), r.URL.Query().Get("tag")
+	if !nginxmodule.ValidID(id) || !nginxmodule.ValidTag(tag) {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "无效的模块或 Release tag", nil)
+		return
+	}
+	if s.agentClient == nil {
+		WriteError(w, r, http.StatusServiceUnavailable, app.ErrAgentUnavailable, "Agent 不可用", nil)
+		return
+	}
+	data, err := s.agentClient.NginxModulePreflight(r.Context(), id, tag)
+	writeModuleLookup(w, r, data, err)
+}
+
+func writeModuleLookup(w http.ResponseWriter, r *http.Request, data any, err error) {
+	if err == nil {
+		WriteOK(w, r, data)
+		return
+	}
+	var response *agentclient.HTTPError
+	if errors.As(err, &response) && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusBadGateway) {
+		WriteError(w, r, response.StatusCode, "NGINX_MODULE_LOOKUP_FAILED", response.Message, nil)
+		return
+	}
+	WriteError(w, r, http.StatusServiceUnavailable, app.ErrAgentUnavailable, "无法查询模块版本，请确认 Agent 和 GitHub 连接正常", nil)
+}
+
 func (s *Server) handleNginxModuleUninstall(w http.ResponseWriter, r *http.Request) {
 	s.handleNginxModuleChange(w, r, true)
 }
@@ -74,8 +119,8 @@ func (s *Server) handleNginxModuleChange(w http.ResponseWriter, r *http.Request,
 	if !DecodeJSON(w, r, &request) {
 		return
 	}
-	if !nginxmodule.ValidID(request.ID) || !nginxmodule.ValidDigest(request.Confirmation) {
-		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "无效的模块操作确认，请刷新模块列表", nil)
+	if !request.Valid(uninstall) {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "无效的模块版本或操作确认", nil)
 		return
 	}
 	if s.agentClient == nil {
@@ -103,6 +148,8 @@ func (s *Server) handleNginxModuleChange(w http.ResponseWriter, r *http.Request,
 	action, message, resultAction := nginxModuleInstallAction, "安装并启用 Nginx 模块", "install"
 	if uninstall {
 		action, message, resultAction = nginxModuleUninstallAction, "卸载 Nginx 模块", "uninstall"
+	} else {
+		message += "（Release " + request.Tag + "）"
 	}
 	if err := s.opRepo.CreateContext(r.Context(), &repo.Operation{ID: opID, Action: action,
 		TargetType: nginxModuleTargetType, TargetID: request.ID, Status: "pending", Actor: "admin",

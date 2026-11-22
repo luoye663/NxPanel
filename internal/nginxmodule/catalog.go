@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,24 +18,26 @@ import (
 )
 
 const (
-	GeoIP2        = "geoip2"
-	Filename      = "ngx_http_geoip2_module.so"
-	Symbol        = "ngx_http_geoip2_module"
-	Purpose       = "nxpanel-nginx-modules/v3"
-	Product       = "nxpanel-nginx-modules"
-	TestPurpose   = "nxpanel-nginx-modules-test/v3"
-	TestProduct   = "nxpanel-nginx-modules-test"
-	CatalogName   = "nxpanel-nginx-modules.json"
-	CatalogPath   = "catalog/nginx-modules/" + CatalogName
-	DynamicKind   = "nginx_dynamic_so"
-	Protocol      = 3
-	MaxModules    = 32
-	MaxEnvelope   = 128 << 10
-	MaxAsset      = 4 << 20
-	MaxScript     = 128 << 10
-	ScriptTimeout = 5 * time.Minute
-	ActionTimeout = 6 * time.Minute
-	MaxValidity   = 30 * 24 * time.Hour
+	GeoIP2          = "geoip2"
+	Filename        = "ngx_http_geoip2_module.so"
+	Symbol          = "ngx_http_geoip2_module"
+	IndexName       = "modules.json"
+	IndexSigName    = "modules.sig.json"
+	IndexPath       = "catalog/nginx-modules/"
+	ManifestName    = "module-release.json"
+	ManifestSig     = "module-release.sig.json"
+	IndexPurpose    = "nxpanel-nginx-module-index/v1"
+	ReleasePurpose  = "nxpanel-nginx-module-release/v1"
+	DynamicKind     = "nginx_dynamic_so"
+	Protocol        = 1
+	MaxModules      = 32
+	MaxEnvelope     = 128 << 10
+	MaxAsset        = 4 << 20
+	MaxScript       = 128 << 10
+	ScriptTimeout   = 5 * time.Minute
+	ActionTimeout   = 6 * time.Minute
+	ReleasePageSize = 20
+	MaxReleasePage  = 100
 )
 
 var TrustKeys string
@@ -82,24 +85,29 @@ type Asset struct {
 	SHA256  string `json:"sha256"`
 }
 
-type Catalog struct {
-	Product   string    `json:"product"`
-	Protocol  int       `json:"protocol"`
-	Sequence  uint64    `json:"sequence"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Modules   []Module  `json:"modules"`
-	Assets    []Asset   `json:"assets"`
+type Manifest struct {
+	Protocol int     `json:"protocol"`
+	Module   Module  `json:"module"`
+	Assets   []Asset `json:"assets"`
 }
 
-type Envelope struct {
-	Catalog    []byte            `json:"catalog"`
-	Signatures map[string]string `json:"signatures"`
+type IndexEntry struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Repository  string `json:"repository"`
+	Symbol      string `json:"symbol"`
+	Keys        string `json:"keys"`
 }
 
 type Floor struct {
 	Sequence uint64 `json:"sequence"`
 	Digest   string `json:"digest"`
+}
+
+type IndexSignature struct {
+	Sequence   uint64            `json:"sequence"`
+	Signatures map[string]string `json:"signatures"`
 }
 
 var (
@@ -118,6 +126,8 @@ func ValidDigest(value string) bool {
 
 func ValidID(value string) bool                   { return idPattern.MatchString(value) }
 func ValidSymbol(value string) bool               { return symbolPattern.MatchString(value) }
+func ValidRepository(value string) bool           { return repoPattern.MatchString(value) }
+func ValidTag(value string) bool                  { return tagPattern.MatchString(value) }
 func AssetName(id, digest string) string          { return id + "-" + digest + ".so" }
 func ScriptName(id, action, digest string) string { return id + "-" + action + "-" + digest + ".sh" }
 func (script Script) valid(id, action string) bool {
@@ -152,114 +162,137 @@ func Keys(value, updateKeys string) (map[string]ed25519.PublicKey, error) {
 	return keys, nil
 }
 
-func Verify(body []byte, keys map[string]ed25519.PublicKey, now time.Time, floor Floor) (Catalog, Floor, error) {
-	return verify(body, keys, now, floor, false, false)
-}
-
-func VerifyTest(body []byte, keys map[string]ed25519.PublicKey, now time.Time, floor Floor) (Catalog, Floor, error) {
-	return verify(body, keys, now, floor, true, false)
-}
-
-func VerifyInstalled(body []byte, keys map[string]ed25519.PublicKey, now time.Time, test bool) (Catalog, Floor, error) {
-	return verify(body, keys, now, Floor{}, test, true)
-}
-
-func verify(body []byte, keys map[string]ed25519.PublicKey, now time.Time, floor Floor, test, installed bool) (Catalog, Floor, error) {
-	var envelope Envelope
-	var catalog Catalog
-	if len(body) > MaxEnvelope || update.Decode(bytes.NewReader(body), &envelope) != nil {
-		return catalog, floor, fmt.Errorf("无效的模块目录封包")
+func sameKey(first, second map[string]ed25519.PublicKey) bool {
+	for _, key := range first {
+		for _, other := range second {
+			if bytes.Equal(key, other) {
+				return true
+			}
+		}
 	}
-	signatures, err := json.Marshal(envelope.Signatures)
-	purpose := Purpose
+	return false
+}
+
+func (entry IndexEntry) DisplayModule() Module {
+	return Module{ID: entry.ID, Name: entry.Name, Description: entry.Description, Kind: DynamicKind, Symbol: entry.Symbol, Release: Release{Repository: entry.Repository}}
+}
+
+func (entry IndexEntry) PublicKeys() (map[string]ed25519.PublicKey, error) {
+	keys, err := update.Keys(entry.Keys)
+	if err != nil || len(keys) == 0 || len(keys) > 8 {
+		return nil, fmt.Errorf("无效的模块发布公钥")
+	}
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[string(key)] {
+			return nil, fmt.Errorf("重复的模块发布公钥")
+		}
+		seen[string(key)] = true
+	}
+	return keys, nil
+}
+
+func validIdentity(id, name, description, symbol string) bool {
+	return ValidID(id) && validText(name, 128) && validText(description, 768) && ValidSymbol(symbol) && (id == GeoIP2) == (symbol == Symbol)
+}
+
+func IndexPayload(raw []byte, sequence uint64) []byte {
+	return fmt.Appendf(nil, "%d\n%x", sequence, sha256.Sum256(raw))
+}
+
+func modulePurpose(purpose string, test bool) string {
 	if test {
-		purpose = TestPurpose
+		return purpose + "/test"
 	}
-	if err != nil || update.VerifySignature(envelope.Catalog, signatures, keys, purpose) != nil {
-		return catalog, floor, fmt.Errorf("模块目录签名不可信")
+	return purpose
+}
+
+func VerifyIndex(raw, signature []byte, roots, updateKeys map[string]ed25519.PublicKey, floor Floor, test bool) ([]IndexEntry, Floor, error) {
+	var signed IndexSignature
+	if len(raw) > MaxEnvelope || len(signature) > MaxEnvelope || update.Decode(bytes.NewReader(signature), &signed) != nil || signed.Sequence == 0 {
+		return nil, floor, fmt.Errorf("无效的模块索引签名格式")
 	}
-	if err := update.Decode(bytes.NewReader(envelope.Catalog), &catalog); err != nil {
-		return catalog, floor, fmt.Errorf("无效的签名模块目录: %w", err)
+	signatures, err := json.Marshal(signed.Signatures)
+	if err != nil || update.VerifySignature(IndexPayload(raw, signed.Sequence), signatures, roots, modulePurpose(IndexPurpose, test)) != nil {
+		return nil, floor, fmt.Errorf("模块索引签名不可信")
 	}
-	if installed && !catalog.IssuedAt.After(now) {
-		now = catalog.IssuedAt
-	}
-	if err := catalog.validate(now, test); err != nil {
-		return catalog, floor, err
-	}
-	next := Floor{Sequence: catalog.Sequence, Digest: fmt.Sprintf("%x", sha256.Sum256(envelope.Catalog))}
+	next := Floor{Sequence: signed.Sequence, Digest: fmt.Sprintf("%x", sha256.Sum256(raw))}
 	if next.Sequence < floor.Sequence || next.Sequence == floor.Sequence && next.Digest != floor.Digest {
-		return catalog, floor, fmt.Errorf("模块目录版本回退或同序号内容变化")
+		return nil, floor, fmt.Errorf("模块索引版本回退或同序号内容变化")
 	}
-	return catalog, next, nil
-}
-
-func (catalog Catalog) Module(id string) (Module, bool) {
-	for _, module := range catalog.Modules {
-		if module.ID == id {
-			return module, true
+	var entries []IndexEntry
+	if update.Decode(bytes.NewReader(raw), &entries) != nil || entries == nil || len(entries) > MaxModules {
+		return nil, floor, fmt.Errorf("无效的模块索引")
+	}
+	ids, repos, symbols := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	used := make(map[string]ed25519.PublicKey)
+	for _, entry := range entries {
+		repo := strings.ToLower(entry.Repository)
+		keys, err := entry.PublicKeys()
+		if !validIdentity(entry.ID, entry.Name, entry.Description, entry.Symbol) || !ValidRepository(entry.Repository) || ids[entry.ID] || repos[repo] || symbols[entry.Symbol] ||
+			err != nil || sameKey(keys, roots) || sameKey(keys, updateKeys) || sameKey(keys, used) {
+			return nil, floor, fmt.Errorf("无效或重复的模块索引条目: %s", entry.ID)
+		}
+		ids[entry.ID], repos[repo], symbols[entry.Symbol] = true, true, true
+		for _, key := range keys {
+			used[string(key)] = key
 		}
 	}
-	return Module{}, false
+	return entries, next, nil
 }
 
-func (catalog Catalog) Validate(now time.Time) error {
-	return catalog.validate(now, false)
+func Sign(payload []byte, keys map[string]ed25519.PrivateKey, purpose string, test bool) map[string]string {
+	result := make(map[string]string, len(keys))
+	message := update.SignatureMessage(modulePurpose(purpose, test), payload)
+	for id, key := range keys {
+		result[id] = base64.StdEncoding.EncodeToString(ed25519.Sign(key, message))
+	}
+	return result
 }
 
-func (catalog Catalog) ValidateTest(now time.Time) error {
-	return catalog.validate(now, true)
+func VerifyManifest(raw, signature []byte, entry IndexEntry, tag string, test bool) (Manifest, error) {
+	var manifest Manifest
+	keys, err := entry.PublicKeys()
+	if err != nil || update.VerifySignature(raw, signature, keys, modulePurpose(ReleasePurpose, test)) != nil {
+		return manifest, fmt.Errorf("模块 Release 签名不可信")
+	}
+	if err := update.Decode(bytes.NewReader(raw), &manifest); err != nil {
+		return manifest, fmt.Errorf("无效的模块 Release 清单")
+	}
+	if err := manifest.Validate(); err != nil {
+		return manifest, err
+	}
+	module := manifest.Module
+	if module.ID != entry.ID || module.Symbol != entry.Symbol || !strings.EqualFold(module.Release.Repository, entry.Repository) || module.Release.Tag != tag {
+		return manifest, fmt.Errorf("签名清单与登记的模块、仓库或版本不符")
+	}
+	return manifest, nil
 }
 
-func (catalog Catalog) validate(now time.Time, test bool) error {
-	product := Product
-	if test {
-		product = TestProduct
+func (manifest Manifest) Validate() error {
+	module := manifest.Module
+	if manifest.Protocol != Protocol || !validIdentity(module.ID, module.Name, module.Description, module.Symbol) || module.Kind != DynamicKind ||
+		!ValidRepository(module.Release.Repository) || !ValidTag(module.Release.Tag) || !module.Install.valid(module.ID, "install") ||
+		!module.Uninstall.valid(module.ID, "uninstall") || len(manifest.Assets) == 0 || len(manifest.Assets) > 128 {
+		return fmt.Errorf("无效的模块 Release 清单")
 	}
-	if catalog.Product != product || catalog.Protocol != Protocol || catalog.Sequence == 0 || catalog.Modules == nil || len(catalog.Modules) > MaxModules || len(catalog.Assets) > 128 {
-		return fmt.Errorf("不兼容的模块目录")
-	}
-	if catalog.IssuedAt.IsZero() || catalog.IssuedAt.After(now.Add(5*time.Minute)) || !catalog.ExpiresAt.After(now) ||
-		!catalog.ExpiresAt.After(catalog.IssuedAt) || catalog.ExpiresAt.Sub(catalog.IssuedAt) > MaxValidity {
-		return fmt.Errorf("模块目录已过期或有效时间无效")
-	}
-	modules, symbols := map[string]bool{}, map[string]bool{}
-	for _, module := range catalog.Modules {
-		if !ValidID(module.ID) || modules[module.ID] || !validText(module.Name, 128) || !validText(module.Description, 768) || !ValidID(module.Kind) ||
-			module.Kind == DynamicKind && (!ValidSymbol(module.Symbol) || symbols[module.Symbol] || !module.Install.valid(module.ID, "install") || !module.Uninstall.valid(module.ID, "uninstall")) ||
-			module.ID == GeoIP2 && (module.Kind != DynamicKind || module.Symbol != Symbol) || module.ID != GeoIP2 && module.Symbol == Symbol ||
-			!test && (!repoPattern.MatchString(module.Release.Repository) || !tagPattern.MatchString(module.Release.Tag)) || test && module.Release != (Release{}) {
-			return fmt.Errorf("无效或重复的模块目录条目")
-		}
-		modules[module.ID] = true
-		if module.Kind == DynamicKind {
-			symbols[module.Symbol] = true
-		}
-	}
-	type matchKey struct {
-		ID     string
-		Target Target
-	}
-	seen := map[matchKey]bool{}
-	versions := map[string]string{}
-	for _, asset := range catalog.Assets {
+	seen := make(map[Target]bool)
+	for _, asset := range manifest.Assets {
 		target := asset.Target
-		key := matchKey{asset.Module, target}
-		if !modules[asset.Module] || !update.ValidVersion(asset.Version) || versions[asset.Module] != "" && versions[asset.Module] != asset.Version || !osPattern.MatchString(target.OS) ||
+		if asset.Module != module.ID || !update.ValidVersion(asset.Version) || asset.Version != manifest.Assets[0].Version || !osPattern.MatchString(target.OS) ||
 			target.Arch != "amd64" && target.Arch != "arm64" || target.Runtime != "nginx" && target.Runtime != "openresty" ||
-			!versionPattern.MatchString(target.RuntimeVersion) || !ValidDigest(target.BinarySHA256) || seen[key] ||
+			!versionPattern.MatchString(target.RuntimeVersion) || !ValidDigest(target.BinarySHA256) || seen[target] ||
 			!ValidDigest(asset.SHA256) || asset.Name != AssetName(asset.Module, asset.SHA256) || asset.Size <= 0 || asset.Size > MaxAsset {
 			return fmt.Errorf("无效或重复的模块构建目标")
 		}
-		seen[key] = true
-		versions[asset.Module] = asset.Version
+		seen[target] = true
 	}
 	return nil
 }
 
-func (catalog Catalog) Match(id string, target Target) (Asset, bool) {
-	for _, asset := range catalog.Assets {
-		if asset.Module == id && asset.Target == target {
+func (manifest Manifest) Match(target Target) (Asset, bool) {
+	for _, asset := range manifest.Assets {
+		if asset.Target == target {
 			return asset, true
 		}
 	}
@@ -278,6 +311,7 @@ type Status struct {
 	ID                    string `json:"id"`
 	Name                  string `json:"name"`
 	Description           string `json:"description,omitempty"`
+	Repository            string `json:"repository,omitempty"`
 	TestFeed              bool   `json:"test_feed,omitempty"`
 	State                 string `json:"state"`
 	Present               bool   `json:"present"`
@@ -287,13 +321,31 @@ type Status struct {
 	Version               string `json:"version,omitempty"`
 	Reason                string `json:"reason,omitempty"`
 	Action                string `json:"action,omitempty"`
-	Confirmation          string `json:"confirmation,omitempty"`
 	UninstallConfirmation string `json:"uninstall_confirmation,omitempty"`
 }
 
 type InstallRequest struct {
 	ID           string `json:"id"`
 	Confirmation string `json:"confirmation"`
+	Tag          string `json:"tag,omitempty"`
+}
+
+func (request InstallRequest) Valid(uninstall bool) bool {
+	return ValidID(request.ID) && ValidDigest(request.Confirmation) && (uninstall && request.Tag == "" || !uninstall && ValidTag(request.Tag))
+}
+
+type ReleasePage struct {
+	Tags     []string `json:"tags"`
+	Latest   string   `json:"latest,omitempty"`
+	NextPage int      `json:"next_page,omitempty"`
+}
+
+type Preflight struct {
+	Tag          string `json:"tag"`
+	Version      string `json:"version,omitempty"`
+	Runtime      string `json:"runtime,omitempty"`
+	Confirmation string `json:"confirmation,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 type Result struct {

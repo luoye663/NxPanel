@@ -89,6 +89,7 @@ export interface NginxModule {
   id: string
   name: string
   description?: string
+  repository?: string
   state: 'available' | 'enabled' | 'configured' | 'unavailable' | 'busy' | 'drifted' | 'needs_attention'
   present: boolean
   loaded: boolean
@@ -97,8 +98,21 @@ export interface NginxModule {
   version?: string
   reason?: string
   action?: 'install'
-  confirmation?: string
   uninstall_confirmation?: string
+}
+
+export interface NginxModuleReleases {
+  tags: string[]
+  latest?: string
+  next_page?: number
+}
+
+export interface NginxModulePreflight {
+  tag: string
+  version?: string
+  runtime?: string
+  confirmation?: string
+  reason?: string
 }
 
 export interface NginxModuleJob {
@@ -121,8 +135,16 @@ export function getNginxModules(refresh = false): Promise<{
   return get(refresh ? '/nginx/modules?refresh=1' : '/nginx/modules', { timeout: 26_000 })
 }
 
-export function installNginxModule(id: NginxModule['id'], confirmation: string): Promise<NginxModuleJob> {
-  return post('/nginx/modules/install', { id, confirmation })
+export function getNginxModuleReleases(id: string, page: number): Promise<NginxModuleReleases> {
+  return get('/nginx/modules/releases', { params: { id, page }, timeout: 26_000 })
+}
+
+export function getNginxModulePreflight(id: string, tag: string): Promise<NginxModulePreflight> {
+  return get('/nginx/modules/preflight', { params: { id, tag }, timeout: 26_000 })
+}
+
+export function installNginxModule(id: string, tag: string, confirmation: string): Promise<NginxModuleJob> {
+  return post('/nginx/modules/install', { id, tag, confirmation })
 }
 
 export function uninstallNginxModule(id: string, confirmation: string): Promise<NginxModuleJob> {

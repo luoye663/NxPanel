@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,15 +21,29 @@ import (
 const moduleStateDir = "/var/lib/nxpanel-nginx-modules"
 const moduleTestStateDir = moduleStateDir + "-test"
 
-const moduleCatalogURL = "https://raw.githubusercontent.com/luoye663/NxPanel/main/" + nginxmodule.CatalogPath
+const moduleIndexURL = "https://raw.githubusercontent.com/luoye663/NxPanel/main/" + nginxmodule.IndexPath
 
 type moduleFeed struct {
-	catalog  nginxmodule.Catalog
-	envelope []byte
+	entries  []nginxmodule.IndexEntry
 	floor    nginxmodule.Floor
 	fetched  time.Time
 	failedAt time.Time
 	fetchErr error
+}
+
+func (feed moduleFeed) entry(id string) (nginxmodule.IndexEntry, bool) {
+	for _, entry := range feed.entries {
+		if entry.ID == id {
+			return entry, true
+		}
+	}
+	return nginxmodule.IndexEntry{}, false
+}
+
+type moduleIndexSnapshot struct {
+	Index     []byte            `json:"index"`
+	Signature []byte            `json:"signature"`
+	Floor     nginxmodule.Floor `json:"floor"`
 }
 
 func (source moduleSource) trustKeys() (map[string]ed25519.PublicKey, error) {
@@ -73,25 +88,42 @@ var moduleHTTPClient = &http.Client{
 }
 
 func (source moduleSource) fetch(ctx context.Context, name string, limit int64, releases ...nginxmodule.Release) ([]byte, error) {
-	address, client, label := moduleCatalogURL, moduleCatalogClient, "官方 GitHub 模块目录"
+	address, client, label := moduleIndexURL+name, moduleCatalogClient, "官方 GitHub 模块索引"
 	if len(releases) == 1 {
-		address, client, label = nginxmodule.ReleaseURL(releases[0], name), moduleHTTPClient, "官方 GitHub 模块产物"
+		release := releases[0]
+		address, client, label = nginxmodule.ReleaseURL(release, name), moduleHTTPClient, "GitHub 模块产物"
 	}
 	if source.test {
 		if source.err != nil {
 			return nil, source.err
 		}
 		address, client, label = source.base+name, moduleCatalogClient, "本地模块测试源"
+		if len(releases) == 1 {
+			release := releases[0]
+			address = source.base + "repos/" + release.Repository + "/releases/download/" + release.Tag + "/" + name
+		}
 	}
+	return fetchModuleResource(ctx, client, address, label, limit)
+}
+
+var errModuleResourceNotFound = errors.New("GitHub 资源不存在（HTTP 404）")
+
+func fetchModuleResource(ctx context.Context, client *http.Client, address, label string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
+	}
+	if req.URL.Host == "api.github.com" {
+		req.Header.Set("Accept", "application/vnd.github+json")
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("无法访问%s", label)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%s：%w", label, errModuleResourceNotFound)
+	}
 	if resp.StatusCode != http.StatusOK || resp.ContentLength > limit {
 		return nil, fmt.Errorf("%s资源不可用或超出大小限制（HTTP %d）", label, resp.StatusCode)
 	}
@@ -105,10 +137,11 @@ var moduleCatalogClient = &http.Client{
 }
 
 func (s *Server) cachedModuleFeed() moduleFeed {
-	if time.Now().Before(s.moduleFeed.catalog.ExpiresAt) {
-		return s.moduleFeed
+	feed, err := s.moduleSource.savedIndex()
+	if err != nil {
+		return moduleFeed{}
 	}
-	return moduleFeed{}
+	return feed
 }
 
 func readModuleBytes(reader io.Reader, limit int64) ([]byte, error) {
@@ -176,7 +209,7 @@ func (s *Server) loadModuleFeed(ctx context.Context, fresh bool) (_ moduleFeed, 
 	if !fresh && s.moduleFeed.fetchErr != nil && time.Since(s.moduleFeed.failedAt) < 10*time.Second {
 		return moduleFeed{}, s.moduleFeed.fetchErr
 	}
-	if !fresh && s.moduleFeed.fetchErr == nil && time.Since(s.moduleFeed.fetched) < 2*time.Minute && time.Now().Before(s.moduleFeed.catalog.ExpiresAt) {
+	if !fresh && s.moduleFeed.fetchErr == nil && time.Since(s.moduleFeed.fetched) < 2*time.Minute {
 		return s.moduleFeed, nil
 	}
 	defer func() {
@@ -184,38 +217,77 @@ func (s *Server) loadModuleFeed(ctx context.Context, fresh bool) (_ moduleFeed, 
 			s.moduleFeed.failedAt, s.moduleFeed.fetchErr = time.Now(), loadErr
 		}
 	}()
+	if err := modulePrivateDir(source.stateDir(), true); err != nil {
+		return moduleFeed{}, err
+	}
+	previous, err := source.readIndexSnapshot()
+	if err != nil && !os.IsNotExist(err) {
+		return moduleFeed{}, err
+	}
+	raw, err := source.fetch(ctx, nginxmodule.IndexName, nginxmodule.MaxEnvelope)
+	if err != nil {
+		return moduleFeed{}, err
+	}
+	signature, err := source.fetch(ctx, nginxmodule.IndexSigName, nginxmodule.MaxEnvelope)
+	if err != nil {
+		return moduleFeed{}, err
+	}
+	snapshot := moduleIndexSnapshot{Index: raw, Signature: signature}
+	feed, err := source.verifyIndex(snapshot, previous.Floor)
+	if err != nil {
+		return moduleFeed{}, err
+	}
+	snapshot.Floor = feed.floor
+	if previous.Floor != feed.floor || !bytes.Equal(previous.Signature, snapshot.Signature) {
+		if err := writeModuleState(source.indexStatePath(), snapshot); err != nil {
+			return moduleFeed{}, err
+		}
+	}
+	feed.fetched = time.Now()
+	s.moduleFeed = feed
+	return s.moduleFeed, nil
+}
+
+func (source moduleSource) indexStatePath() string {
+	return filepath.Join(source.stateDir(), "index-snapshot.json")
+}
+
+func (source moduleSource) savedIndex() (moduleFeed, error) {
+	snapshot, err := source.readIndexSnapshot()
+	if err != nil {
+		return moduleFeed{}, err
+	}
+	return source.verifyIndex(snapshot, snapshot.Floor)
+}
+
+func (source moduleSource) readIndexSnapshot() (moduleIndexSnapshot, error) {
+	var snapshot moduleIndexSnapshot
+	if err := modulePrivateDir(source.stateDir(), false); err != nil {
+		return snapshot, err
+	}
+	if err := readModuleState(source.indexStatePath(), 4*nginxmodule.MaxEnvelope, &snapshot); err != nil {
+		return snapshot, err
+	}
+	var signature nginxmodule.IndexSignature
+	if len(snapshot.Index) > nginxmodule.MaxEnvelope || len(snapshot.Signature) > nginxmodule.MaxEnvelope ||
+		update.Decode(bytes.NewReader(snapshot.Signature), &signature) != nil || snapshot.Floor.Sequence == 0 ||
+		snapshot.Floor.Sequence != signature.Sequence || snapshot.Floor.Digest != sha256Text(snapshot.Index) {
+		return snapshot, fmt.Errorf("本地模块索引版本记录不可核验")
+	}
+	return snapshot, nil
+}
+
+func (source moduleSource) verifyIndex(snapshot moduleIndexSnapshot, floor nginxmodule.Floor) (moduleFeed, error) {
 	keys, err := source.trustKeys()
 	if err != nil {
 		return moduleFeed{}, err
 	}
-	verify := nginxmodule.Verify
-	if source.test {
-		verify = nginxmodule.VerifyTest
-	}
-	if err := modulePrivateDir(source.stateDir(), true); err != nil {
-		return moduleFeed{}, err
-	}
-	var floor nginxmodule.Floor
-	path := filepath.Join(source.stateDir(), "catalog-floor.json")
-	if err := readModuleState(path, 1024, &floor); !os.IsNotExist(err) && (err != nil || floor.Sequence == 0 || !nginxmodule.ValidDigest(floor.Digest)) {
-		return moduleFeed{}, fmt.Errorf("本地模块目录版本记录不可核验")
-	}
-	body, err := source.fetch(ctx, nginxmodule.CatalogName, nginxmodule.MaxEnvelope)
+	updateKeys, err := update.Keys(update.TrustKeys)
 	if err != nil {
 		return moduleFeed{}, err
 	}
-	now := time.Now()
-	catalog, next, err := verify(body, keys, now, floor)
-	if err != nil {
-		return moduleFeed{}, err
-	}
-	if floor != next {
-		if err := writeModuleState(path, next); err != nil {
-			return moduleFeed{}, err
-		}
-	}
-	s.moduleFeed = moduleFeed{catalog: catalog, envelope: body, floor: next, fetched: now}
-	return s.moduleFeed, nil
+	entries, next, err := nginxmodule.VerifyIndex(snapshot.Index, snapshot.Signature, keys, updateKeys, floor, source.test)
+	return moduleFeed{entries: entries, floor: next}, err
 }
 
 func moduleAssetMatches(body []byte, asset nginxmodule.Asset) bool {

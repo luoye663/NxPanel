@@ -1,8 +1,8 @@
-import { Alert, Badge, Button, Group, Loader, Stack, Text } from '@mantine/core'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Select, Stack, Text } from '@mantine/core'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { geoAccessKeys } from '@/api/geoAccess'
-import { getNginxModuleJob, getNginxModules, installNginxModule, uninstallNginxModule } from '@/api/nginx'
+import { getNginxModuleJob, getNginxModulePreflight, getNginxModuleReleases, getNginxModules, installNginxModule, uninstallNginxModule } from '@/api/nginx'
 import type { NginxModule } from '@/api/nginx'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SectionCard } from '@/components/common/SectionCard'
@@ -12,13 +12,14 @@ import { notifySuccess } from '@/utils/notify'
 const modulesKey = ['nginx', 'modules'] as const
 type ModuleListing = Awaited<ReturnType<typeof getNginxModules>>
 const labels: Record<NginxModule['state'], string> = {
-  available: '兼容', enabled: '已启用', configured: '已配置，未确认加载', unavailable: '不可安装',
+  available: '可选版本', enabled: '已启用', configured: '已配置，未确认加载', unavailable: '不可安装',
   busy: '正在检查', drifted: '版本已变化', needs_attention: '需人工检查',
 }
 
 export function NginxModulesTab() {
   const client = useQueryClient()
   const [jobID, setJobID] = useState<string>()
+  const [installModule, setInstallModule] = useState<NginxModule>()
   const handledJob = useRef<string>(undefined)
   const list = useQuery({ queryKey: modulesKey, queryFn: () => getNginxModules(), retry: false, staleTime: 0,
     refetchInterval: (query) => query.state.data?.busy ? 2_000 : false })
@@ -34,9 +35,10 @@ export function NginxModulesTab() {
   const moduleName = list.data?.modules.find((module) => module.id === current?.module_id)?.name || current?.module_id
   const operation = current?.action === 'uninstall' ? '卸载' : '安装'
   const pending = !!currentID && (!job.data || job.data.state === 'pending')
-  const change = useMutation({ mutationFn: ({ module, uninstall }: { module: NginxModule; uninstall: boolean }) => uninstall
-    ? uninstallNginxModule(module.id, module.uninstall_confirmation!) : installNginxModule(module.id, module.confirmation!),
+  const change = useMutation({ mutationFn: ({ id, tag, confirmation }: { id: string; tag?: string; confirmation: string }) => tag
+    ? installNginxModule(id, tag, confirmation) : uninstallNginxModule(id, confirmation),
     onSuccess: (result) => {
+      setInstallModule(undefined)
       client.setQueryData<ModuleListing>(modulesKey, (listing) => listing && { ...listing, latest_job: result })
       setJobID(result.id)
     } })
@@ -57,13 +59,13 @@ export function NginxModulesTab() {
     void client.invalidateQueries({ queryKey: geoAccessKeys.status })
   }, [client, job.data, moduleName, operation])
 
-  function confirm(module: NginxModule, uninstall = false) {
-    const action = uninstall ? '卸载' : '安装并启用'
+  function confirmUninstall(module: NginxModule) {
+    const confirmation = module.uninstall_confirmation
+    if (!confirmation) return
     confirmDanger({
-      title: `${action} ${module.name}`, confirmLabel: action,
-      message: uninstall ? `将以 root 执行 ${module.name} 的已签名卸载脚本。若 Nginx 配置仍依赖该模块，卸载会被拒绝。${module.id === 'geoip2' ? 'MMDB 和规则数据会保留。' : ''}`
-        : `将为 ${module.runtime || '当前 Nginx 实例'}${action} ${module.name}。已签名脚本以 root 运行，可从系统软件源安装依赖，修改并重载 Nginx。`,
-      onConfirm: async () => { await change.mutateAsync({ module, uninstall }) },
+      title: `卸载 ${module.name}`, confirmLabel: '卸载',
+      message: `将以 root 执行 ${module.name} 的已签名卸载脚本。若 Nginx 配置仍依赖该模块，卸载会被拒绝。${module.id === 'geoip2' ? 'MMDB 和规则数据会保留。' : ''}`,
+      onConfirm: async () => { await change.mutateAsync({ id: module.id, confirmation }) },
     })
   }
 
@@ -72,7 +74,7 @@ export function NginxModulesTab() {
   return (
     <Stack gap="md">
       <Group justify="space-between">
-        <Text size="sm" c="dimmed">{list.data?.test_feed ? '当前使用本地测试源，仅用于联调。' : '在线目录来自 GitHub，Agent 验签后只安装与当前 Nginx / OpenResty 匹配的构建。'}</Text>
+        <Text size="sm" c="dimmed">{list.data?.test_feed ? '当前使用本地测试源，仅用于联调。' : '模块从 NxPanel 索引发现；选择版本后，Agent 验证对应仓库的 Release 和运行时兼容性。'}</Text>
         <Button variant="default" size="xs" loading={list.isFetching || refresh.isPending} onClick={() => refresh.mutate()}>刷新在线目录</Button>
       </Group>
       {list.isLoading ? <Loader size="sm" /> : null}
@@ -90,17 +92,70 @@ export function NginxModulesTab() {
         <SectionCard key={module.id} title={module.name}>
           <Stack gap="sm">
             {module.description ? <Text size="sm">{module.description}</Text> : null}
+            {module.repository && !list.data?.test_feed ? <Anchor size="sm" href={`https://github.com/${module.repository}`} target="_blank" rel="noreferrer">{module.repository}</Anchor> : null}
             <Group gap="xs">
               <Badge color={module.state === 'enabled' ? 'green' : 'blue'}>{labels[module.state]}</Badge>
               {module.state !== 'busy' ? <Badge variant="outline" color="gray">{module.present ? '模块已存在' : '未检测到模块文件'}</Badge> : null}
             </Group>
             {module.runtime ? <Text size="sm" c="dimmed">{module.runtime}{module.version ? ` · ${module.version}` : ''}</Text> : null}
             {module.reason ? <Text size="sm" style={{ overflowWrap: 'anywhere' }}>{module.reason}</Text> : null}
-            {module.confirmation ? <Group><Button disabled={changing} onClick={() => confirm(module)}>安装</Button></Group> : null}
-            {module.uninstall_confirmation ? <Group><Button variant="subtle" color="red" disabled={changing} onClick={() => confirm(module, true)}>卸载</Button></Group> : null}
+            {module.action === 'install' ? <Group><Button disabled={changing} onClick={() => { change.reset(); setInstallModule(module) }}>安装</Button></Group> : null}
+            {module.uninstall_confirmation ? <Group><Button variant="subtle" color="red" disabled={changing} onClick={() => confirmUninstall(module)}>卸载</Button></Group> : null}
           </Stack>
         </SectionCard>
       ))}
+      {installModule ? <ModuleInstallDialog key={installModule.id} module={installModule} busy={changing} submitting={change.isPending}
+        error={change.error} onClose={() => setInstallModule(undefined)}
+        onInstall={(tag, confirmation) => change.mutate({ id: installModule.id, tag, confirmation })} /> : null}
     </Stack>
+  )
+}
+
+function ModuleInstallDialog({ module, busy, submitting, error, onClose, onInstall }: {
+  module: NginxModule
+  busy: boolean
+  submitting: boolean
+  error: Error | null
+  onClose: () => void
+  onInstall: (tag: string, confirmation: string) => void
+}) {
+  const [selectedTag, setSelectedTag] = useState<string | null>(null)
+  const releases = useInfiniteQuery({
+    queryKey: ['nginx', 'module-releases', module.id], queryFn: ({ pageParam }) => getNginxModuleReleases(module.id, pageParam),
+    initialPageParam: 1, getNextPageParam: (page) => page.next_page, retry: false,
+  })
+  const latest = releases.data?.pages[0]?.latest
+  const tag = selectedTag ?? latest
+  const tags = [...new Set(releases.data?.pages.flatMap((page) => page.tags) ?? [])]
+  const preflight = useQuery({
+    queryKey: ['nginx', 'module-preflight', module.id, tag], queryFn: () => getNginxModulePreflight(module.id, tag!),
+    enabled: !!tag && !releases.isPending, retry: false,
+  })
+  const confirmation = preflight.data?.confirmation
+  return (
+    <Modal opened title={`安装 ${module.name}`} onClose={onClose} closeOnClickOutside={!submitting} closeOnEscape={!submitting} withCloseButton={!submitting}>
+      <Stack gap="sm">
+        {releases.isPending ? <Loader size="sm" /> : null}
+        {releases.isError ? <><ErrorAlert error={releases.error} title="无法读取模块 Release" /><Button variant="default" onClick={() => void releases.refetch()}>重试</Button></> : null}
+        {tags.length ? <Select label="Release 版本" placeholder="选择要安装的版本" value={tag ?? null}
+          onChange={setSelectedTag} disabled={submitting} searchable allowDeselect={false}
+          data={tags.map((value) => ({ value, label: value === latest ? `${value}（最新正式版）` : value }))} /> : null}
+        {!releases.isPending && !releases.isError && !tags.length ? <Text size="sm">未找到正式 Release。</Text> : null}
+        {releases.hasNextPage ? <Button variant="default" disabled={submitting} loading={releases.isFetchingNextPage}
+          onClick={() => void releases.fetchNextPage()}>加载更早版本</Button> : null}
+        {preflight.isFetching ? <Text size="sm">正在验证签名及运行时兼容性…</Text> : null}
+        {preflight.isError ? <><ErrorAlert error={preflight.error} title="模块预检失败" /><Button variant="default" onClick={() => void preflight.refetch()}>重新检查</Button></> : null}
+        {preflight.data?.reason ? <><Alert color="yellow" title="此版本不可安装">{preflight.data.reason}</Alert><Button variant="default" disabled={preflight.isFetching} onClick={() => void preflight.refetch()}>重新检查</Button></> : null}
+        {confirmation ? <Alert color="orange" title={`确认安装 ${preflight.data?.version}（${tag}）`}>
+          将在 {preflight.data?.runtime || '当前 Nginx 实例'} 上以 root 执行已签名脚本。脚本可安装依赖、修改配置并重载 Nginx。
+        </Alert> : null}
+        {error ? <ErrorAlert error={error} title="无法开始安装" /> : null}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button color="red" loading={submitting} disabled={busy || preflight.isFetching || preflight.isError || !confirmation || !tag}
+            onClick={() => { if (tag && confirmation) onInstall(tag, confirmation) }}>确认安装</Button>
+        </Group>
+      </Stack>
+    </Modal>
   )
 }

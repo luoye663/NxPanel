@@ -9,7 +9,7 @@ import (
 )
 
 func TestProductionModuleIgnoresTestEnvironment(t *testing.T) {
-	t.Setenv("NXPANEL_MODULE_TEST_FEED", "http://127.0.0.1/nxpanel-nginx-modules.json")
+	t.Setenv("NXPANEL_MODULE_TEST_FEED", "http://127.0.0.1/modules.json")
 	t.Setenv("NXPANEL_MODULE_TEST_KEYS", "must-not-be-read")
 	source := configuredModuleSource()
 	if source.test || source.base != "" || source.err != nil || len(source.keys) != 0 || source.stateDir() != moduleStateDir {

@@ -29,6 +29,18 @@ func TestNginxModuleRoutesAndAsyncAudit(t *testing.T) {
 	mux.HandleFunc("GET /internal/v1/nginx/modules", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true,"data":{"feed_state":"online","modules":[{"id":"geoip2","name":"GeoIP2","state":"available"},{"id":"test-module","name":"Online module","state":"available"}]}}`))
 	})
+	mux.HandleFunc("GET /internal/v1/nginx/modules/releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id") != "geoip2" || r.URL.Query().Get("page") != "2" {
+			t.Errorf("unexpected release query: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"data":{"tags":["v1.0.0"]}}`))
+	})
+	mux.HandleFunc("GET /internal/v1/nginx/modules/preflight", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("id") != "geoip2" || r.URL.Query().Get("tag") != "v1.0.0" {
+			t.Errorf("unexpected preflight query: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"data":{"tag":"v1.0.0","version":"v1.0.0","confirmation":"` + strings.Repeat("a", 64) + `"}}`))
+	})
 	mux.HandleFunc("POST /internal/v1/nginx/modules/install", func(w http.ResponseWriter, r *http.Request) {
 		var request nginxmodule.InstallRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -66,12 +78,23 @@ func TestNginxModuleRoutesAndAsyncAudit(t *testing.T) {
 	const listPath = "/nginx/modules"
 	const installPath = listPath + "/install"
 	confirmation := strings.Repeat("a", 64)
-	body := `{"id":"geoip2","confirmation":"` + confirmation + `"}`
+	body := `{"id":"geoip2","tag":"v1.0.0","confirmation":"` + confirmation + `"}`
 	if response := request(http.MethodGet, listPath, "", false, false); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list = %d", response.Code)
 	}
 	if response := request(http.MethodPost, installPath, body, true, false); response.Code != http.StatusForbidden {
 		t.Fatalf("install without CSRF = %d", response.Code)
+	}
+	for _, path := range []string{listPath + "/releases?id=geoip2&page=2", listPath + "/preflight?id=geoip2&tag=v1.0.0"} {
+		if response := request(http.MethodGet, path, "", false, false); response.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated lookup = %d", response.Code)
+		}
+		if response := request(http.MethodGet, path, "", true, false); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "v1.0.0") {
+			t.Fatalf("historical lookup = %d %s", response.Code, response.Body.String())
+		}
+	}
+	if response := request(http.MethodPost, installPath, `{"id":"geoip2","confirmation":"`+confirmation+`"}`, true, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("install without explicit tag = %d", response.Code)
 	}
 	legacyJob := &repo.Operation{ID: "old-preflight", Action: "nginx.module.preflight", TargetType: nginxModuleTargetType,
 		TargetID: nginxmodule.GeoIP2, Status: "success", CreatedAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}
@@ -94,7 +117,7 @@ func TestNginxModuleRoutesAndAsyncAudit(t *testing.T) {
 	}
 	select {
 	case got := <-started:
-		if got.ID != nginxmodule.GeoIP2 || got.Confirmation != confirmation {
+		if got.ID != nginxmodule.GeoIP2 || got.Confirmation != confirmation || got.Tag != "v1.0.0" {
 			t.Fatalf("unexpected Agent request: %+v", got)
 		}
 	case <-time.After(3 * time.Second):

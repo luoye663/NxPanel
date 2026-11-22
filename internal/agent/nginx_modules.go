@@ -17,14 +17,14 @@ import (
 )
 
 type moduleOffer struct {
-	status   nginxmodule.Status
-	module   nginxmodule.Module
-	asset    nginxmodule.Asset
-	managed  managedModule
-	path     string
-	identity string
-	expires  time.Time
-	receipt  moduleReceipt
+	status       nginxmodule.Status
+	module       nginxmodule.Module
+	asset        nginxmodule.Asset
+	managed      managedModule
+	path         string
+	identity     string
+	confirmation string
+	receipt      moduleReceipt
 }
 
 func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +56,7 @@ func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			listing.FeedState, listing.FeedMessage = "error", err.Error()
 			feed = s.cachedModuleFeed()
-			if !feed.fetched.IsZero() {
+			if feed.floor.Sequence != 0 {
 				listing.FeedState = "stale"
 			}
 		}
@@ -64,14 +64,14 @@ func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
 	instance, version, managed, runtimeErr := s.moduleSnapshot(ctx)
 	listing.Busy = runtimeErr == errModuleBusy
 	recoveryErr := s.moduleSource.checkScriptJournal()
-	modules := feed.catalog.Modules
+	modules := make([]nginxmodule.Module, 0, len(feed.entries))
 	if local {
 		modules = []nginxmodule.Module{nginxmodule.GeoIP2Module()}
 	} else {
-		modules = append([]nginxmodule.Module(nil), modules...)
-		seen := make(map[string]bool, len(modules))
-		for _, module := range modules {
-			seen[module.ID] = true
+		seen := make(map[string]bool, len(feed.entries))
+		for _, entry := range feed.entries {
+			modules = append(modules, entry.DisplayModule())
+			seen[entry.ID] = true
 		}
 		if !seen[nginxmodule.GeoIP2] && (instance.static || len(instance.loadedPaths) != 0 || managed[nginxmodule.GeoIP2].path != "") {
 			modules = append(modules, nginxmodule.GeoIP2Module())
@@ -88,10 +88,11 @@ func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, module := range modules {
-		offer := s.describeModule(ctx, instance, version, module, managed[module.ID], feed, !local, listing.FeedState == "online", runtimeErr)
+		_, registered := feed.entry(module.ID)
+		offer := s.describeModule(ctx, instance, version, module, managed[module.ID], !local, registered && listing.FeedState == "online", runtimeErr)
 		if recoveryErr != nil {
 			offer.status.State, offer.status.Reason = "needs_attention", recoveryErr.Error()
-			offer.status.Confirmation, offer.status.UninstallConfirmation, offer.status.Action = "", "", ""
+			offer.status.UninstallConfirmation, offer.status.Action = "", ""
 		}
 		listing.Modules = append(listing.Modules, offer.status)
 	}
@@ -127,7 +128,7 @@ func (s *Server) handleNginxModuleUninstall(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleNginxModuleAction(w http.ResponseWriter, r *http.Request, uninstall bool) {
 	var request nginxmodule.InstallRequest
-	if update.Decode(http.MaxBytesReader(w, r.Body, 1024), &request) != nil || !nginxmodule.ValidID(request.ID) || !nginxmodule.ValidDigest(request.Confirmation) {
+	if update.Decode(http.MaxBytesReader(w, r.Body, 1024), &request) != nil || !request.Valid(uninstall) {
 		writeAgentError(w, http.StatusBadRequest, "无效的模块操作确认")
 		return
 	}
@@ -142,31 +143,25 @@ func (s *Server) handleNginxModuleAction(w http.ResponseWriter, r *http.Request,
 		writeAgentOK(w, nginxmodule.Result{State: "needs_attention", Message: err.Error()})
 		return
 	}
-	var feed moduleFeed
-	var feedErr error
-	if !uninstall {
-		feed, feedErr = s.loadModuleFeed(ctx, true)
-	}
-	instance, version, managed, runtimeErr := s.moduleSnapshot(ctx)
-	module := nginxmodule.Module{ID: request.ID, Kind: nginxmodule.DynamicKind, Symbol: managed[request.ID].symbol}
-	if request.ID == nginxmodule.GeoIP2 {
-		module = nginxmodule.GeoIP2Module()
-	}
-	for _, candidate := range feed.catalog.Modules {
-		if candidate.ID == request.ID {
-			module = candidate
-			break
-		}
-	}
-	offer := s.describeModule(ctx, instance, version, module, managed[request.ID], feed, true, feedErr == nil && len(feed.envelope) != 0, runtimeErr)
-	ticket := offer.status.Confirmation
+	var offer moduleOffer
+	var verifyErr error
+	var ticket string
 	if uninstall {
+		instance, version, managed, runtimeErr := s.moduleSnapshot(ctx)
+		module := nginxmodule.Module{ID: request.ID, Kind: nginxmodule.DynamicKind, Symbol: managed[request.ID].symbol}
+		if request.ID == nginxmodule.GeoIP2 {
+			module = nginxmodule.GeoIP2Module()
+		}
+		offer = s.describeModule(ctx, instance, version, module, managed[request.ID], true, false, runtimeErr)
 		ticket = offer.status.UninstallConfirmation
+	} else {
+		offer, verifyErr = s.prepareModuleInstall(ctx, request.ID, request.Tag, true)
+		ticket = offer.confirmation
 	}
-	if ticket != request.Confirmation {
-		message := "模块目录、运行时或配置已变化，请刷新后重新确认"
-		if feedErr != nil {
-			message += "：" + feedErr.Error()
+	if verifyErr != nil || ticket != request.Confirmation {
+		message := "模块授权、版本、运行时或配置已变化，请重新确认"
+		if verifyErr != nil {
+			message += "：" + verifyErr.Error()
 		} else if offer.status.Reason != "" {
 			message += "：" + offer.status.Reason
 		}
@@ -180,8 +175,8 @@ func (s *Server) handleNginxModuleAction(w http.ResponseWriter, r *http.Request,
 	writeAgentOK(w, result)
 }
 
-func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, version CmdResult, module nginxmodule.Module, managed managedModule, feed moduleFeed, actions, fresh bool, runtimeErr error) moduleOffer {
-	offer := moduleOffer{module: module, managed: managed, status: nginxmodule.Status{ID: module.ID, Name: module.Name, Description: module.Description, State: "unavailable", TestFeed: s.moduleSource.test}}
+func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, version CmdResult, module nginxmodule.Module, managed managedModule, checkUninstall, canInstall bool, runtimeErr error) moduleOffer {
+	offer := moduleOffer{module: module, managed: managed, status: nginxmodule.Status{ID: module.ID, Name: module.Name, Description: module.Description, Repository: module.Release.Repository, State: "unavailable", TestFeed: s.moduleSource.test}}
 	status := &offer.status
 	if runtimeErr != nil {
 		status.Reason = runtimeErr.Error()
@@ -217,7 +212,7 @@ func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, ver
 		return offer
 	}
 	target, targetErr := moduleTarget(instance, version)
-	if actions && targetErr == nil && !static && managed.path != "" && len(paths) == 1 && paths[managed.path] && instance.moduleRefs[managed.path] == 1 {
+	if checkUninstall && targetErr == nil && !static && managed.path != "" && len(paths) == 1 && paths[managed.path] && instance.moduleRefs[managed.path] == 1 {
 		if err := s.moduleActionReadiness(ctx, instance, len(workers) != 0, module.ID, managed.path); err != nil {
 			status.Reason = err.Error()
 		} else if err := s.uninstallOffer(ctx, &offer, target); err == nil {
@@ -235,39 +230,19 @@ func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, ver
 		status.State, status.Reason = "configured", "模块已写入配置，但未确认加载；请检查 Nginx 配置和日志"
 		return offer
 	}
-	if !actions {
+	if !canInstall {
 		status.Reason = "运行中未加载模块"
 		return offer
 	}
-	asset, found := feed.catalog.Match(module.ID, target)
-	var assetPath string
-	if found {
-		assetPath = s.moduleSource.assetPath(module.ID, asset.SHA256)
-		if file, err := openRuntimeRegular(assetPath); err == nil {
-			status.Present = true
-			_ = file.Close()
-		}
+	if targetErr != nil {
+		status.Reason = targetErr.Error()
+		return offer
 	}
-	if err := s.moduleActionReadiness(ctx, instance, len(workers) != 0, module.ID, assetPath); err != nil {
+	if err := s.moduleActionReadiness(ctx, instance, len(workers) != 0, module.ID, ""); err != nil {
 		status.Reason = err.Error()
 		return offer
 	}
-	switch {
-	case fresh && found && targetErr == nil:
-		offer.asset, offer.expires = asset, feed.catalog.ExpiresAt
-		offer.path = assetPath
-		offer.identity = "install " + module.ID + " " + feed.floor.Digest + " " + asset.SHA256 + " " + module.Install.SHA256
-		offer.receipt.Envelope = feed.envelope
-		status.Version, status.Action = asset.Version, "install"
-	case !fresh:
-		status.Reason = "未获取到可用于安装的已验证目录"
-		return offer
-	default:
-		status.Reason = "当前系统、架构与 Nginx 二进制没有匹配的模块构建"
-		return offer
-	}
-	status.State = "available"
-	status.Confirmation = moduleConfirmation(instance, offer.identity)
+	status.State, status.Action = "available", "install"
 	return offer
 }
 

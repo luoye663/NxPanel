@@ -20,18 +20,18 @@ func TestDevelopmentModuleSourceConstraints(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := "fixture:" + base64.StdEncoding.EncodeToString(public)
-	local := "http://127.0.0.1:18081/sub/" + nginxmodule.CatalogName
-	alias := "http://module-feed/" + nginxmodule.CatalogName
+	local := "http://127.0.0.1:18081/sub/" + nginxmodule.IndexName
+	alias := "http://module-feed/" + nginxmodule.IndexName
 	for _, test := range []struct {
 		feed, key string
 		container bool
 		wantErr   bool
 	}{
-		{local, key, false, false}, {alias, key, true, false}, {"http://[::1]/" + nginxmodule.CatalogName, key, false, false},
+		{local, key, false, false}, {alias, key, true, false}, {"http://[::1]/" + nginxmodule.IndexName, key, false, false},
 		{alias, key, false, true}, {local, "", false, true}, {"", key, false, true}, {local, "wrong", false, true},
-		{"http://host.invalid/" + nginxmodule.CatalogName, key, true, true},
-		{"http://user@127.0.0.1/" + nginxmodule.CatalogName, key, false, true},
-		{"http://127.0.0.1/../" + nginxmodule.CatalogName, key, false, true},
+		{"http://host.invalid/" + nginxmodule.IndexName, key, true, true},
+		{"http://user@127.0.0.1/" + nginxmodule.IndexName, key, false, true},
+		{"http://127.0.0.1/../" + nginxmodule.IndexName, key, false, true},
 		{local + "?test", key, false, true}, {local + "#test", key, false, true},
 	} {
 		source := parseModuleSource(test.feed, test.key, test.container)
@@ -49,7 +49,7 @@ func TestDevelopmentModuleSourceConstraints(t *testing.T) {
 
 func TestDevelopmentModuleFetchDoesNotFollowRedirects(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/"+nginxmodule.CatalogName {
+		if r.URL.Path == "/"+nginxmodule.IndexName {
 			http.Redirect(w, r, "/target", http.StatusFound)
 			return
 		}
@@ -58,7 +58,7 @@ func TestDevelopmentModuleFetchDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer fixture.Close()
 	source := moduleSource{test: true, base: fixture.URL + "/"}
-	if _, err := source.fetch(t.Context(), nginxmodule.CatalogName, nginxmodule.MaxEnvelope); err == nil {
+	if _, err := source.fetch(t.Context(), nginxmodule.IndexName, nginxmodule.MaxEnvelope); err == nil {
 		t.Fatal("accepted a redirected module catalog")
 	}
 }
