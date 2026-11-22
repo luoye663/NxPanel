@@ -1,6 +1,6 @@
 # Nginx 模块管理
 
-当前以 **GeoIP2** 为例。NxPanel 从主仓库读取签名目录，再从独立产物仓库的 GitHub Release 下载模块和安装脚本。普通用户在面板操作即可，不需要生成签名密钥或手动运行脚本。
+当前以 **GeoIP2** 为例。主仓库的 `main` 提供已签名的模块列表；每个模块仓库独立发布 GitHub Release。面板打开列表时不访问各模块仓库，点击安装后才读取所选模块的 Release，验证签名、兼容性、脚本和 `.so`。普通用户不需要生成密钥或手动运行脚本。
 
 - [二进制安装](#二进制安装宿主机) · [Docker 安装](#docker-安装) · [卸载和排查](#卸载和排查)
 - [本地联调](#本地联调) · [官方发布](#官方发布)
@@ -11,7 +11,7 @@
 
 1. 按 [二进制部署说明](../../README.md#二进制模式安装-nxpanel) 安装支持模块管理的 NxPanel。确认宿主机上的 Nginx 或 OpenResty 已运行，并已被面板检测到。
 2. 登录面板，打开 **Nginx 管理 → 模块管理**（`/nginx?tab=modules`），点击 **刷新在线目录**。
-3. 找到 **GeoIP2**，点击 **安装** 并确认。等页面显示安装成功，再到 **GeoIP 设置**安装 MMDB。安装模块本身不会下载数据库或启用地域规则。
+3. 找到 **GeoIP2**，点击 **安装**。默认选择最新正式版，也可加载并选择历史正式版；等面板预检通过再确认。安装成功后到 **GeoIP 设置**安装 MMDB。安装模块本身不会下载数据库或启用地域规则。
 
 ## Docker 安装
 
@@ -23,19 +23,19 @@
    ```
 
 2. 登录容器里的面板，打开 **Nginx 管理 → 模块管理**，点击 **刷新在线目录**。
-3. 点击 **GeoIP2 → 安装**。模块和所需依赖装在容器内，不装到宿主机。成功后如需地域规则，再到 **GeoIP 设置**安装 MMDB。
+3. 点击 **GeoIP2 → 安装**，选择版本，等预检通过再确认。模块和所需依赖装在容器内，不装到宿主机。成功后如需地域规则，再到 **GeoIP 设置**安装 MMDB。
 
 **镜像不预装 GeoIP2，删除并重建容器也不会保留它。** 重建前先停用并同步依赖模块的规则，处理手写配置中的 GeoIP2 指令。新容器启动后，重新安装模块，再恢复这些规则和配置。
 
 ## 卸载和排查
 
 1. 先停用并同步依赖 GeoIP2 的地域规则，移除手写 Nginx 配置中的 GeoIP2 指令。参见 [GeoIP2 升级与回滚](../access-policy.md#geoip2-升级与回滚)。
-2. 到 **模块管理**点击 **卸载**。面板只卸载它管理的模块，不删除 MMDB、规则、运行库或缓存的 `.so`。凭据有效时可以离线卸载；手工加载、静态编译的模块不由面板卸载。
+2. 到 **模块管理**点击 **卸载**。面板只卸载它管理的模块，不删除 MMDB、规则、运行库或缓存的 `.so`。凭据有效时可以离线卸载；手工加载、静态编译的模块不由面板卸载。已安装模块不会自动升级，换版本需先卸载，再选择要安装的正式版本。
 
 | 遇到的情况 | 怎么处理 |
 | --- | --- |
-| 在线目录不可用 | 点击**刷新在线目录**。检查 Agent 能否访问 GitHub，以及是否已有正式签名目录。缓存只供查看，不能用于新安装。 |
-| 没有「安装」按钮 | 目录必须包含与当前系统、架构、Nginx/OpenResty 版本及二进制 SHA-256 完全匹配的构建。不要拿相近版本的 `.so` 替代。 |
+| 在线目录不可用 | 点击**刷新在线目录**。检查 Agent 能否访问 GitHub 主仓库、索引和签名是否一同发布。缓存只供查看，不能用于新安装。 |
+| 找得到模块，但所选版本不可安装 | 检查该正式 Release 的签名是否可信、是否提供与本机系统、架构、Nginx/OpenResty 版本和二进制 SHA-256 完全匹配的构建。不会自动回退到其他版本。 |
 | Nginx 已运行，但模块页提示无法核验实例或挂载路径 | 在「状态管理」确认面板实例和 worker。用 systemd 部署时保留 `PrivateTmp`、`ProtectSystem` 等安全加固，检查 unit 的主进程、启动配置，以及 Agent 和 Nginx 是否看到同一份主配置和模块目录。 |
 | 提示仍有依赖或缺少卸载凭据 | 先处理仍引用模块的规则或配置。凭据缺失、损坏或其签名公钥已撤销时，面板不会执行卸载。 |
 | 提示「需人工检查」 | 查看操作记录和 Nginx 日志。备份当前配置、`/var/lib/nxpanel-nginx-modules/script-task.json` 和记录中的工作目录。对比 `*.before`，确认配置和运行状态恢复后再归档记录，不要强行重试。 |
@@ -78,7 +78,7 @@
    make module-fixture MODULE_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx
    ```
 
-   如果已有打包好的候选产物，可改用 `go run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence "$(date +%s)" -input /path/to/module-release -output tmp/my-module-fixture`，无需重新编译 `.so`。
+   如果已有模块仓库生成的 `.work/bundle/`，可改用 `go run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence "$(date +%s)" -input /path/to/.work/bundle -output tmp/my-module-fixture`，无需重新编译 `.so`。
 
 2. 在一个终端启动本地文件服务器。将 `FIXTURE` 改成上一步生成的目录（里面有 `feed/` 和 `trust.pub`）。
 
@@ -91,45 +91,100 @@
 
    ```sh
    FIXTURE=tmp/my-module-fixture
-   NXPANEL_MODULE_TEST_FEED=http://127.0.0.1:18081/nxpanel-nginx-modules.json \
+   NXPANEL_MODULE_TEST_FEED=http://127.0.0.1:18081/modules.json \
    NXPANEL_MODULE_TEST_KEYS="$(cat "$FIXTURE/trust.pub")" \
    make run-agent BUILD_TAGS=module_dev
    ```
 
-4. 用非 root 账号运行 `make build-frontend` 和 `make run-api`，测试 API 只监听回环地址。打开模块页，确认显示「本地测试源」后再点击安装。测试目录 24 小时后过期；重新生成后，用新公钥重启测试 Agent。
+4. 用非 root 账号运行 `make build-frontend` 和 `make run-api`，测试 API 只监听回环地址。打开模块页，确认显示「本地测试源」后再点击安装并选择版本。生成新测试密钥时使用新的 VM／容器，或先卸载旧测试模块，再归档旧测试索引和测试状态。旧单一目录协议只在开发阶段使用过，切换前卸载旧测试模块或重建测试实例；新版不迁移旧凭据。
 
 ## 官方发布
 
-以下只面向发布者。**独立仓库上传文件，NxPanel 主仓库签发目录。**
+**模块仓库发版本，NxPanel 主仓库只登记模块及其公钥。** GeoIP2 的构建配置、源码脚本和发布工作流都在独立模块仓库，不复制进主仓库。
 
-### 1. 首次配置签名密钥
+### 发布新版本
 
-在 NxPanel 源码根目录运行。选择 Git 仓库以外、尚不存在的目标目录；**不复用热更新密钥**。
+1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。Ubuntu 和 Alpine 的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，添加匹配的目标配方；不存在匹配配方的环境不会被标为支持。
+2. 在模块仓库 **Actions → Publish GeoIP2 module → Run workflow** 选择默认分支，只填一个新 tag，例如 `v3.4.0`。Actions 在各目标的临时容器内编译，打包后用实际运行时测试安装、查询和卸载。无需预先上传文件或创建 prerelease。
+3. 全部目标通过后审核签名任务。Actions 上传 `.so`、安装／卸载脚本及签名清单，再发布正式版。已登记的模块无需改主仓库；新模块先完成下方登记。
+
+**本地构建**：在独立模块仓库执行下列命令。脚本源码在 `modules/geoip2/`，要提交；`.work/builds/` 是编译中间目录，`.work/bundle/` 是唯一候选包，两者都不提交。命令不签名、不上传。
 
 ```sh
-umask 077
-KEY_DIR="$HOME/nxpanel-module-release-1"
-go run ./cmd/nxpanel-update-package -keygen "$KEY_DIR" -key-id module-release-1
+bash prepare-release.sh /path/to/nxpanel owner/repo v3.4.0
 ```
 
-1. 在 NxPanel 主仓库创建 GitHub Actions 环境 `module-signing`，仅允许 `main` 使用并设置审核人。
-2. 在 NxPanel 主仓库配置 Actions 变量 `NXPANEL_MODULE_TRUST_KEYS`，填 `trust.pub` 的内容。官方 Agent 和镜像构建会嵌入该公钥；自建 Agent 可在构建时传入同名变量。
-3. 在 `module-signing` 环境配置两个 Secret：`NXPANEL_MODULE_SIGNING_KEYS` 填 `signing.key` 的内容，`NXPANEL_MODULE_CATALOG_TOKEN` 填仅有主仓库 Contents 和 Pull requests 写权限的令牌。私钥不要提交到 Git，也不要放到产物仓库或镜像。
+### 首次配置
 
-### 2. 打包并上传独立仓库产物
+**每个仓库只填一项公钥变量和一项私钥 Secret。** 填文件里的完整一行 `key-id:BASE64`，不填文件名或路径。公钥文件可留在本机，私钥不入 Git。索引、各模块和面板热更新使用不同密钥；已有的热更新变量不用改。
 
-1. 在独立仓库的 `module-definitions.json` 填实际的 `release.repository` 和 `release.tag`。
-2. 为每个目标生成匹配的 `.so` 和 `target.json`，放入 `module-builds/geoip2/<目标名>/`。宿主机可用 [`scripts/build-host-geoip2.sh`](../../scripts/build-host-geoip2.sh)，Alpine 容器用独立仓库的 `modules/geoip2/build-alpine.sh`。具体构建命令见独立仓库的 `modules/geoip2/README.md`。
-3. 在独立仓库根目录执行 `sh prepare-release.sh /path/to/nxpanel`。它会打包安装、卸载脚本，并打印 `candidate.json` 的 SHA-256，无需私钥。
-4. 将 `module-release/` 中的 `candidate.json`、`.sh` 和 `.so` 上传至对应的公开 GitHub Release。每次发布使用新 tag，不覆盖旧资产。
+#### NxPanel 主仓库：只配一次
 
-### 3. 验证并签发目录
+在可信的 NxPanel 源码根目录生成索引密钥：
 
-1. 为每个目标准备含**同一 Nginx/OpenResty 二进制**、运行依赖、`/bin/sh` 和 `wget` 的验证镜像。Alpine 可从目标面板镜像派生并安装 `libmaxminddb`；验证镜像不用预装模块。按镜像摘要引用，不用 `latest`。
-2. 在 NxPanel `main` 运行 **Publish Nginx modules**，填写 `repository`、`tag`、`candidate_sha256` 和 `runtime_images`。最后一项示例：
+```sh
+go run ./cmd/nxpanel-update-package -keygen "$HOME/nxpanel-module-index-key" -key-id module-index-1
+```
 
-   ```json
-   [{"arch":"amd64","binary":"/usr/sbin/nginx","image":"ghcr.io/your-org/nginx-module-verifier@sha256:<镜像摘要>"}]
-   ```
+| 配置位置 | 名称 | 填什么、有什么用 |
+| --- | --- | --- |
+| Actions 仓库变量 | `NXPANEL_MODULE_TRUST_KEYS` | 索引 `trust.pub` 的内容。校验索引签名，新构建的 Agent 也会嵌入此公钥。 |
+| `module-signing` 环境 Secret | `NXPANEL_MODULE_SIGNING_KEYS` | 索引 `signing.key` 的内容。给整个模块列表签名。 |
 
-3. 验证和签名通过后，审核并合并工作流创建的 PR。目录合入 `main` 后，面板才会读到新内容。新目录会替换旧目录，须带上仍需支持的目标，并在 30 天内续发。
+签名环境 `module-signing` 只允许 `main`，并要求审批。回写 PR 使用 Actions 自带的临时 `GITHUB_TOKEN`，不用创建个人令牌。先把 [签名工作流](../../.github/workflows/nginx-modules.yml) 和初始空索引合入 `main`，再将 **Nginx module index** 设为 `main` 的必过检查，要求合并前分支与 `main` 保持最新，并在签名回写后重新审核最新提交。
+
+#### 模块仓库：每个模块配一次
+
+在可信的 NxPanel 源码根目录生成模块密钥，以 GeoIP2 为例：
+
+```sh
+go run ./cmd/nxpanel-update-package -keygen "$HOME/nxpanel-geoip2-release-key" -key-id geoip2-1
+cat "$HOME/nxpanel-geoip2-release-key/trust.pub"
+```
+
+| 配置位置 | 名称 | 填什么、有什么用 |
+| --- | --- | --- |
+| Actions 仓库变量 | `NXPANEL_MODULE_RELEASE_TRUST_KEYS` | 模块 `trust.pub` 的内容。检查签名密钥是否匹配；同一行也填到主仓库该模块条目的 `keys`。 |
+| `module-release-signing` 环境 Secret | `NXPANEL_MODULE_RELEASE_SIGNING_KEYS` | 模块 `signing.key` 的内容。给模块 Release 签名。 |
+
+签名环境 `module-release-signing` 只允许默认分支，并要求审批。用维护者提供的完整模板（工作流和 `.github/nxpanel-tools.sha`）；工具版本已固定，**不用在 Actions 填 SHA**。
+
+<details>
+<summary>维护发布模板或从旧版切换</summary>
+
+开发模板未附工具版本时，发布会在构建前停止。兼容工具合入 NxPanel `main` 后，模板维护者将已审核、已发布的完整 40 位提交 SHA 作为单独一行写入 `.github/nxpanel-tools.sha`，随 GeoIP2 和通用模板一同交付。两个模板使用同一个提交；构建、验证和签名都读取此固定版本，不用分支名、标签或占位值。
+
+在测试仓库确认下面的签名回写和 PR 检查正常后，旧部署可删除主仓库的 `NXPANEL_MODULE_CATALOG_TOKEN` Secret、撤销仅为此用途创建的令牌，并删除模块仓库的 `NXPANEL_TOOLS_REF` 变量。现有密钥和已安装模块不需要迁移。
+
+</details>
+
+### 登记新模块或修改登记信息
+
+1. **开一个 PR。** 在 NxPanel 主仓库从最新 `main` 建分支，只改 [`catalog/nginx-modules/modules.json`](../../catalog/nginx-modules/modules.json)，填 `id`、`name`、`description`、`repository`（`owner/repo`）、`symbol` 和 `keys`（经可信渠道取得的模块公钥）。向 `main` 开非草稿 PR，不填 Release tag，不手写签名。外部投稿由维护者在主仓库开分支，签名流程不向 fork 回写。
+2. **按 PR 编号签名。** 主仓库 **Actions → Sign Nginx module index → Run workflow** 选择 `main`，只填 `pr_number`（例如 `123`）。审批人核对准备任务记录的提交、仓库地址和公钥，再批准签名。Actions 将 `modules.sig.json` 提交到原 PR，不另开 PR。
+3. **运行检查并合并原 PR。** 回到 PR，有仓库写权限的维护者在合并区点击 **Approve workflows to run**。这是批准运行回写后的检查，不是再次签名。等最新提交通过 **Nginx module index** 和其他必过检查后再审核合并。如果审批期间 PR 或 `main` 有更新，签名会停止；更新分支后按原 PR 编号重新签名。
+
+已登记的模块发新版不需要操作主仓库。更换模块密钥时，可以在 `keys` 用逗号分隔新旧公钥；删除旧公钥会撤销相应 Release 和卸载凭据的信任，非紧急情况先提醒用户卸载。
+
+<details>
+<summary>离线签发</summary>
+
+在无私钥的机器生成候选包，用同一命令加 `verify` 验证本机架构；有多个架构时，用同一份完整 `.work/bundle/` 在各架构上验证。把已验证的包和已审核的 `candidate.json` 摘要移交离线机，离线机不运行候选脚本。
+
+```sh
+(
+  set +x
+  set -eu
+  umask 077
+  BUNDLE=/path/to/verified/bundle
+  MODULE_KEYS="$HOME/nxpanel-geoip2-release-key"
+  printf '%s  %s\n' "$CANDIDATE_SHA256" "$BUNDLE/candidate.json" | sha256sum -c
+  NXPANEL_MODULE_RELEASE_TRUST_KEYS="$(cat "$MODULE_KEYS/trust.pub")" \
+  NXPANEL_MODULE_RELEASE_SIGNING_KEYS="$(cat "$MODULE_KEYS/signing.key")" \
+    go run ./cmd/nxpanel-module-catalog -candidate -input "$BUNDLE" -output "$BUNDLE"
+)
+```
+
+在可信 NxPanel 源码根目录运行上例，或用预编译的 `nxpanel-module-catalog` 代替 `go run`。只带回清单、签名和匹配的 `.so`、`.sh`，上传到新 tag 的草稿 Release，再转正式版。若也离线签索引，分别向签名进程提供 `NXPANEL_MODULE_TRUST_KEYS`、`NXPANEL_MODULE_SIGNING_KEYS` 和（如有）`NXPANEL_UPDATE_TRUST_KEYS`，用 `-sign-index -input modules.json -output /path/to/signed-index -sequence "$SEQUENCE"`；序号须大于当前 `main`。只把签好的两份索引文件带回开 PR，私钥留在离线机。
+
+</details>
