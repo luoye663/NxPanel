@@ -63,5 +63,5 @@ mkdir -p "$work/builds/fixture-http/host"
 mv "$work/builds/geoip2/host/ngx_http_nxpanel_fixture_module.so" "$work/builds/fixture-http/host/"
 cp "$work/builds/geoip2/host/target.json" "$work/builds/fixture-http/host/"
 "$go_bin" run ./cmd/nxpanel-module-catalog -test-fixture -metadata scripts/nginx-module-smoke/catalog.json \
-    -sequence "$(date +%s%N)" -input "$work/builds" -output "$work/fixture"
+    -sequence "$(date +%s)" -input "$work/builds" -output "$work/fixture"
 printf 'Local feed: %s/fixture/feed\nPublic key: %s/fixture/trust.pub\n' "$work" "$work"
