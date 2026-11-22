@@ -39,6 +39,22 @@
 2. **再看日志。** 宿主机执行 `journalctl -u nxpanel-updater -u nxpanel-api -u nxpanel-agent`；Docker 执行 `docker logs nxpanel`（容器改过名时使用实际名称）。
 3. **自动恢复失败时再人工救援。** 此时面板保持停止，不会反复用不兼容的版本打开数据库。先停止更新器及两个面板服务，保留安装目录的 `update-control`、`versions` 和完整数据卷，再使用经过验证且与数据库匹配的发行版和快照恢复。不要清空事务文件后直接启动未知版本。
 
+### 宿主机下载报 `/tmp/nxpanel-update-*` 只读
+
+这个错误发生在暂存之前，尚未切换版本，不需要回滚。旧版 API 的 systemd 沙箱将 `/tmp` 设为只读，应在服务已有的可写数据目录下配置私有临时目录，不要关闭 `ProtectSystem`。
+
+1. 默认安装执行 `sudo -u openrest -g openrest -- install -d -m 0700 /opt/nxpanel/tmp`。如果安装时使用了 `--data-dir`，将这里和下方的 `/opt/nxpanel/tmp` 替换为实际数据目录下的 `tmp`。可用 `systemctl show -p ReadWritePaths nxpanel-api` 确认服务的可写路径。
+2. 执行 `sudo systemctl edit nxpanel-api`，添加以下覆盖配置：
+
+   ```ini
+   [Service]
+   Environment="TMPDIR=/opt/nxpanel/tmp"
+   ```
+
+3. 执行 `sudo systemctl restart nxpanel-api`，重新检查并下载更新。只会短暂中断面板，不需要重启站点服务。
+
+修复后的完整安装包会创建此目录并配置服务；网页更新不会替换 systemd unit。若以后迁移数据目录，也要更新或删除手动添加的 `TMPDIR` 覆盖配置。
+
 ## 发布签名（维护者）
 
 1. 在受控机器上生成 Ed25519 密钥：

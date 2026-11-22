@@ -11,6 +11,7 @@
 #      sudo useradd -r -s /sbin/nologin openrest
 #      sudo mkdir -p /opt/nxpanel/{data,nginx,logs}
 #      sudo chown -R openrest:openrest /opt/nxpanel
+#      sudo -u openrest -g openrest -- install -d -m 0700 /opt/nxpanel/tmp
 #   2. 将二进制文件放到 /usr/local/bin/nxpanel-api
 #   3. 将配置文件放到 /etc/nxpanel/config.yaml
 
@@ -28,6 +29,7 @@ Group=openrest
 # 二进制文件路径
 ExecStart=/usr/local/nxpanel/current/nxpanel-api -config /usr/local/nxpanel/configs/config.yaml
 Environment=NXPANEL_UPDATE_HOME=/usr/local/nxpanel
+Environment="TMPDIR=/opt/nxpanel/tmp"
 
 # 优雅关闭
 KillSignal=SIGTERM

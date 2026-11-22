@@ -78,6 +78,7 @@ FAILED_COUNT=0
 INSECURE_RELAX_SHA1=false
 TOTAL_COUNT=0
 SOURCE_DIR=""
+DATA_DIR="/opt/nxpanel"
 LOCAL_TARBALL=""
 TEMP_DIR=""
 SOCKS5_PROXY=""
@@ -161,6 +162,7 @@ show_help() {
 测试模式:
   (默认)               --nginx-only 模式：测试 scripts/nginx-install/install.sh
   --full               --full 模式：测试完整 install.sh 流程（需要 systemd）
+  --data-dir DIR       --full 模式使用的数据目录（默认: /opt/nxpanel）
 
 Web 服务器:
   (默认)               测试 Nginx 安装
@@ -212,6 +214,10 @@ parse_args() {
                 ;;
             --source-dir)
                 SOURCE_DIR="$2"
+                shift 2
+                ;;
+            --data-dir)
+                DATA_DIR="$2"
                 shift 2
                 ;;
             --distros)
@@ -734,6 +740,7 @@ test_full() {
         bash /tmp/nxpanel/install.sh \
             --source-dir /tmp/nxpanel \
             --non-interactive \
+            --data-dir "$DATA_DIR" \
             $install_flag \
             2>&1 | log_pipe "$log_file" || install_exit=$?
 
@@ -772,13 +779,13 @@ else
     echo 'ERROR: Web 目录缺失'
 fi
 
-if [ -d /opt/nxpanel/data ]; then
+if [ -d \"\$1/data\" ]; then
     echo '数据目录存在'
 else
     echo 'ERROR: 数据目录缺失'
 fi
 
-if [ -d /opt/nxpanel/nginx/conf.d ]; then
+if [ -d \"\$1/nginx/conf.d\" ]; then
     echo 'Nginx conf.d 目录存在'
 else
     echo 'ERROR: Nginx conf.d 目录缺失'
@@ -815,11 +822,29 @@ else
     echo 'ERROR: 未找到 nginx/openresty'
 fi
 "
-    docker exec "$container_name" bash -c "$verify_cmd" 2>&1 | log_pipe "$log_file" || true
+    docker exec "$container_name" bash -c "$verify_cmd" bash "$DATA_DIR" 2>&1 | log_pipe "$log_file" || true
 
     if [ $install_exit -ne 0 ]; then
         kill_logs_pid
         echo "RESULT: FAIL (install.sh 退出码: $install_exit)" >> "$log_file"
+        return 1
+    fi
+
+    if ! docker exec -i "$container_name" bash -s -- "$DATA_DIR/tmp" <<'BASH' 2>&1 | log_pipe "$log_file"; then
+set -euo pipefail
+temp_dir=$1
+pid=$(systemctl show -p MainPID nxpanel-api.service)
+pid=${pid#MainPID=}
+test "$pid" -gt 0
+test "$(stat -c '%a:%U:%G' -- "$temp_dir")" = '700:openrest:openrest'
+tr '\0' '\n' < "/proc/$pid/environ" | grep -Fx "TMPDIR=$temp_dir"
+nsenter -t "$pid" -m -- runuser -u openrest -g openrest -- bash -ec '
+    probe=$(mktemp "$1/nxpanel-test.XXXXXX")
+    rm -- "$probe"
+' bash "$temp_dir"
+BASH
+        kill_logs_pid
+        echo "RESULT: FAIL (API 临时目录不可用)" >> "$log_file"
         return 1
     fi
 
