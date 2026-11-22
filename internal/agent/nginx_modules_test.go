@@ -15,6 +15,27 @@ import (
 	"github.com/luoye663/nxpanel/internal/nginxpatch"
 )
 
+func TestModuleOSPointReleases(t *testing.T) {
+	for _, scenario := range []struct {
+		id        string
+		versionID string
+		pretty    string
+		want      string
+	}{
+		{"debian", "13", "Debian GNU/Linux 13 (trixie)", "debian:13"},
+		{"debian", "13.1", "Debian GNU/Linux 13.1 (trixie)", "debian:13"},
+		{"ubuntu", "24.04", "Ubuntu 24.04.2 LTS", "ubuntu:24.04"},
+		{"rocky", "9.8", "Rocky Linux 9.8", "rocky:9"},
+	} {
+		t.Run(scenario.id+":"+scenario.versionID, func(t *testing.T) {
+			release := fmt.Sprintf("ID=%s\nVERSION_ID=%q\nPRETTY_NAME=%q\n", scenario.id, scenario.versionID, scenario.pretty)
+			if got := moduleOS(release); got != scenario.want {
+				t.Fatalf("moduleOS() = %q; want %q", got, scenario.want)
+			}
+		})
+	}
+}
+
 func TestModuleManagedConfig(t *testing.T) {
 	source := moduleSource{}
 	digest := strings.Repeat("a", 64)

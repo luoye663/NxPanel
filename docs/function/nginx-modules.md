@@ -73,13 +73,17 @@
 
 ### 二进制联调（Linux VM）
 
-1. 在 NxPanel 源码根目录生成测试源。此命令只构建模块和签名测试目录，不启动任何服务；安装模块前，另行启动测试 VM 上面板管理的 Nginx/OpenResty。以下以 OpenResty 为例，路径替换成实际二进制。其他运行时版本可能需要设置 `MODULE_RUNTIME_SHA256`。
+1. 在 NxPanel 源码根目录调用模块仓库构建本机候选包，再用 NxPanel 工具生成本地签名测试源。命令不启动面板服务；安装模块前，另行启动测试 VM 上面板管理的 Nginx/OpenResty。以下以 OpenResty 为例，路径替换成实际二进制；没有匹配的发布配方时，设置 `MODULE_RUNTIME_SHA256` 为已核验的运行时源码归档摘要。
 
    ```sh
-   make module-fixture MODULE_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx
+   EXAMPLE=${NXPANEL_MODULE_EXAMPLE:-$PWD/local-module-repos/nginx-module-assets-example}
+   MODULE_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \
+     bash "$EXAMPLE/prepare-release.sh" "$PWD" luoye663/NxPanel-NginxModel-GeoIP2 v3.4.1 local-host
+   go run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence "$(date +%s)" \
+     -input "$EXAMPLE/.work/local-host/bundle" -output tmp/my-module-fixture
    ```
 
-   如果已有模块仓库生成的 `.work/bundle/`，可改用 `go run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence "$(date +%s)" -input /path/to/.work/bundle -output tmp/my-module-fixture`，无需重新编译 `.so`。
+   如果已有匹配本机的候选包，跳过构建，将 `-input` 指向现有候选包目录即可。
 
 2. 在一个终端启动本地文件服务器。将 `FIXTURE` 改成上一步生成的目录（里面有 `feed/` 和 `trust.pub`）。
 
@@ -101,11 +105,11 @@
 
 ## 官方发布
 
-**模块仓库发版本，NxPanel 主仓库只登记模块及其公钥。** GeoIP2 的构建配置、源码脚本和发布工作流都在独立模块仓库，不复制进主仓库。
+**模块仓库发版本，NxPanel 主仓库提供通用工具并登记模块及其公钥。** GeoIP2 的宿主机和 Alpine 构建、安装／卸载脚本、目标矩阵与发布工作流都在独立模块仓库。编译不依赖 NxPanel checkout；候选包打包、验收与签名仍使用固定版本的 NxPanel 工具。
 
 ### 发布新版本
 
-1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。Ubuntu 和 Alpine 的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，添加匹配的目标配方；不存在匹配配方的环境不会被标为支持。
+1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。所有目标的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，在模块仓库维护目标配方与构建脚本；不存在匹配配方的环境不会被标为支持。
 2. 在模块仓库 **Actions → Publish GeoIP2 module → Run workflow** 选择默认分支，只填一个新 tag，例如 `v3.4.0`。Actions 在各目标的临时容器内编译，打包后用实际运行时测试安装、查询和卸载。无需预先上传文件或创建 prerelease。
 3. 全部目标通过后审核签名任务。Actions 上传 `.so`、安装／卸载脚本及签名清单，再发布正式版。已登记的模块无需改主仓库；新模块先完成下方登记。
 
@@ -153,7 +157,7 @@ cat "$HOME/nxpanel-geoip2-release-key/trust.pub"
 <details>
 <summary>维护发布模板或从旧版切换</summary>
 
-开发模板未附工具版本时，发布会在构建前停止。兼容工具合入 NxPanel `main` 后，模板维护者将已审核、已发布的完整 40 位提交 SHA 作为单独一行写入 `.github/nxpanel-tools.sha`，随 GeoIP2 和通用模板一同交付。两个模板使用同一个提交；构建、验证和签名都读取此固定版本，不用分支名、标签或占位值。
+开发模板未附工具版本时，发布会在构建前停止。兼容工具合入 NxPanel `main` 后，模板维护者将已审核、已发布的完整 40 位提交 SHA 作为单独一行写入 `.github/nxpanel-tools.sha`，随 GeoIP2 和通用模板一同交付。打包、验收和签名读取固定版本，不使用分支名、标签或占位值。仅修改 GeoIP2 构建或目标配方不需要更新此 SHA。
 
 在测试仓库确认下面的签名回写和 PR 检查正常后，旧部署可删除主仓库的 `NXPANEL_MODULE_CATALOG_TOKEN` Secret、撤销仅为此用途创建的令牌，并删除模块仓库的 `NXPANEL_TOOLS_REF` 变量。现有密钥和已安装模块不需要迁移。
 
