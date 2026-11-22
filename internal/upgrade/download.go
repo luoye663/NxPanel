@@ -82,7 +82,9 @@ func (s *Service) fetchCandidate(ctx context.Context, channel string) (*githubRe
 }
 
 func eligible(release githubRelease, channel string) bool {
-	return !release.Draft && update.ValidVersion(release.TagName) && release.Prerelease == (update.Channel(release.TagName) == "preview") && (channel == "preview" || !release.Prerelease)
+	releaseChannel := update.Channel(release.TagName)
+	return !release.Draft && update.ValidVersion(release.TagName) &&
+		releaseChannel == channel && release.Prerelease == (releaseChannel == "preview")
 }
 
 func validRepo(repo string) bool {

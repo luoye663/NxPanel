@@ -117,11 +117,15 @@ export function VersionUpdate() {
   const busy = check.isPending || channel.isPending || prepare.isPending || cancel.isPending || Boolean(reconnect) || applying || downloading
   const unconfirmed = Boolean(unconfirmedTask && task?.id === unconfirmedTask && (applying || prepared))
   const activating = Boolean(reconnect && !reconnect.reopen)
+  const checked = Boolean(status.checked_at && new Date(status.checked_at).getUTCFullYear() > 1)
+  const channelVersion = status.latest_version || (
+    status.error ? '检查失败' : !checked ? '尚未检查' : status.channel === 'preview' ? '暂无预览版' : '暂无稳定版'
+  )
 
   return (
     <>
       <Badge component="button" type="button" className="versionBadge" aria-haspopup="dialog" onClick={() => {
-        if (!busy && !prepared && (!status.checked_at || new Date(status.checked_at).getUTCFullYear() === 1)) {
+        if (!busy && !prepared && !checked) {
           check.mutate()
         }
         dialogs.open('release')
@@ -149,7 +153,7 @@ export function VersionUpdate() {
               </Paper>
               <Paper withBorder bg="var(--mantine-color-default-hover)" px="sm" py="xs">
                 <Text size="xs" c="dimmed">通道版本</Text>
-                <Text fw={700} size="md" c={status.has_upgrade ? 'blue' : undefined} style={{ overflowWrap: 'anywhere' }}>{status.latest_version || '尚未检查'}</Text>
+                <Text fw={700} size="md" c={status.has_upgrade ? 'blue' : undefined} style={{ overflowWrap: 'anywhere' }}>{channelVersion}</Text>
               </Paper>
             </SimpleGrid>
             <UpgradeProgress status={status} activating={activating} waiting={(activating || applying) && query.isError} unconfirmed={unconfirmed} />

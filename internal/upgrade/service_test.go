@@ -229,20 +229,58 @@ func TestGithubReleaseParsing(t *testing.T) {
 func TestPreviewFeedUsesFullSemVer(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[
-			{"tag_name":"v1.9.0"},
 			{"tag_name":"v2.0.0-rc.1","prerelease":true},
 			{"tag_name":"v2.0.0-rc.11","prerelease":true},
 			{"tag_name":"v2.0.0-rc.3","prerelease":true},
-			{"tag_name":"v2.0.0","draft":true}
+			{"tag_name":"v2.0.0"},
+			{"tag_name":"v3.0.0-rc.1","prerelease":true,"draft":true},
+			{"tag_name":"v3.0.0-rc.2"},
+			{"tag_name":"v3.0.0","prerelease":true}
 		]`))
 	}))
 	defer fixture.Close()
 	service := NewService(app.UpgradeConfig{Enabled: true})
 	service.feed = fixture.URL + "/index.json"
-	for channel, want := range map[string]string{"stable": "v1.9.0", "preview": "v2.0.0-rc.11"} {
+	for channel, want := range map[string]string{"stable": "v2.0.0", "preview": "v2.0.0-rc.11"} {
 		release, err := service.fetchCandidate(context.Background(), channel)
 		if err != nil || release == nil || release.TagName != want {
 			t.Errorf("%s: got %v, %v; want %s", channel, release, err, want)
 		}
+	}
+}
+
+func TestCheckNow_PreviewDoesNotFallBackToStable(t *testing.T) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/index.json":
+			_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0","body":"stable notes"},{"tag_name":"v2.0.0-rc.1","prerelease":true,"body":"preview notes"}]`))
+		case "/stable.json":
+			_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0","body":"stable notes"}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fixture.Close()
+	service := newTestService(t, fixture, "v2.0.0")
+	service.feed = fixture.URL + "/index.json"
+
+	if status := service.CheckNow(context.Background()); status.LatestVersion != "v2.0.0" || status.Body != "stable notes" {
+		t.Fatalf("expected stable release and notes, got %+v", status)
+	}
+	service.SetChannel("preview")
+	if status := service.CheckNow(context.Background()); status.Channel != "preview" || status.LatestVersion != "v2.0.0-rc.1" || status.Body != "preview notes" || status.HasUpgrade || status.Available {
+		t.Fatalf("expected older preview release without an upgrade, got %+v", status)
+	}
+
+	service.feed = fixture.URL + "/stable.json"
+	service.check(context.Background(), false)
+	status := service.GetStatus()
+	if status.Channel != "preview" || status.CurrentVersion != "v2.0.0" || status.CheckedAt == "" || status.Error != "" ||
+		status.LatestVersion != "" || status.Body != "" || status.ReleaseURL != "" || status.PublishedAt != "" || status.HasUpgrade || status.Available {
+		t.Fatalf("expected successful check without a preview release, got %+v", status)
+	}
+	service.SetChannel("stable")
+	if status := service.GetStatus(); status.LatestVersion != "v2.0.0" || status.Body != "stable notes" {
+		t.Fatalf("expected unchanged stable channel, got %+v", status)
 	}
 }
