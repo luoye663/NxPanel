@@ -738,6 +738,7 @@ create_directories() {
 	mkdir -p "$DATA_DIR"/{data/tls,nginx,logs}
     mkdir -p /run/nxpanel
     chown -R "$USER:$USER" "$DATA_DIR"
+    runuser -u "$USER" -g "$USER" -- install -d -m 0700 -- "$DATA_DIR/tmp"
     log_info "目录创建成功"
 }
 
@@ -1036,6 +1037,7 @@ install_services() {
     sed \
         -e "s|/usr/local/nxpanel|$INSTALL_ROOT|g" \
         -e "s|ReadWritePaths=.*|ReadWritePaths=$DATA_DIR /run/nxpanel|" \
+        -e "s|^Environment=\"TMPDIR=.*|Environment=\"TMPDIR=$DATA_DIR/tmp\"|" \
         "$api_service" > /etc/systemd/system/nxpanel-api.service
 
     sed -e "s|/usr/local/nxpanel|$INSTALL_ROOT|g" "$updater_service" > /etc/systemd/system/nxpanel-updater.service
