@@ -16,8 +16,6 @@ tmp
 test-results
 docs/dev-spec
 docs/doc-change
-/docs/function/*
-!/docs/function/nginx-modules.md
 
 # ------------------------------
 # Editor / AI tools

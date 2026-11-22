@@ -37,6 +37,7 @@
 | 在线目录不可用 | 点击**刷新在线目录**。检查 Agent 能否访问 GitHub 主仓库、索引和签名是否一同发布。缓存只供查看，不能用于新安装。 |
 | 找得到模块，但所选版本不可安装 | 检查该正式 Release 的签名是否可信、是否提供与本机系统、架构、Nginx/OpenResty 版本和二进制 SHA-256 完全匹配的构建。不会自动回退到其他版本。 |
 | Nginx 已运行，但模块页提示无法核验实例或挂载路径 | 在「状态管理」确认面板实例和 worker。用 systemd 部署时保留 `PrivateTmp`、`ProtectSystem` 等安全加固，检查 unit 的主进程、启动配置，以及 Agent 和 Nginx 是否看到同一份主配置和模块目录。 |
+| 模块加载目录与当前 Agent 的模块源不匹配 | 本地测试源使用 `/var/lib/nxpanel-nginx-modules-test/active/*.conf`，正式源使用 `/var/lib/nxpanel-nginx-modules/active/*.conf`。切换前用安装时的 Agent 版本和模块源卸载已安装模块（测试源需保留原公钥），不要直接改写 `include` 路径或移动模块文件。 |
 | 提示仍有依赖或缺少卸载凭据 | 先处理仍引用模块的规则或配置。凭据缺失、损坏或其签名公钥已撤销时，面板不会执行卸载。 |
 | 提示「需人工检查」 | 查看操作记录和 Nginx 日志。备份当前配置、`/var/lib/nxpanel-nginx-modules/script-task.json` 和记录中的工作目录。对比 `*.before`，确认配置和运行状态恢复后再归档记录，不要强行重试。 |
 
@@ -72,13 +73,17 @@
 
 ### 二进制联调（Linux VM）
 
-1. 在 NxPanel 源码根目录生成测试源。此命令只构建模块和签名测试目录，不启动任何服务；安装模块前，另行启动测试 VM 上面板管理的 Nginx/OpenResty。以下以 OpenResty 为例，路径替换成实际二进制。其他运行时版本可能需要设置 `MODULE_RUNTIME_SHA256`。
+1. 在 NxPanel 源码根目录调用模块仓库构建本机候选包，再用 NxPanel 工具生成本地签名测试源。命令不启动面板服务；安装模块前，另行启动测试 VM 上面板管理的 Nginx/OpenResty。以下以 OpenResty 为例，路径替换成实际二进制；没有匹配的发布配方时，设置 `MODULE_RUNTIME_SHA256` 为已核验的运行时源码归档摘要。
 
    ```sh
-   make module-fixture MODULE_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx
+   EXAMPLE=${NXPANEL_MODULE_EXAMPLE:-$PWD/local-module-repos/nginx-module-assets-example}
+   MODULE_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \
+     bash "$EXAMPLE/prepare-release.sh" "$PWD" luoye663/NxPanel-NginxModel-GeoIP2 v3.4.1 local-host
+   go run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence "$(date +%s)" \
+     -input "$EXAMPLE/.work/local-host/bundle" -output tmp/my-module-fixture
    ```
 
-   如果已有模块仓库生成的 `.work/bundle/`，可改用 `go run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence "$(date +%s)" -input /path/to/.work/bundle -output tmp/my-module-fixture`，无需重新编译 `.so`。
+   如果已有匹配本机的候选包，跳过构建，将 `-input` 指向现有候选包目录即可。
 
 2. 在一个终端启动本地文件服务器。将 `FIXTURE` 改成上一步生成的目录（里面有 `feed/` 和 `trust.pub`）。
 
@@ -104,7 +109,7 @@
 
 ### 发布新版本
 
-1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。Ubuntu 和 Alpine 的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，添加匹配的目标配方；不存在匹配配方的环境不会被标为支持。
+1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。所有目标的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，在模块仓库维护目标配方与构建脚本；不存在匹配配方的环境不会被标为支持。
 2. 在模块仓库 **Actions → Publish GeoIP2 module → Run workflow** 选择默认分支，只填一个新 tag，例如 `v3.4.0`。Actions 在各目标的临时容器内编译，打包后用实际运行时测试安装、查询和卸载。无需预先上传文件或创建 prerelease。
 3. 全部目标通过后审核签名任务。Actions 上传 `.so`、安装／卸载脚本及签名清单，再发布正式版。新模块可以先发布，但完成下方登记后，面板才会列出它。
 

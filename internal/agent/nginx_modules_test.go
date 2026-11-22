@@ -15,6 +15,27 @@ import (
 	"github.com/luoye663/nxpanel/internal/nginxpatch"
 )
 
+func TestModuleOSPointReleases(t *testing.T) {
+	for _, scenario := range []struct {
+		id        string
+		versionID string
+		pretty    string
+		want      string
+	}{
+		{"debian", "13", "Debian GNU/Linux 13 (trixie)", "debian:13"},
+		{"debian", "13.1", "Debian GNU/Linux 13.1 (trixie)", "debian:13"},
+		{"ubuntu", "24.04", "Ubuntu 24.04.2 LTS", "ubuntu:24.04"},
+		{"rocky", "9.8", "Rocky Linux 9.8", "rocky:9"},
+	} {
+		t.Run(scenario.id+":"+scenario.versionID, func(t *testing.T) {
+			release := fmt.Sprintf("ID=%s\nVERSION_ID=%q\nPRETTY_NAME=%q\n", scenario.id, scenario.versionID, scenario.pretty)
+			if got := moduleOS(release); got != scenario.want {
+				t.Fatalf("moduleOS() = %q; want %q", got, scenario.want)
+			}
+		})
+	}
+}
+
 func TestModuleManagedConfig(t *testing.T) {
 	source := moduleSource{}
 	digest := strings.Repeat("a", 64)
@@ -25,6 +46,30 @@ func TestModuleManagedConfig(t *testing.T) {
 	}
 	if _, ok := source.parseFragment(nginxmodule.GeoIP2, []byte(strings.Replace(string(fragment), path, "/tmp/geoip2.so", 1))); ok {
 		t.Fatal("manual module accepted as an owned fragment")
+	}
+}
+
+func TestModuleManagedConfigRejectsMismatchedLoadEntry(t *testing.T) {
+	official := moduleSource{}
+	testFeed := moduleSource{test: true}
+	for _, scenario := range []struct {
+		name   string
+		source moduleSource
+		conf   string
+		reason string
+	}{
+		{"test to official", official, testFeed.includeBlock(), "引用本地测试源的模块加载目录，当前 Agent 使用正式源"},
+		{"official to test", testFeed, official.includeBlock(), "引用正式源的模块加载目录，当前 Agent 使用本地测试源"},
+		{"modified include", official, moduleIncludeMark + "include /custom/*.conf;\n", "模块加载入口已被修改"},
+		{"moved include", official, "# Nginx config\n" + official.includeBlock(), "模块加载入口已被修改"},
+		{"duplicate marker", official, testFeed.includeBlock() + official.includeBlock(), "模块加载入口已被修改"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			managed, err := scenario.source.managedModules(moduleRuntime{conf: []byte(scenario.conf + "events {}\n")})
+			if managed != nil || err == nil || !strings.Contains(err.Error(), scenario.reason) {
+				t.Fatalf("managedModules() = %v, %v; want rejection containing %q", managed, err, scenario.reason)
+			}
+		})
 	}
 }
 
