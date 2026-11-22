@@ -9,14 +9,15 @@ go_bin=${GO:-go}
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 
-jq -e 'type == "array" and length > 0 and length <= 128 and all(.[];
+jq -e --arg local_images "${NXPANEL_MODULE_SMOKE_LOCAL_IMAGES:-0}" 'type == "array" and length > 0 and length <= 128 and all(.[];
     keys == ["arch","binary","image"] and (.arch | IN("amd64", "arm64")) and
-    (.image | test("^(ghcr\\.io|docker\\.io)/([a-z0-9][a-z0-9_.-]*/)+[a-z0-9][a-z0-9_.-]*@sha256:[0-9a-f]{64}$")) and
+    (.image | test("^(ghcr\\.io|docker\\.io)/([a-z0-9][a-z0-9_.-]*/)+[a-z0-9][a-z0-9_.-]*@sha256:[0-9a-f]{64}$") or
+        ($local_images == "1" and test("^sha256:[0-9a-f]{64}$"))) and
     (.binary | test("^/([a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+$")))' <<< "$recipes" >/dev/null
-"$go_bin" run ./cmd/nxpanel-module-catalog -candidate -test-fixture -sequence 1 -input "$candidate" -output "$work/validated"
+"$go_bin" run ./cmd/nxpanel-module-catalog -check-candidate -input "$candidate"
 manifest=$work/catalog.json
-jq -er --arg arch "$arch_filter" '.catalog | @base64d | fromjson | .assets |= map(select($arch == "" or .target.arch == $arch))' \
-    "$work/validated/feed/nxpanel-nginx-modules.json" > "$manifest"
+jq -er --arg arch "$arch_filter" '.assets |= map(select($arch == "" or .target.arch == $arch))' \
+    "$candidate/candidate.json" > "$manifest"
 mmdb_commit=c454a21f31fd17f2843f16094e9afb3a14a42078
 mmdb_sha=fc12d6470b35b70bd3e4534dd433d3e262a6c73f7682f85c344e832d4190f02b
 if jq -e 'any(.modules[]; .id == "geoip2")' "$manifest" >/dev/null; then
@@ -29,7 +30,9 @@ fi
 
 declare -A verified
 while IFS=$'\t' read -r image arch binary; do
-    runner=(docker run --rm --network none --platform "linux/$arch" --user 0:0 --pids-limit 128 --memory 512m
+    pull=missing
+    if [[ "$image" == sha256:* ]]; then pull=never; fi
+    runner=(docker run --rm --pull "$pull" --network none --platform "linux/$arch" --user 0:0 --pids-limit 128 --memory 512m
         --security-opt no-new-privileges --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL
         --mount "type=bind,source=$smoke_dir/check-release-action.sh,target=/verify.sh,readonly"
         --entrypoint /bin/sh)
@@ -43,7 +46,7 @@ while IFS=$'\t' read -r image arch binary; do
     for match in "${matches[@]}"; do
         IFS=$'\t' read -r index id symbol asset install uninstall <<< "$match"
         timeout 90 "${runner[@]}" \
-            --mount "type=bind,source=$work/validated/feed,target=/candidate,readonly" \
+            --mount "type=bind,source=$candidate,target=/candidate,readonly" \
             --mount "type=bind,source=$work/test.mmdb,target=/test.mmdb,readonly" \
             "$image" /verify.sh "$binary" "$id" "$symbol" "$asset" "$install" "$uninstall"
         verified[$index]=1

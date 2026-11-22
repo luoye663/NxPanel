@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+runtime_only=false
+if [[ ${1:-} == --runtime-only ]]; then
+    runtime_only=true
+    shift
+fi
 runtime=$1
 package_version=$2
 runtime_sha=$3
@@ -45,7 +50,11 @@ download() {
 }
 
 if [[ "$os" == rocky:9 ]]; then
-    dnf -y --enablerepo=crb install gcc make findutils tar gzip patch curl jq libmaxminddb-devel openssl-devel pcre2-devel zlib-devel dnf-plugins-core
+    packages=(ca-certificates curl wget libmaxminddb dnf-plugins-core)
+    if ! "$runtime_only"; then
+        packages+=(gcc make findutils tar gzip patch jq libmaxminddb-devel openssl-devel pcre2-devel zlib-devel)
+    fi
+    dnf -y --enablerepo=crb install "${packages[@]}"
     if [[ "$runtime" == nginx ]]; then
         base='https://nginx.org/packages/centos/9/$basearch/'
         key=https://nginx.org/keys/nginx_signing.key
@@ -66,7 +75,11 @@ else
     printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
     chmod 755 /usr/sbin/policy-rc.d
     apt-get "${apt_options[@]}" update -q -o APT::Update::Error-Mode=any
-    apt-get "${apt_options[@]}" install -y --no-install-recommends build-essential ca-certificates curl gnupg jq libmaxminddb-dev libssl-dev libpcre2-dev zlib1g-dev
+    packages=(ca-certificates curl gnupg wget libmaxminddb0)
+    if ! "$runtime_only"; then
+        packages+=(build-essential jq libmaxminddb-dev libssl-dev libpcre2-dev zlib1g-dev)
+    fi
+    apt-get "${apt_options[@]}" install -y --no-install-recommends "${packages[@]}"
     if [[ "$runtime" == nginx ]]; then
         base="https://nginx.org/packages/$ID"
         key=https://nginx.org/keys/nginx_signing.key
@@ -93,6 +106,9 @@ digest=$(sha256sum "$binary" | cut -d ' ' -f 1)
 if [[ -n "$expected_binary" && "$digest" != "$expected_binary" ]]; then
     printf 'The official package binary does not match the test host (actual %s, expected %s).\n' "$digest" "$expected_binary" >&2
     exit 1
+fi
+if "$runtime_only"; then
+    exit 0
 fi
 
 version_output=$("$binary" -V 2>&1)

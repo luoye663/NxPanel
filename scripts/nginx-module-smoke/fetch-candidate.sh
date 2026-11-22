@@ -17,7 +17,7 @@ printf '%s  %s\n' "$digest" "$out/candidate.json" | sha256sum -c --status
 jq -er --arg repo "$repo" --arg tag "$tag" '
     def id: type == "string" and test("^[a-z][a-z0-9_-]{0,39}$");
     .modules as $modules | .assets as $assets |
-    select(($modules | type == "array" and length > 0 and length <= 32) and
+    select(($modules | type == "array" and length == 1) and
            ($assets | type == "array" and length > 0 and length <= 128)) |
     select(all($modules[]; .kind == "nginx_dynamic_so" and (.id | id) and .release == {repository: $repo, tag: $tag})) |
     select(all($modules[]; .id as $id | any($assets[]; .module == $id))) |
