@@ -37,6 +37,7 @@
 | 在线目录不可用 | 点击**刷新在线目录**。检查 Agent 能否访问 GitHub 主仓库、索引和签名是否一同发布。缓存只供查看，不能用于新安装。 |
 | 找得到模块，但所选版本不可安装 | 检查该正式 Release 的签名是否可信、是否提供与本机系统、架构、Nginx/OpenResty 版本和二进制 SHA-256 完全匹配的构建。不会自动回退到其他版本。 |
 | Nginx 已运行，但模块页提示无法核验实例或挂载路径 | 在「状态管理」确认面板实例和 worker。用 systemd 部署时保留 `PrivateTmp`、`ProtectSystem` 等安全加固，检查 unit 的主进程、启动配置，以及 Agent 和 Nginx 是否看到同一份主配置和模块目录。 |
+| 模块加载目录与当前 Agent 的模块源不匹配 | 本地测试源使用 `/var/lib/nxpanel-nginx-modules-test/active/*.conf`，正式源使用 `/var/lib/nxpanel-nginx-modules/active/*.conf`。切换前用安装时的 Agent 版本和模块源卸载已安装模块（测试源需保留原公钥），不要直接改写 `include` 路径或移动模块文件。 |
 | 提示仍有依赖或缺少卸载凭据 | 先处理仍引用模块的规则或配置。凭据缺失、损坏或其签名公钥已撤销时，面板不会执行卸载。 |
 | 提示「需人工检查」 | 查看操作记录和 Nginx 日志。备份当前配置、`/var/lib/nxpanel-nginx-modules/script-task.json` 和记录中的工作目录。对比 `*.before`，确认配置和运行状态恢复后再归档记录，不要强行重试。 |
 

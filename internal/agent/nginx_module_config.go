@@ -55,7 +55,16 @@ func (source moduleSource) parseFragment(id string, data []byte) (managedModule,
 func (source moduleSource) managedModules(instance moduleRuntime) (map[string]managedModule, error) {
 	result := make(map[string]managedModule)
 	if bytes.Contains(instance.conf, []byte(moduleIncludeMark)) {
-		if !bytes.HasPrefix(instance.conf, []byte(source.includeBlock())) || bytes.Count(instance.conf, []byte(moduleIncludeMark)) != 1 {
+		markerCount := bytes.Count(instance.conf, []byte(moduleIncludeMark))
+		if markerCount != 1 || !bytes.HasPrefix(instance.conf, []byte(source.includeBlock())) {
+			other := moduleSource{test: !source.test}
+			if markerCount == 1 && bytes.HasPrefix(instance.conf, []byte(other.includeBlock())) {
+				configured, current := "本地测试源", "正式源"
+				if source.test {
+					configured, current = current, configured
+				}
+				return nil, fmt.Errorf("Nginx 主配置引用%s的模块加载目录，当前 Agent 使用%s；请先在原环境卸载模块再切换，未执行模块操作", configured, current)
+			}
 			return nil, fmt.Errorf("模块加载入口已被修改，未执行模块操作")
 		}
 		if err := modulePrivateDir(source.activeDir(), false); err != nil && !os.IsNotExist(err) {

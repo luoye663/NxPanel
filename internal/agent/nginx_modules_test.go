@@ -28,6 +28,30 @@ func TestModuleManagedConfig(t *testing.T) {
 	}
 }
 
+func TestModuleManagedConfigRejectsMismatchedLoadEntry(t *testing.T) {
+	official := moduleSource{}
+	testFeed := moduleSource{test: true}
+	for _, scenario := range []struct {
+		name   string
+		source moduleSource
+		conf   string
+		reason string
+	}{
+		{"test to official", official, testFeed.includeBlock(), "引用本地测试源的模块加载目录，当前 Agent 使用正式源"},
+		{"official to test", testFeed, official.includeBlock(), "引用正式源的模块加载目录，当前 Agent 使用本地测试源"},
+		{"modified include", official, moduleIncludeMark + "include /custom/*.conf;\n", "模块加载入口已被修改"},
+		{"moved include", official, "# Nginx config\n" + official.includeBlock(), "模块加载入口已被修改"},
+		{"duplicate marker", official, testFeed.includeBlock() + official.includeBlock(), "模块加载入口已被修改"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			managed, err := scenario.source.managedModules(moduleRuntime{conf: []byte(scenario.conf + "events {}\n")})
+			if managed != nil || err == nil || !strings.Contains(err.Error(), scenario.reason) {
+				t.Fatalf("managedModules() = %v, %v; want rejection containing %q", managed, err, scenario.reason)
+			}
+		})
+	}
+}
+
 func TestModuleRPCRejectsUnknownInputs(t *testing.T) {
 	s := &Server{}
 	digest := strings.Repeat("a", 64)
