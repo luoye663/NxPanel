@@ -2,13 +2,14 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <base-sha> <head-sha>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: $0 <base-sha> <head-sha> [base-remote]" >&2
   exit 2
 fi
 
 base_sha=$1
 head_sha=$2
+base_remote=${3:-}
 readonly zero_sha=0000000000000000000000000000000000000000
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 validator="$script_dir/validate-commit-message.sh"
@@ -22,8 +23,12 @@ if [[ "$base_sha" == "$zero_sha" ]]; then
   commits=("$head_sha")
 else
   if ! git cat-file -e "$base_sha^{commit}" 2>/dev/null; then
-    echo "Base commit is unavailable: $base_sha" >&2
-    exit 2
+    if [[ -z "$base_remote" ]] ||
+      ! git fetch --no-tags -- "$base_remote" "$base_sha" ||
+      ! git cat-file -e "$base_sha^{commit}" 2>/dev/null; then
+      echo "Base commit is unavailable: $base_sha" >&2
+      exit 2
+    fi
   fi
   mapfile -t commits < <(git rev-list --reverse "$base_sha..$head_sha")
 fi
