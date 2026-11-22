@@ -71,11 +71,21 @@ func NewEngineWithConfig(parent context.Context, repo *Repo, runner *Runner, cfg
 	return e
 }
 
+func (e *Engine) Prepare() error { return e.reconcile(e.ctx) }
+
 func (e *Engine) Start() error {
+	return e.start(true)
+}
+
+func (e *Engine) StartPrepared() error { return e.start(false) }
+
+func (e *Engine) start(reconcile bool) error {
 	e.startOnce.Do(func() {
-		if err := e.reconcile(e.ctx); err != nil {
-			e.startErr = err
-			return
+		if reconcile {
+			if err := e.Prepare(); err != nil {
+				e.startErr = err
+				return
+			}
 		}
 		e.drainDirty()
 		e.wg.Add(1 + e.dispatchWorkers)

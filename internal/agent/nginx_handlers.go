@@ -235,6 +235,8 @@ func (s *Server) handleNginxEnsureInclude(w http.ResponseWriter, r *http.Request
 		writeAgentError(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
 		return
 	}
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
 
 	// 确保面板目录结构存在
 	panelDir := s.cfg.Nginx.PanelDir

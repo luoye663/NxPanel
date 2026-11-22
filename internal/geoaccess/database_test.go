@@ -1,21 +1,15 @@
 package geoaccess
 
-import (
-	"reflect"
-	"testing"
-)
+import "testing"
 
-func TestAggregateNetworks(t *testing.T) {
-	got, err := aggregateNetworks([]string{
-		"192.0.2.0/25", "192.0.2.128/25",
-		"2001:db8::/33", "2001:db8:8000::/33",
-		"198.51.100.0/24",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"192.0.2.0/24", "198.51.100.0/24", "2001:db8::/32"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("aggregateNetworks() = %#v, want %#v", got, want)
+func TestCountryFallback(t *testing.T) {
+	for _, test := range []struct{ primary, registered, want string }{
+		{"CN", "US", "CN"}, {"", "US", "US"}, {"", "", "ZZ"}, {"invalid", "FR", "FR"},
+	} {
+		var record mmdbCountryRecord
+		record.Country.ISOCode, record.RegisteredCountry.ISOCode = test.primary, test.registered
+		if got := record.countryCode(); got != test.want {
+			t.Errorf("countryCode(%q, %q) = %q, want %q", test.primary, test.registered, got, test.want)
+		}
 	}
 }

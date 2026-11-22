@@ -3,6 +3,7 @@ package agentclient
 import (
 	"context"
 	"fmt"
+
 	"github.com/luoye663/nxpanel/internal/nginx"
 )
 
@@ -21,12 +22,12 @@ func (c *Client) NginxStatus(ctx context.Context) (*nginx.RuntimeStatus, error) 
 	return &resp.Data, nil
 }
 
-func (c *Client) ControlNginx(ctx context.Context, action string) error {
+func (c *Client) ControlNginx(ctx context.Context, action string, req nginx.RuntimeControlRequest) error {
 	if action != "start" && action != "stop" && action != "restart" {
 		return fmt.Errorf("invalid nginx action")
 	}
 	var resp AgentResponse
-	if err := c.postJSON(ctx, "/internal/v1/nginx/"+action, struct{}{}, &resp); err != nil {
+	if err := c.postJSON(ctx, "/internal/v1/nginx/"+action, req, &resp); err != nil {
 		return err
 	}
 	if !resp.OK {

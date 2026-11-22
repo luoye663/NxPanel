@@ -20,6 +20,14 @@ export interface GeoIPStatus {
   last_success_at?: string
   last_error?: string
   enabled_sites: number
+  runtime?: {
+    state: 'idle' | 'ready' | 'partial' | 'blocked' | 'pending'
+    module: 'unchecked' | 'available' | 'unavailable'
+    migrated_includes: number
+    legacy_includes: number
+    message?: string
+    operation_id?: string
+  }
 }
 
 export interface SiteGeoAccess {
@@ -65,6 +73,7 @@ export function getGeoIPSettings(): Promise<GeoIPSettings> { return get('/geoip/
 export function updateGeoIPSettings(data: { account_id: string; license_key?: string; auto_update: boolean; trusted_proxies: string[] }): Promise<GeoIPSettings> { return put('/geoip/settings', data) }
 export function getGeoIPStatus(): Promise<GeoIPStatus> { return get('/geoip/status') }
 export function updateGeoIPDatabase(): Promise<GeoIPStatus> { return post('/geoip/update') }
+export function migrateGeoIP(): Promise<GeoIPStatus> { return post('/geoip/migrate', undefined, { timeout: 120_000 }) }
 export function uploadGeoIPDatabase(file: File): Promise<GeoIPStatus> {
   const data = new FormData()
   data.append('database', file)

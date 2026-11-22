@@ -14,7 +14,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/db/repo"
 )
 
-func policyBackupArchive(t *testing.T, bundle *backupBundle) io.Reader {
+func policyBackupArchive(t *testing.T, bundle *backupBundle, httpConfig ...string) io.Reader {
 	t.Helper()
 	var out bytes.Buffer
 	gz := gzip.NewWriter(&out)
@@ -36,6 +36,9 @@ func policyBackupArchive(t *testing.T, bundle *backupBundle) io.Reader {
 		}
 		write("config/extra-4.conf", raw)
 	}
+	for _, config := range httpConfig {
+		write("config/extra-5.conf", []byte(config))
+	}
 	write("root/index.html", []byte("content"))
 	write("metadata.json", []byte(`{"version":1,"site_id":"site_policy"}`))
 	if err := tw.Close(); err != nil {
@@ -46,12 +49,34 @@ func policyBackupArchive(t *testing.T, bundle *backupBundle) io.Reader {
 	}
 	return bytes.NewReader(out.Bytes())
 }
+
+func TestBackupRecompilesHistoricalCountryInclude(t *testing.T) {
+	service, _, _, _ := policyServiceFixture(t)
+	service.geo = testCountryProvider{}
+	policy := serviceAllowPolicy()
+	policy.Rules = []Rule{{ID: "geo", Enabled: true, Match: "all", Conditions: []Condition{{Kind: "country", Values: []string{"CN"}}}, Action: Action{Type: "deny"}}}
+	const oldInclude = "geo $nx_policy_old_country {\n    default ZZ;\n    1.0.1.0/24 CN;\n}\n"
+	var restored bool
+	apply := func(_ []string, config *string) error {
+		restored = true
+		if config == nil || !strings.Contains(*config, "map $nxpanel_geoip_country ") || strings.Contains(*config, "1.0.1.0/24") {
+			t.Fatalf("restore reused the legacy country table: %v", config)
+		}
+		return nil
+	}
+	if err := service.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, nil, oldInclude), apply); err == nil || restored {
+		t.Fatal("a legacy include without a policy snapshot must fail before restore")
+	}
+	if err := service.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, &backupBundle{Policy: policy}, oldInclude), apply); err != nil || !restored {
+		t.Fatalf("country backup did not restore: %t %v", restored, err)
+	}
+}
 func TestBackupRestoresPolicyAndAccountReferences(t *testing.T) {
 	database := policyTestDB(t)
 	svc := NewService(database, nil, nil, nil, "/panel")
 	bundle := &backupBundle{Policy: Policy{Mode: "unified", DefaultAction: Action{Type: "auth", AccountIDs: []string{"historical"}}}, Accounts: []*repo.AuthAccount{{ID: "historical", Username: "backup-user", PasswordHash: "backup-user:{SHA}test", Enabled: true}}}
 	called := false
-	if err := svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, bundle), func(paths []string) error {
+	if err := svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, bundle), func(paths []string, _ *string) error {
 		called = true
 		if len(paths) != MaxRules+3 {
 			t.Fatalf("fixed slot count %d", len(paths))
@@ -96,7 +121,7 @@ func TestBackupFailureAndAccountConflictPreserveState(t *testing.T) {
 	}
 	bundle := &backupBundle{Policy: Policy{DefaultAction: Action{Type: "deny", StatusCode: 451}}}
 	marker := errors.New("nginx -t failed")
-	if err := svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, bundle), func([]string) error { return marker }); !errors.Is(err, marker) {
+	if err := svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, bundle), func([]string, *string) error { return marker }); !errors.Is(err, marker) {
 		t.Fatalf("failure %v", err)
 	}
 	got, _ := svc.store.GetApplied("site_policy")
@@ -109,7 +134,7 @@ func TestBackupFailureAndAccountConflictPreserveState(t *testing.T) {
 	}
 	bundle = &backupBundle{Policy: Policy{DefaultAction: Action{Type: "auth", AccountIDs: []string{"old"}}}, Accounts: []*repo.AuthAccount{{ID: "old", Username: "same-user", PasswordHash: "same-user:{SHA}old", Enabled: true}}}
 	called := false
-	err = svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, bundle), func([]string) error { called = true; return nil })
+	err = svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, bundle), func([]string, *string) error { called = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), "冲突") || called {
 		t.Fatalf("conflict must precede restore: %v called=%v", err, called)
 	}
@@ -127,7 +152,7 @@ func TestLegacyBackupClearsUnifiedMetadataAndOmitsStaleFiles(t *testing.T) {
 	if err := svc.store.MarkApplied("site_policy", saved.Version); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, nil), func([]string) error { return nil }); err != nil {
+	if err := svc.RestoreBackup(context.Background(), "site_policy", policyBackupArchive(t, nil), func([]string, *string) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if svc.Managed("site_policy") {

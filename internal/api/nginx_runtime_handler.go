@@ -1,13 +1,16 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/api/middleware"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/luoye663/nxpanel/internal/nginx"
 )
 
 func (s *Server) handleNginxStatus(w http.ResponseWriter, r *http.Request) {
@@ -29,8 +32,12 @@ func (s *Server) handleNginxControl(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusBadRequest, app.ErrValidationFailed, "无效操作", nil)
 		return
 	}
-	var req struct{}
+	var req nginx.RuntimeControlRequest
 	if !DecodeJSONOptional(w, r, &req) {
+		return
+	}
+	if !req.ValidFor(action) {
+		WriteError(w, r, http.StatusBadRequest, app.ErrValidationFailed, "无效的 Nginx 控制请求", nil)
 		return
 	}
 	if s.agentClient == nil {
@@ -43,9 +50,27 @@ func (s *Server) handleNginxControl(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusInternalServerError, app.ErrInternalError, "无法创建操作审计记录，未执行操作", nil)
 		return
 	}
-	if err := s.agentClient.ControlNginx(r.Context(), action); err != nil {
-		_ = s.opRepo.UpdateError(opID, "failed", app.ErrInternalError, err.Error(), "")
-		WriteError(w, r, http.StatusInternalServerError, app.ErrInternalError, "Nginx "+action+" 失败", map[string]any{"stderr": err.Error(), "operation_id": opID})
+	if err := s.agentClient.ControlNginx(r.Context(), action, req); err != nil {
+		status, code, message := http.StatusInternalServerError, app.ErrInternalError, "Nginx "+action+" 失败"
+		var agentErr *agentclient.HTTPError
+		details := map[string]any{"operation_id": opID}
+		stderr := err.Error()
+		if errors.As(err, &agentErr) {
+			stderr = agentErr.Message
+			switch {
+			case agentErr.StatusCode == http.StatusConflict:
+				status, code, message = http.StatusConflict, app.ErrConflict, agentErr.Message
+				stderr = ""
+			case action == "restart" && agentErr.StatusCode == http.StatusServiceUnavailable:
+				status, code, message = http.StatusServiceUnavailable, app.ErrNginxRestartUnconfirmed, agentErr.Message
+				stderr = ""
+			}
+		}
+		if stderr != "" {
+			details["stderr"] = stderr
+		}
+		_ = s.opRepo.UpdateError(opID, "failed", code, message, stderr)
+		WriteError(w, r, status, code, message, details)
 		return
 	}
 	_ = s.opRepo.UpdateStatus(opID, "success")

@@ -1,6 +1,5 @@
 import { ActionIcon, Alert, Badge, Button, Checkbox, Divider, Group, Modal, MultiSelect, NumberInput, Select, SimpleGrid, Stack, Switch, Table, TagsInput, Text, TextInput, Textarea, Tooltip } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
-import { modals } from '@mantine/modals'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { IconArrowDown, IconArrowUp, IconEdit, IconGripVertical, IconPlus, IconTrash } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
@@ -83,7 +82,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
   const [baseline, setBaseline] = useState(initialPolicy)
   const [draft, setDraft] = useState<AccessPolicy>({ ...initialPolicy, mode: 'unified' })
   const [editing, setEditing] = useState<AccessPolicyRule | null>(null)
-  const geoStatus = useQuery({ queryKey: geoAccessKeys.status, queryFn: getGeoIPStatus, enabled: editing?.conditions.some((condition) => condition.kind === 'country') ?? false })
+  const geoStatus = useQuery({ queryKey: geoAccessKeys.status, queryFn: getGeoIPStatus, enabled: draft.rules.some((rule) => rule.conditions.some((condition) => condition.kind === 'country')) || (editing?.conditions.some((condition) => condition.kind === 'country') ?? false) })
   const countries = [...new Set([
     ...(geoStatus.data?.countries || []),
     'ZZ',
@@ -139,6 +138,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
     setDiagnosticsRefresh((value) => value + 1)
     client.setQueryData(accessPolicyKeys.site(siteId), policy)
     await client.invalidateQueries({ queryKey: ['site-detail', siteId] })
+    await client.invalidateQueries({ queryKey: geoAccessKeys.status })
   }
 
   async function apply() {
@@ -151,6 +151,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
       if (policy.apply_status === 'applied') notifySuccess({ message: '访问策略已保存并应用' })
     } catch (failure) {
       setError(failure)
+      await client.invalidateQueries({ queryKey: geoAccessKeys.status })
       if (failure instanceof ApiError && failure.details?.desired_saved === true && typeof failure.details.saved_version === 'number') {
         try {
           const stored = await getAccessPolicy(siteId)
@@ -195,6 +196,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
       {baseline.mode === 'legacy' && draft.warnings?.length ? <Alert color="yellow" title="需要检查的行为差异"><Stack gap={4}>{draft.warnings.map((warning, index) => <Text key={index}>{warning}</Text>)}</Stack></Alert> : null}
       {baseline.version > 0 && baseline.apply_status !== 'applied' ? <Alert color="yellow" title="策略已保存，等待应用成功">{baseline.last_error || '请重新同步，确认线上配置与已保存策略一致。'}</Alert> : null}
       {pendingProxy ? <Alert color="yellow" title="先完成关联反代同步">反代配置与访问策略有未完成的关联修改。请点击“重新同步”一起应用，成功后再编辑规则。</Alert> : null}
+      {geoStatus.data?.runtime && (geoStatus.data.runtime.state === 'blocked' || geoStatus.data.runtime.state === 'pending' || geoStatus.data.runtime.legacy_includes > 0) ? <Alert color="yellow" title="请检查地域查询状态">{geoStatus.data.runtime.message || '仍有旧地域配置在运行。'} 请前往面板设置 → GeoIP 查看迁移状态。</Alert> : null}
       {error ? <ErrorAlert error={error} title="未完成应用，草稿已保留" /> : null}
       <Group justify="space-between">
         <Group><Button leftSection={<IconPlus size={16} />} disabled={busy || draft.rules.length >= 256} onClick={() => { setRuleError(null); setEditing(emptyRule()) }}>新增规则</Button><Button variant="default" disabled={busy} onClick={() => setAccountsOpened(true)}>账户管理</Button></Group>
@@ -251,17 +253,6 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
           <Group align="flex-end"><Select style={{ flex: 1 }} label="条件类型" value={condition.kind} allowDeselect={false} data={Object.entries(conditionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => {
             if (!value) return
             setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { kind: value as AccessCondition['kind'], operator: value === 'path' ? 'prefix' : 'in', values: [], negate: false } : item) })
-            if (value === 'country' && condition.kind !== 'country') {
-              const modalId = modals.open({
-                title: '国家 / 地区功能警告',
-                centered: true,
-                closeOnClickOutside: false,
-                children: <Stack gap="md">
-                  <Alert color="yellow">国家 / 地区访问限制功能尚不完善，会造成 Nginx 内存占用过多，目前待修复，暂不建议使用。</Alert>
-                  <Group justify="flex-end"><Button color="yellow" onClick={() => modals.close(modalId)}>我已知晓</Button></Group>
-                </Stack>,
-              })
-            }
           }} /><ActionIcon variant="subtle" color="red" aria-label={`移除条件 ${index + 1}`} disabled={editing.conditions.length === 1} onClick={() => setEditing({ ...editing, conditions: editing.conditions.filter((_, ci) => ci !== index) })}><IconTrash size={16} /></ActionIcon></Group>
           {condition.kind === 'path' ? <Select label="路径匹配" error={!['exact', 'prefix'].includes(condition.operator || '') ? '旧路径表达式需要转换：请选择匹配方式并检查匹配值。' : undefined} value={condition.operator || null} allowDeselect={false} data={[{ value: 'prefix', label: '前缀匹配' }, { value: 'exact', label: '完全相等' }]} onChange={(value) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { ...item, operator: value as 'prefix' | 'exact' } : item) })} /> : null}
           {condition.kind === 'country' ? <>

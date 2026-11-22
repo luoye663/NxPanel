@@ -1,0 +1,20 @@
+[
+  {
+    "id": "geoip2",
+    "name": "GeoIP2（HTTP）",
+    "description": "本地联调：安装和卸载 GeoIP2。",
+    "kind": "nginx_dynamic_so",
+    "symbol": "ngx_http_geoip2_module",
+    "release": {},
+    "version": "v3.4.0"
+  },
+  {
+    "id": "fixture-http",
+    "name": "Nginx HTTP 测试模块",
+    "description": "本地联调：验证目录新增的动态模块可直接安装。",
+    "kind": "nginx_dynamic_so",
+    "symbol": "ngx_http_nxpanel_fixture_module",
+    "release": {},
+    "version": "v1.0.0"
+  }
+]

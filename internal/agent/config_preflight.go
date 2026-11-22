@@ -38,6 +38,9 @@ func (s preflightSource) Open(path string) (io.ReadCloser, error) {
 }
 
 func (s preflightSource) Includes(path string) ([]string, error) {
+	if isModuleInclude(path) {
+		return nil, nil
+	}
 	if !strings.ContainsAny(path, "*?[") {
 		return []string{path}, nil
 	}

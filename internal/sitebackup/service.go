@@ -45,7 +45,7 @@ type agentClient interface {
 
 type AccessPolicyBackupHooks interface {
 	WithBackup(context.Context, string, func([]string) error) error
-	RestoreBackup(context.Context, string, io.Reader, func([]string) error) error
+	RestoreBackup(context.Context, string, io.Reader, func([]string, *string) error) error
 }
 
 type Service struct {
@@ -151,6 +151,8 @@ func (svc *Service) Close() {
 	})
 	svc.jobsWG.Wait()
 }
+
+func (svc *Service) Busy() bool { return len(svc.jobSlots) > 0 }
 
 func (svc *Service) SetTaskLogDir(dir string) {
 	svc.taskLogDir = dir
@@ -304,10 +306,11 @@ func (svc *Service) Restore(ctx context.Context, siteID, backupID string, req *R
 		return app.NewAppError(app.ErrValidationFailed, "至少选择一个恢复范围", nil)
 	}
 	opID := svc.createOperation("site.backup.restore", site, requestID, fmt.Sprintf("恢复站点备份 %s", backup.Name))
-	restore := func(extra []string) error {
+	restore := func(extra []string, policyHTTPConfig *string) error {
 		return svc.agent.SiteBackupRestore(ctx, &agentclient.SiteBackupRestoreRequest{
 			SiteID: site.ID, BackupPath: backup.BackupPath, RestoreConfig: restoreConfig, RestoreRoot: restoreRoot, RestoreSSL: restoreSSL,
 			ConfigPaths: appendPolicyConfigPaths(svc.configPaths(site), extra), RootPath: site.RootPath, SSLPaths: svc.sslPaths(site.ID), ReloadNginx: site.Status == "enabled",
+			PolicyHTTPConfig: policyHTTPConfig,
 		})
 	}
 	if restoreConfig && svc.accessPolicyHooks != nil {
@@ -326,7 +329,7 @@ func (svc *Service) Restore(ctx context.Context, siteID, backupID string, req *R
 			}
 		}
 	} else {
-		err = restore(nil)
+		err = restore(nil, nil)
 	}
 	if err != nil {
 		_ = svc.opRepo.UpdateError(opID, "failed", app.ErrAgentUnavailable, err.Error(), "")

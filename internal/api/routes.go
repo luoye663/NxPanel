@@ -3,10 +3,9 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -74,12 +73,22 @@ func (s *Server) setupRoutes() {
 			r.Get("/system/overview", s.handleSystemOverview)
 			r.Get("/system/upgrade", s.handleUpgradeCheck)
 			r.Post("/system/upgrade/check", s.handleUpgradeCheckTrigger)
+			r.Put("/system/upgrade/channel", s.handleUpgradeChannel)
+			r.Post("/system/upgrade/prepare", s.handleUpgradePrepare)
+			r.Post("/system/upgrade/cancel", s.handleUpgradeCancel)
+			r.Post("/system/upgrade/activate", s.handleUpgradeActivate)
 			r.Get("/system/metrics/stream", s.handleSystemMetricsStream)
 			r.Post("/nginx/detect", s.handleNginxDetect)
 			r.Post("/nginx/include/ensure", s.handleNginxIncludeEnsure)
 			r.Post("/nginx/test", s.handleNginxTest)
 			r.Post("/nginx/reload", s.handleNginxReload)
 			r.Get("/nginx/status", s.handleNginxStatus)
+			r.Get("/nginx/modules", s.handleNginxModules)
+			r.Get("/nginx/modules/releases", s.handleNginxModuleReleases)
+			r.Get("/nginx/modules/preflight", s.handleNginxModulePreflight)
+			r.Post("/nginx/modules/install", s.handleNginxModuleInstall)
+			r.Post("/nginx/modules/uninstall", s.handleNginxModuleUninstall)
+			r.Get("/nginx/modules/jobs/{operation_id}", s.handleNginxModuleJob)
 			for _, action := range []string{"start", "stop", "restart"} {
 				r.Post("/nginx/"+action, s.handleNginxControl)
 			}
@@ -160,6 +169,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/geoip/status", s.handleGeoIPStatus)
 			r.Post("/geoip/update", s.handleGeoIPUpdate)
 			r.Post("/geoip/database", s.handleGeoIPDatabaseUpload)
+			r.Post("/geoip/migrate", s.handleGeoIPMigrate)
 			r.Get("/sites/{site_id}/geo-access", s.handleSiteGeoAccessGet)
 			r.Put("/sites/{site_id}/geo-access", s.guardLegacyAccess(s.handleSiteGeoAccessUpdate))
 			r.Post("/sites/{site_id}/geo-access/enable", s.guardLegacyAccess(s.handleSiteGeoAccessEnable))
@@ -319,19 +329,19 @@ func (s *Server) setupRoutes() {
 }
 
 func (s *Server) setupStaticFiles() {
-	webDir, err := web.StaticFS()
+	webFiles, err := web.StaticFS()
 	if err != nil {
 		slog.Error("初始化前端目录失败", "error", err)
 		return
 	}
 
-	fileServer := http.FileServer(http.Dir(webDir))
+	fileServer := http.FileServerFS(webFiles)
 	var indexOnce sync.Once
 	var indexHTML []byte
 	var indexErr error
 	loadIndex := func() ([]byte, error) {
 		indexOnce.Do(func() {
-			indexHTML, indexErr = os.ReadFile(filepath.Join(webDir, "index.html"))
+			indexHTML, indexErr = fs.ReadFile(webFiles, "index.html")
 		})
 		return indexHTML, indexErr
 	}
@@ -349,8 +359,8 @@ func (s *Server) setupStaticFiles() {
 			return
 		}
 
-		fullPath := filepath.Join(webDir, strings.TrimPrefix(path, "/"))
-		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+		fullPath := strings.TrimPrefix(path, "/")
+		if info, err := fs.Stat(webFiles, fullPath); err == nil && !info.IsDir() {
 			fileServer.ServeHTTP(w, r)
 			return
 		}

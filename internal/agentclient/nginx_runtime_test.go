@@ -2,12 +2,18 @@ package agentclient
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/luoye663/nxpanel/internal/nginx"
 )
 
 func TestNginxRuntimeClient(t *testing.T) {
+	generation := strings.Repeat("a", 64)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-NxPanel-Agent-Token") != "token" {
 			t.Error("missing agent authentication")
@@ -23,6 +29,15 @@ func TestNginxRuntimeClient(t *testing.T) {
 			if r.Method != http.MethodPost {
 				t.Error("control not POST")
 			}
+			if strings.HasSuffix(r.URL.Path, "/restart") {
+				var req nginx.RuntimeControlRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RestartGeneration != generation {
+					t.Errorf("unexpected request: %+v %v", req, err)
+				}
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"ok":false,"error":"target changed"}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"ok":true,"data":{"ok":true}}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -34,12 +49,16 @@ func TestNginxRuntimeClient(t *testing.T) {
 	if err != nil || status.MasterPID != 42 || status.MemoryRSS != 4096 {
 		t.Fatalf("status: %+v %v", status, err)
 	}
-	for _, action := range []string{"start", "stop", "restart"} {
-		if err := c.ControlNginx(context.Background(), action); err != nil {
+	for _, action := range []string{"start", "stop"} {
+		if err := c.ControlNginx(context.Background(), action, nginx.RuntimeControlRequest{}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := c.ControlNginx(context.Background(), "../reload"); err == nil {
+	var response *HTTPError
+	if err := c.ControlNginx(context.Background(), "restart", nginx.RuntimeControlRequest{RestartGeneration: generation}); !errors.As(err, &response) || response.StatusCode != http.StatusConflict || response.Message != "target changed" {
+		t.Fatalf("restart: %v", err)
+	}
+	if err := c.ControlNginx(context.Background(), "../reload", nginx.RuntimeControlRequest{}); err == nil {
 		t.Fatal("invalid action accepted")
 	}
 }

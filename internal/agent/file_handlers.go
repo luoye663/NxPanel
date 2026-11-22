@@ -257,6 +257,7 @@ func (s *Server) handleFilesRemove(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusBadRequest, "paths 不能为空")
 		return
 	}
+	defer s.lockNginxFileMutation(req.Paths...)()
 
 	var removed int
 	for _, p := range req.Paths {
@@ -288,6 +289,7 @@ func (s *Server) handleFilesMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockNginxFileMutation(req.Path)()
 	path, err := s.policy.Validate(req.Path)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "路径不在白名单内: "+err.Error())
@@ -316,6 +318,7 @@ func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockNginxFileMutation(req.Source, req.Destination)()
 	source, err := s.policy.Validate(req.Source)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "源路径不在白名单内: "+err.Error())
@@ -355,6 +358,7 @@ func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockNginxFileMutation(req.DestDir)()
 	destDir, err := s.policy.Validate(req.DestDir)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "目标路径不在白名单内: "+err.Error())
@@ -658,6 +662,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	defer s.lockNginxFileMutation(file.Path)()
 	path, err := s.policy.Validate(file.Path)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "路径不在白名单内: "+err.Error())
@@ -697,6 +702,7 @@ func (s *Server) handleFilesChmod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockNginxFileMutation(req.Path)()
 	path, err := s.policy.Validate(req.Path)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "路径不在白名单内: "+err.Error())
@@ -777,6 +783,7 @@ func (s *Server) handleFilesChown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockNginxFileMutation(req.Path)()
 	path, err := s.policy.Validate(req.Path)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "路径不在白名单内: "+err.Error())
@@ -854,6 +861,7 @@ func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 		validPaths = append(validPaths, cleaned)
 	}
 
+	defer s.lockNginxFileMutation(req.OutputPath)()
 	outputPath, err := s.policy.Validate(req.OutputPath)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "输出路径不在白名单内: "+err.Error())
@@ -921,6 +929,7 @@ func (s *Server) handleFilesExtract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer s.lockNginxFileMutation(req.DestDir)()
 	archivePath, err := s.policy.Validate(req.ArchivePath)
 	if err != nil {
 		writeAgentError(w, http.StatusForbidden, "压缩包路径不在白名单内: "+err.Error())

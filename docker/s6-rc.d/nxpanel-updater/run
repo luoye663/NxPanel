@@ -1,0 +1,3 @@
+#!/usr/bin/with-contenv /bin/sh
+set -eu
+exec /usr/local/nxpanel/bin/nxpanel-updater -home /usr/local/nxpanel -api-user nxpanel -supervisor s6

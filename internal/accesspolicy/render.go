@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
+
+	"github.com/luoye663/nxpanel/internal/georuntime"
 )
 
 // Compile generates an http-context include and a server-context include. Maps
@@ -25,50 +26,6 @@ func Compile(siteID, panelDir string, p Policy, ctx RenderContext) (*CompiledPol
 	var global, server strings.Builder
 	fmt.Fprintf(&global, "# Ordered access policy for site %s\n", suffix)
 	fmt.Fprintf(&global, "geo %s_dollar { default \"$\"; }\n", base)
-	needsCountry := false
-	for _, r := range p.Rules {
-		if r.Enabled && !r.SourceDisabled {
-			for _, c := range r.Conditions {
-				if c.Kind == "country" {
-					needsCountry = true
-				}
-			}
-		}
-	}
-	if needsCountry {
-		fmt.Fprintf(&global, "geo %s_country {\n    default ZZ;\n", base)
-		keys := make([]string, 0, len(ctx.CountryNetworks))
-		for k := range ctx.CountryNetworks {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		networks := map[string]string{}
-		for _, k := range keys {
-			code := strings.ToUpper(k)
-			if err := validateCondition(Condition{Kind: "country", Values: []string{code}}); err != nil {
-				return nil, err
-			}
-			for _, v := range ctx.CountryNetworks[k] {
-				net, err := parseNetwork(v)
-				if err != nil {
-					return nil, fmt.Errorf("地域数据包含无效网络: %w", err)
-				}
-				network := net.String()
-				if previous, ok := networks[network]; ok {
-					if previous != code {
-						return nil, fmt.Errorf("地域数据包含冲突网络 %s", network)
-					}
-					continue
-				}
-				networks[network] = code
-				fmt.Fprintf(&global, "    %s %s;\n", network, code)
-				if global.Len() > MaxRenderedBytes {
-					return nil, fmt.Errorf("生成配置超过 64 MiB")
-				}
-			}
-		}
-		global.WriteString("}\n")
-	}
 	active := []Rule{}
 	for _, r := range p.Rules {
 		if r.Enabled && !r.SourceDisabled {
@@ -237,7 +194,7 @@ func renderCondition(b *strings.Builder, variable, base string, c Condition) err
 	}
 	source := "$uri"
 	if c.Kind == "country" {
-		source = base + "_country"
+		source = georuntime.CountryVariable
 	}
 	if c.Kind == "referer" {
 		source = "$http_referer"

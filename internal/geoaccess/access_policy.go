@@ -2,8 +2,13 @@ package geoaccess
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"net/netip"
+	"strings"
 
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/oschwald/maxminddb-golang"
 )
 
 // Hooks keep legacy include generation away from sites managed by the unified
@@ -13,23 +18,43 @@ func (s *Service) SetAccessPolicyHooks(managed func(string) bool, refresh func(c
 	s.policyRefresh = refresh
 }
 
-func (s *Service) AccessPolicyData() (map[string][]string, []string, error) {
+func (s *Service) AccessPolicyData() (bool, []string, error) {
 	settings, err := s.repo.GetGeoIPSettings()
 	if err != nil {
-		return nil, nil, err
+		return false, nil, err
 	}
 	proxies, err := normalizeTrustedProxies(repo.ParseJSONStringSlice(settings.TrustedProxiesJSON))
 	if err != nil {
-		return nil, nil, err
+		return false, nil, err
 	}
-	if settings.ActiveCachePath == "" {
-		return nil, proxies, nil
-	}
-	cache, err := readCache(settings.ActiveCachePath)
+	return settings.ActiveDBPath != "" && settings.Checksum != "", proxies, nil
+}
+
+func (s *Service) LookupCountry(ip netip.Addr) (string, error) {
+	settings, err := s.repo.GetGeoIPSettings()
 	if err != nil {
-		return nil, nil, err
+		return "", err
 	}
-	return cache.Networks, proxies, nil
+	database, err := maxminddb.Open(settings.ActiveDBPath)
+	if err != nil {
+		return "", fmt.Errorf("读取 GeoIP 数据库: %w", err)
+	}
+	defer database.Close()
+	var record mmdbCountryRecord
+	if err := database.Lookup(net.IP(ip.Unmap().AsSlice()), &record); err != nil {
+		return "", fmt.Errorf("查询 GeoIP 数据库: %w", err)
+	}
+	return record.countryCode(), nil
+}
+
+func (record mmdbCountryRecord) countryCode() string {
+	for _, raw := range []string{record.Country.ISOCode, record.RegisteredCountry.ISOCode} {
+		code := strings.ToUpper(raw)
+		if len(code) == 2 && code[0] >= 'A' && code[0] <= 'Z' && code[1] >= 'A' && code[1] <= 'Z' {
+			return code
+		}
+	}
+	return "ZZ"
 }
 
 func (s *Service) refreshAccessPolicies(ctx context.Context, requestID string) error {

@@ -113,6 +113,8 @@ func (svc *Service) Close() {
 	svc.jobsWG.Wait()
 }
 
+func (svc *Service) Busy() bool { return len(svc.jobSlots) > 0 }
+
 type ACMEOrderResponse struct {
 	ID                  string   `json:"id"`
 	SiteID              string   `json:"site_id"`

@@ -61,6 +61,11 @@ func (s *Service) PrepareProxyChange(ctx context.Context, site *repo.Site, proxi
 	if err != nil {
 		return fail(err)
 	}
+	if needsCountry(*p) {
+		if err := s.geo.EnsureRuntime(ctx, "proxy"); err != nil {
+			return fail(err)
+		}
+	}
 	mainIndex := -1
 	var main []byte
 	for i, change := range changes {

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/luoye663/nxpanel/internal/georuntime"
 )
 
 type SiteBackupCreateRequest struct {
@@ -34,15 +37,16 @@ type SiteBackupCreateResponse struct {
 }
 
 type SiteBackupRestoreRequest struct {
-	SiteID        string   `json:"site_id"`
-	BackupPath    string   `json:"backup_path"`
-	RestoreConfig bool     `json:"restore_config"`
-	RestoreRoot   bool     `json:"restore_root"`
-	RestoreSSL    bool     `json:"restore_ssl"`
-	ConfigPaths   []string `json:"config_paths"`
-	RootPath      string   `json:"root_path"`
-	SSLPaths      []string `json:"ssl_paths"`
-	ReloadNginx   bool     `json:"reload_nginx"`
+	SiteID           string   `json:"site_id"`
+	BackupPath       string   `json:"backup_path"`
+	RestoreConfig    bool     `json:"restore_config"`
+	RestoreRoot      bool     `json:"restore_root"`
+	RestoreSSL       bool     `json:"restore_ssl"`
+	ConfigPaths      []string `json:"config_paths"`
+	RootPath         string   `json:"root_path"`
+	SSLPaths         []string `json:"ssl_paths"`
+	ReloadNginx      bool     `json:"reload_nginx"`
+	PolicyHTTPConfig *string  `json:"policy_http_config,omitempty"`
 }
 
 type SiteBackupRemoveRequest struct {
@@ -331,6 +335,23 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 	if req.SiteID == "" || req.BackupPath == "" {
 		return fmt.Errorf("site_id 和 backup_path 不能为空")
 	}
+	var newPolicyPath string
+	if req.PolicyHTTPConfig != nil {
+		want := georuntime.PolicyPath(s.cfg.Nginx.PanelDir, req.SiteID)
+		if !req.RestoreConfig || len(req.ConfigPaths) <= 5 || req.ConfigPaths[5] != want || filepath.Base(req.SiteID) != req.SiteID ||
+			len(*req.PolicyHTTPConfig) > 64*1024*1024 {
+			return fmt.Errorf("备份恢复的访问策略替换项无效")
+		}
+		target, err := safeRestoreTarget(s.policy, want)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(target); os.IsNotExist(err) {
+			newPolicyPath = target
+		} else if err != nil {
+			return err
+		}
+	}
 	backupPath, err := s.policy.Validate(req.BackupPath)
 	if err != nil {
 		return fmt.Errorf("备份路径不在白名单内: %w", err)
@@ -353,8 +374,17 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 	if s.restoreSnapshotHook != nil {
 		s.restoreSnapshotHook(snapshotPath)
 	}
+	rollback := func() error {
+		err := s.rollbackSiteBackup(ctx, snapshotPath, req, limits)
+		if newPolicyPath != "" {
+			if removeErr := os.Remove(newPolicyPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, removeErr)
+			}
+		}
+		return err
+	}
 	if err := s.extractSiteBackup(ctx, backupPath, req); err != nil {
-		rollbackErr := s.rollbackSiteBackup(ctx, snapshotPath, req, limits)
+		rollbackErr := rollback()
 		if rollbackErr != nil {
 			return fmt.Errorf("恢复备份失败: %w；快照回滚失败: %v", err, rollbackErr)
 		}
@@ -362,7 +392,7 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 	}
 	if req.RestoreConfig || req.RestoreSSL {
 		if result, testErr := s.executor.Test(ctx); testErr != nil {
-			rollbackErr := s.rollbackSiteBackup(ctx, snapshotPath, req, limits)
+			rollbackErr := rollback()
 			if rollbackErr != nil {
 				return fmt.Errorf("nginx -t 失败且快照回滚失败: %s %v；回滚错误: %v", result.Stderr, testErr, rollbackErr)
 			}
@@ -370,6 +400,12 @@ func (s *Server) restoreSiteBackup(ctx context.Context, req *SiteBackupRestoreRe
 		}
 		if req.ReloadNginx {
 			if _, err := s.executor.Reload(ctx); err != nil {
+				if req.PolicyHTTPConfig != nil {
+					if rollbackErr := rollback(); rollbackErr != nil {
+						return fmt.Errorf("地域备份 reload 失败: %w；快照回滚失败: %v", err, rollbackErr)
+					}
+					return fmt.Errorf("地域备份 reload 失败，已从快照回滚: %w", err)
+				}
 				return fmt.Errorf("备份已恢复但 reload 失败: %w", err)
 			}
 		}
@@ -382,6 +418,7 @@ func (s *Server) rollbackSiteBackup(parent context.Context, snapshotPath string,
 	defer cancel()
 	rollbackReq := *req
 	rollbackReq.BackupPath = snapshotPath
+	rollbackReq.PolicyHTTPConfig = nil
 	return s.extractSiteBackup(rollbackCtx, snapshotPath, &rollbackReq)
 }
 
@@ -405,6 +442,7 @@ func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *
 	configTargets := mapConfigEntryNames(req.ConfigPaths)
 	sslTargets := mapSSLEntryNames(req.SSLPaths)
 	created := []string{}
+	policyReplaced := false
 	success := false
 	defer func() {
 		if !success {
@@ -489,8 +527,21 @@ func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *
 			return err
 		}
 		_, statErr := os.Stat(cleanTarget)
-		if err := extractEntryAtomically(ctx, cleanTarget, os.FileMode(header.Mode), tr, budget, header.Size); err != nil {
-			return err
+		if req.PolicyHTTPConfig != nil && header.Name == "config/extra-5.conf" {
+			if policyReplaced || header.Typeflag != tar.TypeReg {
+				return fmt.Errorf("备份地域配置条目无效")
+			}
+			if _, err := copyArchiveOutput(ctx, io.Discard, tr, budget, header.Size); err != nil {
+				return err
+			}
+			if err := writeFileAtomic(cleanTarget, []byte(*req.PolicyHTTPConfig), 0644); err != nil {
+				return err
+			}
+			policyReplaced = true
+		} else {
+			if err := extractEntryAtomically(ctx, cleanTarget, os.FileMode(header.Mode), tr, budget, header.Size); err != nil {
+				return err
+			}
 		}
 		if err := budget.checkRatio(budget.extracted, compressed.n, header.Name); err != nil {
 			return err
@@ -499,6 +550,9 @@ func (s *Server) extractSiteBackup(ctx context.Context, backupPath string, req *
 		if os.IsNotExist(statErr) {
 			created = append(created, cleanTarget)
 		}
+	}
+	if req.PolicyHTTPConfig != nil && !policyReplaced {
+		return fmt.Errorf("备份缺少地域配置条目")
 	}
 	success = true
 	return nil

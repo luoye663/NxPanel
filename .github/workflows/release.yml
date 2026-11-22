@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version (vX.Y.Z)
+        description: Release version (vX.Y.Z, vX.Y.Z-beta.N or vX.Y.Z-rc.N)
         required: true
         type: string
 
@@ -27,12 +27,14 @@ jobs:
       version: ${{ steps.inputs.outputs.version }}
       target_sha: ${{ steps.inputs.outputs.target_sha }}
       build_time: ${{ steps.inputs.outputs.build_time }}
+      prerelease: ${{ steps.inputs.outputs.prerelease }}
 
     steps:
       - name: Validate release inputs
         id: inputs
         env:
           VERSION_INPUT: ${{ inputs.version }}
+          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
         run: |
           set -euo pipefail
 
@@ -40,14 +42,23 @@ jobs:
             echo "Releases must be started from main." >&2
             exit 1
           fi
-          if [[ ! "$VERSION_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Expected version in vX.Y.Z format." >&2
+          if [[ ! "$VERSION_INPUT" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
+            echo "Expected vX.Y.Z, vX.Y.Z-beta.N or vX.Y.Z-rc.N." >&2
+            exit 1
+          fi
+          if [[ -z "$NXPANEL_UPDATE_TRUST_KEYS" ]]; then
+            echo "Configure the NXPANEL_UPDATE_TRUST_KEYS repository variable before releasing." >&2
             exit 1
           fi
 
           echo "version=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
           echo "target_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION_INPUT" == *-* ]]; then
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Require successful CI for target commit
         uses: actions/github-script@v9
@@ -194,13 +205,50 @@ jobs:
         env:
           BUILD_TIME: ${{ needs.validate.outputs.build_time }}
           VERSION: ${{ needs.validate.outputs.version }}
-        run: make release VERSION="$VERSION" BUILD_TIME="$BUILD_TIME"
+          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
+          NXPANEL_MODULE_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
+        run: |
+          make release VERSION="$VERSION" BUILD_TIME="$BUILD_TIME"
+          make release-update-arm64 VERSION="$VERSION"
 
       - name: Upload release package
         uses: actions/upload-artifact@v7
         with:
           name: nxpanel-release
-          path: release/nxpanel-linux-amd64.tar.gz
+          path: |
+            release/nxpanel-linux-amd64.tar.gz
+            release/nxpanel/bin/nxpanel-api
+            release/nxpanel/bin/nxpanel-agent
+            release/update-arm64/nxpanel-api
+            release/update-arm64/nxpanel-agent
+          if-no-files-found: error
+
+  sign:
+    name: Sign update assets
+    needs: [validate, binary]
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.target_sha }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v8
+        with:
+          name: nxpanel-release
+          path: release
+      - name: Create signed manifest and update packages
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
+          NXPANEL_UPDATE_SIGNING_KEYS: ${{ secrets.NXPANEL_UPDATE_SIGNING_KEYS }}
+        run: go run ./cmd/nxpanel-update-package -version "$VERSION" -amd64 release/nxpanel/bin -arm64 release/update-arm64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nxpanel-signed-updates
+          path: release/updates/*
           if-no-files-found: error
 
   images:
@@ -254,17 +302,20 @@ jobs:
           TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
           VARIANT: ${{ matrix.variant }}
           VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
           set -euo pipefail
           {
             echo 'tags<<EOF'
+            alias=latest
+            if [[ "$PRERELEASE" == "true" ]]; then alias=preview; fi
             if [[ "$ENABLE_GHCR_PUSH" == "true" ]]; then
               echo "ghcr.io/luoye663/nxpanel:${VARIANT}-${VERSION}"
-              echo "ghcr.io/luoye663/nxpanel:${VARIANT}-latest"
+              echo "ghcr.io/luoye663/nxpanel:${VARIANT}-${alias}"
             fi
             if [[ "$ENABLE_DOCKERHUB_PUSH" == "true" ]]; then
               echo "docker.io/luoye663/nxpanel:${VARIANT}-${VERSION}"
-              echo "docker.io/luoye663/nxpanel:${VARIANT}-latest"
+              echo "docker.io/luoye663/nxpanel:${VARIANT}-${alias}"
             fi
             echo 'EOF'
             echo 'labels<<EOF'
@@ -284,6 +335,8 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.validate.outputs.version }}
+            NXPANEL_UPDATE_TRUST_KEYS=${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
+            NXPANEL_MODULE_TRUST_KEYS=${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.variant }}
@@ -295,7 +348,8 @@ jobs:
       - validate
       - binary
       - images
-    if: ${{ always() && needs.validate.result == 'success' && needs.binary.result == 'success' && (needs.images.result == 'success' || needs.images.result == 'skipped') }}
+      - sign
+    if: ${{ always() && needs.validate.result == 'success' && needs.binary.result == 'success' && needs.sign.result == 'success' && (needs.images.result == 'success' || needs.images.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -307,6 +361,12 @@ jobs:
           name: nxpanel-release
           path: release
 
+      - name: Download signed update assets
+        uses: actions/download-artifact@v8
+        with:
+          name: nxpanel-signed-updates
+          path: release/updates
+
       - name: Create or update draft release
         id: draft
         uses: softprops/action-gh-release@v3
@@ -314,9 +374,15 @@ jobs:
           tag_name: ${{ needs.validate.outputs.version }}
           target_commitish: ${{ needs.validate.outputs.target_sha }}
           draft: true
+          prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: release/nxpanel-linux-amd64.tar.gz
+          files: |
+            release/nxpanel-linux-amd64.tar.gz
+            release/updates/nxpanel-update.json
+            release/updates/nxpanel-update.sig
+            release/updates/nxpanel-update-linux-amd64.tar.gz
+            release/updates/nxpanel-update-linux-arm64.tar.gz
 
       - name: Publish draft release
         uses: actions/github-script@v9
@@ -324,6 +390,7 @@ jobs:
           RELEASE_ID: ${{ steps.draft.outputs.id }}
           TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
           VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -347,5 +414,9 @@ jobs:
 
             await github.request(
               "PATCH /repos/{owner}/{repo}/releases/{release_id}",
-              { owner, repo, release_id: releaseId, draft: false },
+              {
+                owner, repo, release_id: releaseId, draft: false,
+                prerelease: process.env.PRERELEASE === 'true',
+                make_latest: process.env.PRERELEASE === 'true' ? 'false' : 'true',
+              },
             );

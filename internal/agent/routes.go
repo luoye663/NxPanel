@@ -25,6 +25,12 @@ func (s *Server) setupRoutes() {
 	s.router.Post("/internal/v1/nginx/access-preflight", s.handleConfigPreflight)
 	s.router.Post("/internal/v1/nginx/reload", s.handleNginxReload)
 	s.router.Get("/internal/v1/nginx/status", s.handleNginxStatus)
+	s.router.Get("/internal/v1/nginx/modules", s.handleNginxModules)
+	s.router.Get("/internal/v1/nginx/modules/local", s.handleNginxModules)
+	s.router.Get("/internal/v1/nginx/modules/releases", s.handleNginxModuleReleases)
+	s.router.Get("/internal/v1/nginx/modules/preflight", s.handleNginxModulePreflight)
+	s.router.Post("/internal/v1/nginx/modules/install", s.handleNginxModuleInstall)
+	s.router.Post("/internal/v1/nginx/modules/uninstall", s.handleNginxModuleUninstall)
 	for _, action := range []string{"start", "stop", "restart"} {
 		s.router.Post("/internal/v1/nginx/"+action, s.handleNginxControl)
 	}

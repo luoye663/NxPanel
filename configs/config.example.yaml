@@ -240,7 +240,7 @@ acme:
     retry_interval: "3s"
     # 最大重试次数
     retry_count: 5
-# 升级检测配置
+# 升级检测配置；安装由独立更新器和发布签名授权，通道在面板中选择。
 upgrade:
   # 是否启用升级检测（检查 GitHub Releases）
   enabled: true

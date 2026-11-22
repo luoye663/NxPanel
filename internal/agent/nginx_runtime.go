@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,20 +17,31 @@ import (
 )
 
 type nginxRuntimeProcess struct {
-	pid, parent int
-	rss, start  uint64
-	title       string
+	pid, parent               int
+	rss, start                uint64
+	title                     string
+	sameBinary, deletedBinary bool
 }
 
-func parseNginxProcStat(data string) (parent int, start, rss uint64, err error) {
+var (
+	errRuntimeConflict         = errors.New("无法安全控制 Nginx")
+	errNginxRestartUnconfirmed = errors.New("重启命令已执行，但运行状态未确认，请刷新状态")
+)
+
+func runtimeConflict(message string) error {
+	return fmt.Errorf("%w：%s", errRuntimeConflict, message)
+}
+
+func parseNginxProcStat(data string) (parent int, start, rss uint64, state string, err error) {
 	end := strings.LastIndex(data, ")")
 	if end < 0 {
-		return 0, 0, 0, fmt.Errorf("invalid proc stat")
+		return 0, 0, 0, "", fmt.Errorf("invalid proc stat")
 	}
 	fields := strings.Fields(data[end+1:])
 	if len(fields) < 22 {
-		return 0, 0, 0, fmt.Errorf("short proc stat")
+		return 0, 0, 0, "", fmt.Errorf("short proc stat")
 	}
+	state = fields[0]
 	parent, err = strconv.Atoi(fields[1])
 	if err != nil {
 		return
@@ -40,11 +54,7 @@ func parseNginxProcStat(data string) (parent int, start, rss uint64, err error) 
 	return
 }
 
-func (e *NginxExecutor) runtimeStatus(procRoot string) (*nginx.RuntimeStatus, error) {
-	bin := e.GetBin()
-	if bin == "" {
-		return nil, fmt.Errorf("请先检测 Nginx 二进制路径")
-	}
+func scanNginxRuntime(ctx context.Context, procRoot, bin string) ([]nginxRuntimeProcess, error) {
 	binary, err := os.Stat(bin)
 	if err != nil {
 		return nil, fmt.Errorf("无法读取 Nginx 二进制: %w", err)
@@ -61,20 +71,25 @@ func (e *NginxExecutor) runtimeStatus(procRoot string) (*nginx.RuntimeStatus, er
 		return nil, fmt.Errorf("process count exceeds inspection budget")
 	}
 	var processes []nginxRuntimeProcess
-	var master *nginxRuntimeProcess
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
 		dir := filepath.Join(procRoot, entry.Name())
 		exe, err := os.Stat(filepath.Join(dir, "exe"))
-		if err != nil || !os.SameFile(binary, exe) {
-			// Package upgrades can unlink the running executable before restart.
+		sameBinary := err == nil && os.SameFile(binary, exe)
+		var deletedBinary bool
+		if !sameBinary {
 			path, linkErr := os.Readlink(filepath.Join(dir, "exe"))
-			if linkErr != nil || strings.TrimSuffix(path, " (deleted)") != resolvedBin {
-				continue
-			}
+			deletedBinary = linkErr == nil && path == resolvedBin+" (deleted)"
+			sameBinary = deletedBinary
+		}
+		if !sameBinary && !hasNginxMasterTitle(filepath.Join(dir, "cmdline")) {
+			continue
 		}
 		command, err := procText(filepath.Join(dir, "cmdline"))
 		if os.IsNotExist(err) {
@@ -91,39 +106,48 @@ func (e *NginxExecutor) runtimeStatus(procRoot string) (*nginx.RuntimeStatus, er
 		if err != nil {
 			return nil, err
 		}
-		parent, start, rss, err := parseNginxProcStat(string(stat))
+		parent, start, rss, state, err := parseNginxProcStat(stat)
 		if err != nil {
 			return nil, err
 		}
-		p := nginxRuntimeProcess{pid: pid, parent: parent, start: start, rss: rss, title: title}
-		processes = append(processes, p)
-		if strings.HasPrefix(title, "nginx: master process ") {
-			if master != nil {
-				return nil, fmt.Errorf("检测到多个 Nginx 主进程，无法安全确定受管实例")
-			}
-			master = &processes[len(processes)-1]
+		if state == "Z" || state == "X" {
+			continue
 		}
+		processes = append(processes, nginxRuntimeProcess{pid: pid, parent: parent, start: start, rss: rss, title: title, sameBinary: sameBinary, deletedBinary: deletedBinary})
 	}
-	result := &nginx.RuntimeStatus{}
+	return processes, nil
+}
+
+func hasNginxMasterTitle(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	var prefix [len(nginxMasterTitle)]byte
+	_, err = io.ReadFull(file, prefix[:])
+	return err == nil && string(prefix[:]) == nginxMasterTitle
+}
+
+func (runtime nginxRuntime) status(ctx context.Context) (*nginx.RuntimeStatus, error) {
+	selection, err := runtime.inspect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, master := selection.status, selection.master
 	if master == nil {
-		return result, nil
-	}
-	// Refuse a known different configuration rather than signal another instance.
-	expected := e.GetConfPath()
-	conf := runtimeConfPath(master.title, expected, "")
-	if expected != "" && (conf == "" || canonicalRuntimePath(conf) != canonicalRuntimePath(expected)) {
-		return nil, fmt.Errorf("无法确认运行中的 Nginx 使用了面板配置的主配置文件")
+		return &result, nil
 	}
 	result.Running, result.MasterPID = true, master.pid
 	var totalPSS uint64
 	pssAvailable := true
-	for _, p := range processes {
-		if p.pid != master.pid && p.parent != master.pid {
+	for _, p := range selection.processes {
+		if p.pid != master.pid && (!p.sameBinary || p.parent != master.pid || strings.HasPrefix(p.title, nginxMasterTitle)) {
 			continue
 		}
 		result.Processes++
 		result.MemoryRSS += p.rss * uint64(os.Getpagesize())
-		if pss, err := readNginxPSS(filepath.Join(procRoot, strconv.Itoa(p.pid), "smaps_rollup")); err == nil {
+		if pss, err := readNginxPSS(filepath.Join(runtime.procRoot, strconv.Itoa(p.pid), "smaps_rollup")); err == nil {
 			totalPSS += pss
 		} else {
 			// Never present a partial process-tree sum as total memory usage.
@@ -136,7 +160,7 @@ func (e *NginxExecutor) runtimeStatus(procRoot string) (*nginx.RuntimeStatus, er
 	if pssAvailable {
 		result.MemoryPSS = &totalPSS
 	}
-	uptime, err := os.ReadFile(filepath.Join(procRoot, "uptime"))
+	uptime, err := os.ReadFile(filepath.Join(runtime.procRoot, "uptime"))
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +176,7 @@ func (e *NginxExecutor) runtimeStatus(procRoot string) (*nginx.RuntimeStatus, er
 	if seconds > float64(master.start)/100 {
 		result.UptimeSeconds = uint64(seconds - float64(master.start)/100)
 	}
-	return result, nil
+	return &result, nil
 }
 
 func readNginxPSS(path string) (uint64, error) {
@@ -175,7 +199,12 @@ func readNginxPSS(path string) (uint64, error) {
 }
 
 func (s *Server) handleNginxStatus(w http.ResponseWriter, r *http.Request) {
-	status, err := s.executor.runtimeStatus("/proc")
+	runtime, _, err := s.executor.loadRuntime(r.Context(), "/proc")
+	if err != nil {
+		writeAgentError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	status, err := runtime.status(r.Context())
 	if err != nil {
 		writeAgentError(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -194,11 +223,38 @@ func (s *Server) handleNginxControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.executor.lifecycleMu.Unlock()
+	var req nginx.RuntimeControlRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	decoder.DisallowUnknownFields()
+	decodeErr := decoder.Decode(&req)
+	if (decodeErr != io.EOF && (decodeErr != nil || decoder.Decode(new(any)) != io.EOF)) || !req.ValidFor(action) {
+		writeAgentError(w, http.StatusBadRequest, "无效的 Nginx 控制请求")
+		return
+	}
+	if action == "restart" {
+		if !s.transactionMu.TryLock() {
+			writeAgentError(w, http.StatusConflict, "配置写入正在执行，请稍后重试")
+			return
+		}
+		defer s.transactionMu.Unlock()
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	result, err := s.executor.control(ctx, action)
+	result, err := s.executor.control(ctx, action, req.RestartGeneration)
 	if err != nil {
-		writeAgentError(w, http.StatusInternalServerError, fmt.Sprintf("Nginx %s 失败: %v\n%s", action, err, result.Stderr))
+		switch {
+		case errors.Is(err, errNginxRestartUnconfirmed):
+			writeAgentError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		case errors.Is(err, errRuntimeConflict):
+			writeAgentError(w, http.StatusConflict, err.Error())
+			return
+		}
+		message := err.Error()
+		if stderr := strings.TrimSpace(result.Stderr); stderr != "" {
+			message += "\n" + stderr
+		}
+		writeAgentError(w, http.StatusInternalServerError, message)
 		return
 	}
 	writeAgentOK(w, map[string]any{"ok": true})
@@ -206,13 +262,27 @@ func (s *Server) handleNginxControl(w http.ResponseWriter, r *http.Request) {
 
 // Never fall back after a supervisor command fails: that can create an unmanaged
 // second master or allow the supervisor to undo a requested stop.
-func (e *NginxExecutor) control(ctx context.Context, action string) (CmdResult, error) {
+func (e *NginxExecutor) control(ctx context.Context, action, generation string) (CmdResult, error) {
 	if action != "start" && action != "stop" && action != "restart" {
 		return CmdResult{}, fmt.Errorf("invalid action")
 	}
-	status, err := e.runtimeStatus("/proc")
+	runtime, result, err := e.loadRuntime(ctx, "/proc")
+	if err != nil {
+		return result, err
+	}
+	if action == "restart" {
+		return runtime.restart(ctx, generation)
+	}
+	selection, err := runtime.inspect(ctx)
 	if err != nil {
 		return CmdResult{}, err
+	}
+	if selection.status.OtherActionsBlocked {
+		return CmdResult{}, runtimeConflict("存在其他或无法确认归属的 Nginx 主进程，请先检查运行状态")
+	}
+	masterPID := 0
+	if selection.master != nil {
+		masterPID = selection.master.pid
 	}
 	if action != "stop" {
 		result, err := e.Test(ctx)
@@ -220,40 +290,26 @@ func (e *NginxExecutor) control(ctx context.Context, action string) (CmdResult, 
 			return result, fmt.Errorf("配置检查未通过，未执行 %s: %w", action, err)
 		}
 	}
-	version, err := e.run(ctx, e.GetBin(), "-V")
-	if err != nil {
-		return version, fmt.Errorf("无法确认 Nginx 默认配置: %w", err)
-	}
-	prefix, defaultConf := compiledRuntimePaths(version.Stdout + "\n" + version.Stderr)
-	if status.Running {
-		command, err := procText(filepath.Join("/proc", strconv.Itoa(status.MasterPID), "cmdline"))
-		if err != nil {
-			return CmdResult{}, err
+	if runtime.s6 {
+		if masterPID != 0 {
+			pid, err := runtime.supervisorPID(ctx, nginxS6Service)
+			if err != nil || pid != masterPID {
+				return CmdResult{}, runtimeConflict("运行中实例不属于容器内的 Nginx 服务")
+			}
 		}
-		if !e.matchesRuntimeConfig(command, defaultConf, prefix) {
-			return CmdResult{}, fmt.Errorf("运行中实例的主配置与面板配置不一致，拒绝操作")
-		}
-	}
-	if _, err := os.Stat("/run/service/nginx-service/supervise"); err == nil {
 		// nginx has no s6 readiness notification; wait for up, not ready.
 		args := []string{"-wu", "-T", "20000", "-u", "/run/service/nginx-service"}
 		if action == "stop" {
 			args[0], args[3] = "-wd", "-d"
 		}
-		if action == "restart" {
-			result, err := e.run(ctx, "/command/s6-svc", "-wd", "-T", "20000", "-d", "/run/service/nginx-service")
-			if err != nil {
-				return result, err
-			}
-		}
 		result, err := e.run(ctx, "/command/s6-svc", args...)
 		if err != nil {
 			return result, err
 		}
-		return result, e.waitRuntime(ctx, action != "stop")
+		return result, runtime.wait(ctx, action != "stop")
 	}
-	if _, err := os.Stat("/run/systemd/system"); err == nil {
-		service, err := e.runtimeSystemdUnit(ctx, status.MasterPID, defaultConf, prefix)
+	if runtime.systemd {
+		service, err := e.runtimeSystemdUnit(ctx, masterPID, runtime.defaultConf, runtime.prefix)
 		if err != nil {
 			return CmdResult{}, err
 		}
@@ -261,58 +317,56 @@ func (e *NginxExecutor) control(ctx context.Context, action string) (CmdResult, 
 		if err != nil {
 			return result, err
 		}
-		return result, e.waitRuntime(ctx, action != "stop")
+		return result, runtime.wait(ctx, action != "stop")
 	}
-	if action == "start" && status.Running || action == "stop" && !status.Running {
+	if (action == "start") == (masterPID != 0) {
 		return CmdResult{}, nil
 	}
 	args := []string{}
 	if conf := e.GetConfPath(); conf != "" {
 		args = append(args, "-c", conf)
 	}
-	if action != "start" && status.Running {
+	if action == "stop" {
 		result, err := e.run(ctx, e.GetBin(), append(args, "-s", "quit")...)
 		if err != nil {
 			return result, err
 		}
-		if err = e.waitRuntime(ctx, false); err != nil {
-			return result, err
-		}
-		if action == "stop" {
-			return result, nil
-		}
+		return result, runtime.wait(ctx, false)
 	}
-	result, err := e.run(ctx, e.GetBin(), args...)
+	result, err = e.run(ctx, e.GetBin(), args...)
 	if err != nil {
 		return result, err
 	}
-	return result, e.waitRuntime(ctx, true)
-}
-
-func (e *NginxExecutor) matchesRuntimeConfig(command, defaultConf, prefix string) bool {
-	conf := runtimeConfPath(command, defaultConf, prefix)
-	expected := e.GetConfPath()
-	if expected == "" {
-		expected = runtimeConfPath("", defaultConf, prefix)
-	}
-	return filepath.IsAbs(conf) && canonicalRuntimePath(conf) == canonicalRuntimePath(expected)
+	return result, runtime.wait(ctx, true)
 }
 
 func (e *NginxExecutor) matchesSystemdExecStart(output, defaultConf, prefix string) bool {
+	options, ok := systemdRuntimeOptions(output, e.GetBin(), defaultConf, prefix)
+	expected := e.GetConfPath()
+	if expected == "" {
+		expected = absoluteRuntimePath(prefix, defaultConf)
+	}
+	return ok && canonicalRuntimePath(options.conf) == canonicalRuntimePath(expected)
+}
+
+func systemdRuntimeOptions(output, bin, defaultConf, prefix string) (runtimeOptions, bool) {
 	_, path, ok := strings.Cut(output, "path=")
 	if !ok {
-		return false
+		return runtimeOptions{}, false
 	}
 	path, _, ok = strings.Cut(path, " ;")
-	if !ok || canonicalRuntimePath(strings.TrimSpace(path)) != canonicalRuntimePath(e.GetBin()) {
-		return false
+	if !ok || canonicalRuntimePath(strings.TrimSpace(path)) != canonicalRuntimePath(bin) {
+		return runtimeOptions{}, false
 	}
 	_, args, ok := strings.Cut(output, "argv[]=")
 	if !ok {
-		return false
+		return runtimeOptions{}, false
 	}
 	args, _, ok = strings.Cut(args, " ;")
-	return ok && e.matchesRuntimeConfig(args, defaultConf, prefix)
+	if !ok || strings.Count(output, "argv[]=") != 1 {
+		return runtimeOptions{}, false
+	}
+	return parseRuntimeOptions(args, defaultConf, prefix)
 }
 
 func (e *NginxExecutor) runtimeSystemdUnit(ctx context.Context, masterPID int, defaultConf, prefix string) (string, error) {
@@ -333,14 +387,25 @@ func (e *NginxExecutor) runtimeSystemdUnit(ctx context.Context, masterPID int, d
 }
 
 func (e *NginxExecutor) waitRuntime(ctx context.Context, running bool) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	runtime, _, err := e.loadRuntime(ctx, "/proc")
+	if err != nil {
+		return err
+	}
+	return runtime.wait(ctx, running)
+}
+
+func (runtime nginxRuntime) wait(ctx context.Context, running bool) error {
+	ticker := time.NewTicker(runtimePollInterval)
 	defer ticker.Stop()
 	for {
-		status, err := e.runtimeStatus("/proc")
+		selection, err := runtime.inspect(ctx)
 		if err != nil {
 			return err
 		}
-		if status.Running == running {
+		if selection.status.BlockedReason != "" {
+			return runtimeConflict(selection.status.BlockedReason)
+		}
+		if (selection.master != nil) == running {
 			return nil
 		}
 		select {

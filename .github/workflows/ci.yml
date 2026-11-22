@@ -51,6 +51,9 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Test module index signing workflow
+        run: bash scripts/test-nginx-module-index.sh
+
       - name: Run vet
         run: make vet
 

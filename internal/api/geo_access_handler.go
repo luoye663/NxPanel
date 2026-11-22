@@ -54,6 +54,19 @@ func (s *Server) handleGeoIPStatus(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, r, err)
 		return
 	}
+	if s.agentClient != nil {
+		module, err := s.agentClient.GeoIP2ModuleStatus(r.Context())
+		switch {
+		case err != nil || module.State == "busy" || module.State == "drifted" || module.State == "needs_attention":
+			result.Runtime.Module = "unchecked"
+		case module.Loaded:
+			result.Runtime.Module = "available"
+		case module.Configured || module.Present:
+			result.Runtime.Module = "unloaded"
+		default:
+			result.Runtime.Module = "unavailable"
+		}
+	}
 	WriteOK(w, r, result)
 }
 func (s *Server) handleGeoIPUpdate(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +80,22 @@ func (s *Server) handleGeoIPUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteOK(w, r, result)
 }
+func (s *Server) handleGeoIPMigrate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireGeoAccess(w, r) {
+		return
+	}
+	if err := s.geoAccessSvc.Migrate(r.Context(), middleware.GetRequestID(r.Context())); err != nil {
+		writeAppError(w, r, app.ErrValidationFailedMsg(err.Error(), nil))
+		return
+	}
+	result, err := s.geoAccessSvc.GetStatus()
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, result)
+}
+
 func (s *Server) handleGeoIPDatabaseUpload(w http.ResponseWriter, r *http.Request) {
 	if !s.requireGeoAccess(w, r) {
 		return
