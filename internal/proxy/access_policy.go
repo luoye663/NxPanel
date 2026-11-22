@@ -92,6 +92,8 @@ func stripGeneratedProxyAuth(content []byte, proxies []*repo.SiteProxy, panelDir
 		changed := false
 		for i := 0; i < len(lines); i++ {
 			if strings.TrimSpace(lines[i]) == `auth_basic "Restricted";` && i+1 < len(lines) && knownFiles[strings.TrimSpace(lines[i+1])] {
+				// Retain source line numbers for the independent config diagnostic.
+				cleaned.WriteString(strings.Repeat("\n", strings.Count(lines[i]+lines[i+1], "\n")))
 				i++
 				changed = true
 				continue

@@ -39,6 +39,8 @@ type TransactionRequest struct {
 	Changes        []FileChangeRequest `json:"changes"`
 	TestNginx      bool                `json:"test_nginx"`
 	ReloadNginx    bool                `json:"reload_nginx"`
+	ConfirmReload  bool                `json:"confirm_reload,omitempty"`
+	PreserveBackup bool                `json:"preserve_backup,omitempty"`
 	TimeoutSeconds int                 `json:"timeout_seconds"`
 }
 
@@ -253,15 +255,16 @@ type SiteBackupCreateResponse struct {
 }
 
 type SiteBackupRestoreRequest struct {
-	SiteID        string   `json:"site_id"`
-	BackupPath    string   `json:"backup_path"`
-	RestoreConfig bool     `json:"restore_config"`
-	RestoreRoot   bool     `json:"restore_root"`
-	RestoreSSL    bool     `json:"restore_ssl"`
-	ConfigPaths   []string `json:"config_paths"`
-	RootPath      string   `json:"root_path"`
-	SSLPaths      []string `json:"ssl_paths"`
-	ReloadNginx   bool     `json:"reload_nginx"`
+	SiteID           string   `json:"site_id"`
+	BackupPath       string   `json:"backup_path"`
+	RestoreConfig    bool     `json:"restore_config"`
+	RestoreRoot      bool     `json:"restore_root"`
+	RestoreSSL       bool     `json:"restore_ssl"`
+	ConfigPaths      []string `json:"config_paths"`
+	RootPath         string   `json:"root_path"`
+	SSLPaths         []string `json:"ssl_paths"`
+	ReloadNginx      bool     `json:"reload_nginx"`
+	PolicyHTTPConfig *string  `json:"policy_http_config,omitempty"`
 }
 
 // ============================================================

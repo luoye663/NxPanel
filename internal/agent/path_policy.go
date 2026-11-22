@@ -10,7 +10,10 @@
 package agent
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/security"
@@ -43,12 +46,15 @@ func DefaultAllowedRoots() []string {
 //  3. 最小通用网站根目录：/www/wwwroot、/var/www
 //  4. 用户追加路径：cfg.Agent.AllowedRoots（可选）
 func NewPathPolicyFromConfig(cfg *app.Config) *PathPolicy {
-	return NewPathPolicy(app.BuildAllowedPathRoots(cfg))
+	policy := NewPathPolicy(app.BuildAllowedPathRoots(cfg))
+	policy.protected = os.Getenv("NXPANEL_UPDATE_HOME")
+	return policy
 }
 
 // PathPolicy 路径安全策略
 type PathPolicy struct {
-	roots []string
+	roots     []string
+	protected string
 }
 
 // Roots 返回当前生效的允许目录列表（只读副本）
@@ -71,6 +77,23 @@ func NewDefaultPathPolicy() *PathPolicy {
 // Validate 检查路径是否在允许的目录内
 // 返回清理后的路径和错误
 func (p *PathPolicy) Validate(path string) (string, error) {
+	for _, protected := range []string{moduleStateDir, moduleTestStateDir} {
+		clean := filepath.Clean(path)
+		_, inside := security.CleanAbsWithin(path, []string{protected})
+		_, contains := security.CleanAbsWithin(protected, []string{clean})
+		if clean == "/" || clean == protected || strings.HasPrefix(clean, protected+"/") || strings.HasPrefix(protected, clean+"/") || inside == nil || contains == nil {
+			return "", errors.New("模块系统目录不允许通过文件管理访问")
+		}
+	}
+	if p.protected != "" {
+		clean := filepath.Clean(path)
+		ancestor := clean == "/" || strings.HasPrefix(p.protected, clean+"/")
+		_, inside := security.CleanAbsWithin(path, []string{p.protected})
+		_, contains := security.CleanAbsWithin(p.protected, []string{clean})
+		if ancestor || inside == nil || contains == nil {
+			return "", errors.New("更新程序目录不允许通过文件管理访问")
+		}
+	}
 	return security.CleanAbsWithin(path, p.roots)
 }
 
@@ -79,7 +102,7 @@ func (p *PathPolicy) Validate(path string) (string, error) {
 func (p *PathPolicy) ValidateSymlinkTarget(linkPath, target string) error {
 	// 如果是绝对路径，直接验证
 	if filepath.IsAbs(target) {
-		_, err := security.CleanAbsWithin(target, p.roots)
+		_, err := p.Validate(target)
 		return err
 	}
 
@@ -88,6 +111,6 @@ func (p *PathPolicy) ValidateSymlinkTarget(linkPath, target string) error {
 	resolved := filepath.Clean(filepath.Join(linkDir, target))
 
 	// 检查解析后的路径是否在允许范围内
-	_, err := security.CleanAbsWithin(resolved, p.roots)
+	_, err := p.Validate(resolved)
 	return err
 }

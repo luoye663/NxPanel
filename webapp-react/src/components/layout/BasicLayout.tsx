@@ -1,22 +1,21 @@
-import { ActionIcon, Anchor, AppShell, Badge, Burger, Group, NavLink, Popover, Stack, Text, Title, Tooltip, UnstyledButton, rem } from '@mantine/core'
+import { AppShell, Badge, Burger, Group, NavLink, Text, Title, UnstyledButton, rem } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import {
   IconDashboard,
-  IconExternalLink,
   IconFolder,
   IconPalette,
   IconLogout,
   IconCalendarTime,
-  IconRefresh,
   IconServer,
   IconSettings,
   IconWorld,
 } from '@tabler/icons-react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
-import { useSystemOverview, useUpgradeCheckMutation, useUpgradeStatus } from '@/api/hooks'
+import { useSystemOverview } from '@/api/hooks'
 import { useAuth } from '@/auth/AuthProvider'
 import { useBranding } from '@/branding/BrandingProvider'
-import { notifyError, notifySuccess } from '@/utils/notify'
+import { notifySuccess } from '@/utils/notify'
+import { VersionUpdate } from './VersionUpdate'
 
 const menuItems = [
   { path: '/', label: '仪表盘', icon: IconDashboard },
@@ -27,27 +26,13 @@ const menuItems = [
   { path: '/logs', label: '日志', icon: IconSettings },
   { path: '/panel-settings', label: '面板设置', icon: IconPalette },
 ]
-const upgradeCheckInterval = 6 * 60 * 60 * 1000
-
-function formatPublishedAt(value?: string) {
-  if (!value) return '-'
-
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-
-  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
-}
-
 export function BasicLayout() {
   const [opened, { toggle, close }] = useDisclosure()
   const location = useLocation()
   const auth = useAuth()
   const { branding } = useBranding()
   const systemOverviewQuery = useSystemOverview()
-  const upgradeQuery = useUpgradeStatus(upgradeCheckInterval)
-  const upgradeCheckMutation = useUpgradeCheckMutation()
   const systemOverview = systemOverviewQuery.data
-  const upgradeInfo = upgradeQuery.data
   const activeItem = menuItems.find((item) => item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path))
   const agentAvailable = systemOverview?.agent.available
   const agentStatusLabel = agentAvailable === undefined ? '未知' : agentAvailable ? '可用' : '不可用'
@@ -56,21 +41,6 @@ export function BasicLayout() {
   async function handleLogout() {
     await auth.logout()
     notifySuccess({ message: '已退出登录' })
-  }
-
-  function openReleaseURL() {
-    if (upgradeInfo?.release_url) {
-      window.open(upgradeInfo.release_url, '_blank', 'noopener,noreferrer')
-    }
-  }
-
-  async function handleRefreshUpgrade() {
-    try {
-      await upgradeCheckMutation.mutateAsync()
-      notifySuccess({ message: '已检查版本更新' })
-    } catch (err) {
-      notifyError({ message: err instanceof Error ? err.message : '版本检查失败' })
-    }
   }
 
   return (
@@ -89,73 +59,7 @@ export function BasicLayout() {
             </div>
           </Group>
           <Group gap="xs" wrap="nowrap">
-            {upgradeInfo ? (
-              <Popover position="bottom-end" withArrow shadow="md" width={280}>
-                <Popover.Target>
-                  <Badge
-                    component="button"
-                    type="button"
-                    className="versionBadge"
-                    color={upgradeInfo.has_upgrade ? 'orange' : 'gray'}
-                    variant={upgradeInfo.has_upgrade ? 'light' : 'outline'}
-                  >
-                    程序版本: {upgradeInfo.current_version || '版本未知'}
-                  </Badge>
-                </Popover.Target>
-                <Popover.Dropdown>
-                  <Stack gap="xs">
-                    <Group justify="space-between" align="flex-start">
-                      <div>
-                        <Text fw={600} size="sm">版本信息</Text>
-                        {upgradeInfo.has_upgrade ? (
-                          <Text size="xs" c="orange.7">发现新版本</Text>
-                        ) : (
-                          <Text size="xs" c="dimmed">已是最新版本</Text>
-                        )}
-                      </div>
-                      <Tooltip label="检查更新" position="left">
-                        <ActionIcon
-                          variant="subtle"
-                          color="gray"
-                          aria-label="检查更新"
-                          loading={upgradeCheckMutation.isPending}
-                          onClick={handleRefreshUpgrade}
-                        >
-                          <IconRefresh size={rem(16)} />
-                        </ActionIcon>
-                      </Tooltip>
-                    </Group>
-                    <Group justify="space-between" gap="md">
-                      <Text c="dimmed" size="sm">当前版本</Text>
-                      <Text size="sm" fw={600}>{upgradeInfo.current_version || '-'}</Text>
-                    </Group>
-                    <Group justify="space-between" gap="md">
-                      <Text c="dimmed" size="sm">最新版本</Text>
-                      <Text size="sm" fw={700} c={upgradeInfo.has_upgrade ? 'orange.7' : undefined}>{upgradeInfo.latest_version || '-'}</Text>
-                    </Group>
-                    <Group justify="space-between" gap="md">
-                      <Text c="dimmed" size="sm">发布时间</Text>
-                      <Text size="sm">{formatPublishedAt(upgradeInfo.published_at)}</Text>
-                    </Group>
-                    {upgradeInfo.error ? (
-                      <Text size="xs" c="red.7">{upgradeInfo.error}</Text>
-                    ) : null}
-                    {upgradeInfo.release_url ? (
-                      <Anchor
-                        component="button"
-                        type="button"
-                        size="sm"
-                        mt={4}
-                        onClick={openReleaseURL}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
-                      >
-                        查看发布 <IconExternalLink size={rem(14)} />
-                      </Anchor>
-                    ) : null}
-                  </Stack>
-                </Popover.Dropdown>
-              </Popover>
-            ) : null}
+            <VersionUpdate />
             <Badge color={agentStatusColor} variant="outline">
               Agent状态: {agentStatusLabel}
             </Badge>

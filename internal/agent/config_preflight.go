@@ -38,6 +38,9 @@ func (s preflightSource) Open(path string) (io.ReadCloser, error) {
 }
 
 func (s preflightSource) Includes(path string) ([]string, error) {
+	if isModuleInclude(path) {
+		return nil, nil
+	}
 	if !strings.ContainsAny(path, "*?[") {
 		return []string{path}, nil
 	}
@@ -114,9 +117,6 @@ func (s *Server) handleConfigPreflight(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := configpreflight.Check(ctx, preflightSource{s.policy}, req.SitePath, req.GlobalPath, strings.NewReader(req.Main)); err != nil {
-		writeAgentError(w, http.StatusBadRequest, "访问策略配置预检失败: "+err.Error())
-		return
-	}
-	writeAgentOK(w, struct{}{})
+	report := configpreflight.Diagnose(ctx, preflightSource{s.policy}, req.SitePath, req.GlobalPath, strings.NewReader(req.Main))
+	writeAgentOK(w, report)
 }

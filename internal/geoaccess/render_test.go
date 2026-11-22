@@ -29,16 +29,15 @@ func TestRenderConfigurationPriorityAndTrustedProxy(t *testing.T) {
 		{RuleType: "allow", IPsJSON: `["10.0.0.9","10.0.0.0/24"]`, Enabled: true},
 		{RuleType: "deny", IPsJSON: `["192.0.2.0/24"]`, Enabled: true},
 	}}
-	cache := &countryCache{BuildEpoch: 123, Networks: map[string][]string{"CN": {"1.0.1.0/24"}, "US": {"8.8.8.0/24"}}}
-
-	rendered, err := renderConfiguration("/panel", []string{"10.0.0.0/8"}, cache, settings, rules, ipRules)
+	rendered, err := renderConfiguration("/panel", []string{"10.0.0.0/8"}, 123, settings, rules, ipRules)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		"set_real_ip_from 10.0.0.0/8;",
 		"real_ip_header X-Forwarded-For;",
-		"1.0.1.0/24 deny_444;",
+		"map $nxpanel_geoip_country $nx_geo_country_",
+		"CN deny_444;",
 		"~^[01]:1: deny_403;",
 		"~^[01]:0:1: allow;",
 		"~^1:0:0: allow;",
@@ -70,7 +69,7 @@ func TestPatchAccessLimitIsIdempotentAndRemovable(t *testing.T) {
 }
 
 func TestRenderConfigurationDoesNothingWithoutEnabledSites(t *testing.T) {
-	rendered, err := renderConfiguration("/panel", nil, &countryCache{}, nil, nil, nil)
+	rendered, err := renderConfiguration("/panel", nil, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +84,7 @@ func TestRenderConfigurationCustomUnmatchedResponse(t *testing.T) {
 	rules := map[string][]*repo.SiteGeoRule{"site-response": {
 		{CountriesJSON: `["CN"]`, Action: ActionDeny403, Enabled: true},
 	}}
-	cache := &countryCache{BuildEpoch: 1, Networks: map[string][]string{"CN": {"1.0.1.0/24"}}}
-	rendered, err := renderConfiguration("/panel", nil, cache, settings, rules, nil)
+	rendered, err := renderConfiguration("/panel", nil, 1, settings, rules, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +94,7 @@ func TestRenderConfigurationCustomUnmatchedResponse(t *testing.T) {
 	}
 	for _, want := range []string{
 		"default deny_default;",
-		"1.0.1.0/24 deny_403;",
+		"CN deny_403;",
 		"if ($nx_geo_action_",
 		"rewrite ^(?!/__nxpanel_geo_(?:response|body)_",
 		"error_page 404 =451 /__nxpanel_geo_body_",
@@ -119,7 +117,7 @@ func TestRenderConfigurationCustomUnmatchedResponse(t *testing.T) {
 func TestRenderConfigurationUnmatched444HasNoResponseArtifact(t *testing.T) {
 	settings := []*repo.SiteGeoSettings{{SiteID: "site-444", Enabled: true, DefaultAction: ActionRespond,
 		DefaultStatusCode: 444, DefaultResponseType: ResponseHTML, DefaultResponseBody: "ignored"}}
-	rendered, err := renderConfiguration("/panel", nil, &countryCache{Networks: map[string][]string{}}, settings, nil, nil)
+	rendered, err := renderConfiguration("/panel", nil, 0, settings, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

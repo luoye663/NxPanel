@@ -62,6 +62,7 @@ func DefaultNginxTimeouts() NginxTimeouts {
 // Bin 和 ConfPath 在 Detect 后会被更新，因此需要用互斥锁保护。
 type NginxExecutor struct {
 	mu            sync.Mutex
+	lifecycleMu   sync.Mutex
 	bin           string
 	confPath      string
 	timeouts      NginxTimeouts
@@ -191,6 +192,13 @@ func (e *NginxExecutor) Start(ctx context.Context) (CmdResult, error) {
 
 	if bin == "" {
 		return CmdResult{}, fmt.Errorf("nginx 二进制路径未设置，请先执行 detect")
+	}
+	if _, err := os.Stat("/run/service/nginx-service/supervise"); err == nil {
+		result, err := e.run(ctx, "/command/s6-svc", "-wu", "-T", "10000", "-u", "/run/service/nginx-service")
+		if err != nil {
+			return result, err
+		}
+		return result, e.waitRuntime(ctx, true)
 	}
 
 	if result, err := e.startViaSystemd(ctx, bin); err == nil {
@@ -489,6 +497,7 @@ func (e *NginxExecutor) run(ctx context.Context, bin string, args ...string) (Cm
 
 type commandOutputState struct {
 	mu            sync.Mutex
+	lifecycleMu   sync.Mutex
 	max           int64
 	diagnosticMax int64
 	total         int64

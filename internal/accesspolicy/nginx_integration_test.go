@@ -34,7 +34,7 @@ func TestNginxHTTP(t *testing.T) {
 		{ID: "office", Enabled: true, Match: "all", Conditions: []Condition{{Kind: "ip", Values: []string{"10.0.0.0/8", "2001:db8::/48"}}}, Action: Action{Type: "allow"}},
 		{ID: "region", Enabled: true, Match: "all", Conditions: []Condition{{Kind: "country", Values: []string{"CN"}}}, Action: Action{Type: "deny", StatusCode: 452, ResponseBody: "region"}},
 	}, p.Rules...)
-	ctx := RenderContext{CountryNetworks: map[string][]string{"CN": {"10.0.0.0/8", "2001:db8::/32"}}, AuthFiles: map[string]string{strings.Repeat("a", 64): "user:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n"}}
+	ctx := RenderContext{AuthFiles: map[string]string{strings.Repeat("a", 64): "user:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n"}}
 	compiled, err := Compile("native-test", "/policy", p, ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -66,13 +66,19 @@ http {
  set_real_ip_from 0.0.0.0/0;
  real_ip_header X-Forwarded-For;
  real_ip_recursive on;
+ geo $nxpanel_geoip_country { default ZZ; 10.0.0.0/8 CN; 2001:db8::/32 CN; }
  include /policy/global.conf;
  server {
   listen 8080;
   root /policy/www;
   include /policy/server.conf;
   location = /rewrite { try_files /missing /admin/private; }
-  location /proxy { proxy_pass http://127.0.0.1:8081; }
+  location /proxy {
+   proxy_pass http://127.0.0.1:8081;
+   add_header Access-Control-Allow-Origin *;
+   add_header Access-Control-Allow-Methods 'GET, POST, OPTIONS';
+   if ($request_method = 'OPTIONS') { return 204; }
+  }
  }
  server { listen 8081; location / { return 200 "upstream"; } }
 }`
@@ -148,6 +154,34 @@ http {
 				t.Errorf("Content-Type %q", resp.Header.Get("Content-Type"))
 			}
 		})
+	}
+	// A custom preflight response intentionally skips password verification for
+	// OPTIONS only. Actual requests still pass through the server auth policy.
+	for _, tt := range []struct {
+		method, password string
+		want             int
+	}{
+		{http.MethodOptions, "", http.StatusNoContent},
+		{http.MethodGet, "", http.StatusUnauthorized},
+		{http.MethodPost, "", http.StatusUnauthorized},
+		{http.MethodGet, "password", http.StatusOK},
+		{http.MethodPost, "password", http.StatusOK},
+	} {
+		req, _ := http.NewRequest(tt.method, "http://"+address+"/proxy", nil)
+		if tt.password != "" {
+			req.SetBasicAuth("user", tt.password)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tt.want {
+			t.Fatalf("%s password=%t: got %d want %d", tt.method, tt.password != "", resp.StatusCode, tt.want)
+		}
+		if tt.method == http.MethodOptions && resp.Header.Get("Access-Control-Allow-Origin") != "*" {
+			t.Fatal("preflight lost CORS headers")
+		}
 	}
 	checkIP := func(ip string, want int) bool {
 		t.Helper()

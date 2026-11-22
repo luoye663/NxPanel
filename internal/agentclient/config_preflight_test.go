@@ -2,11 +2,25 @@ package agentclient
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAccessDiagnosticOldOrUnknownAgentResponse(t *testing.T) {
+	for _, data := range []string{`{}`, `null`, `{"complete":true}`, `{"warnings":null,"complete":true,"truncated":false}`} {
+		client := &Client{httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true,"data":` + data + `}`)), Header: make(http.Header)}, nil
+		})}}
+		report, err := client.DiagnoseAccessConfig(context.Background(), &ConfigPreflightRequest{})
+		if err != nil || report.Complete || len(report.Warnings) != 1 {
+			t.Fatalf("unknown response treated as safe: %s %+v %v", data, report, err)
+		}
+	}
+}
 
 func TestAccessPreflightLargeGeoKeepsFileReadLimit(t *testing.T) {
 	dir := t.TempDir()
@@ -28,7 +42,7 @@ func TestAccessPreflightLargeGeoKeepsFileReadLimit(t *testing.T) {
 	client := NewWithDefaults(socket, token)
 	defer client.Close()
 	req := &ConfigPreflightRequest{SitePath: filepath.Join(dir, "site.conf"), GlobalPath: global, Main: "server { location / { proxy_pass http://backend; } }"}
-	if err := client.CheckAccessConfig(context.Background(), req); err != nil {
+	if report, err := client.DiagnoseAccessConfig(context.Background(), req); err != nil || !report.Complete || len(report.Warnings) != 0 {
 		t.Fatal(err)
 	}
 	if _, _, err := client.ReadFile(context.Background(), data); err == nil || !strings.Contains(err.Error(), "16 MB") {
@@ -37,8 +51,8 @@ func TestAccessPreflightLargeGeoKeepsFileReadLimit(t *testing.T) {
 	if err := os.WriteFile(data, []byte(body+"auth_basic Private;"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.CheckAccessConfig(context.Background(), req); err == nil || !strings.Contains(err.Error(), "auth_basic") {
-		t.Fatalf("conflict after large geo missed: %v", err)
+	if report, err := client.DiagnoseAccessConfig(context.Background(), req); err != nil || !report.Complete || len(report.Warnings) != 1 || report.Warnings[0].Directive != "auth_basic" {
+		t.Fatalf("conflict after large geo missed: %+v %v", report, err)
 	}
 }
 
@@ -61,7 +75,7 @@ func TestAccessPreflightRejectsUnsafeIncludes(t *testing.T) {
 	defer client.Close()
 	for _, include := range []string{forbidden, "escape.conf", "missing.conf"} {
 		req := &ConfigPreflightRequest{SitePath: filepath.Join(dir, "site.conf"), GlobalPath: global, Main: "server { include " + include + "; }"}
-		if err := client.CheckAccessConfig(context.Background(), req); err == nil {
+		if report, err := client.DiagnoseAccessConfig(context.Background(), req); err == nil && report.Complete {
 			t.Fatalf("unsafe include accepted: %s", include)
 		}
 	}

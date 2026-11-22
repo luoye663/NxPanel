@@ -9,6 +9,7 @@ import { ApiError } from '@/api/client'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SectionCard } from '@/components/common/SectionCard'
 import { AuthAccountManager, AuthAccountSelector } from './AuthAccountManager'
+import { AccessPolicyDiagnostics } from './AccessPolicyDiagnostics'
 import { notifySuccess } from '@/utils/notify'
 
 interface Props {
@@ -81,7 +82,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
   const [baseline, setBaseline] = useState(initialPolicy)
   const [draft, setDraft] = useState<AccessPolicy>({ ...initialPolicy, mode: 'unified' })
   const [editing, setEditing] = useState<AccessPolicyRule | null>(null)
-  const geoStatus = useQuery({ queryKey: geoAccessKeys.status, queryFn: getGeoIPStatus, enabled: editing?.conditions.some((condition) => condition.kind === 'country') ?? false })
+  const geoStatus = useQuery({ queryKey: geoAccessKeys.status, queryFn: getGeoIPStatus, enabled: draft.rules.some((rule) => rule.conditions.some((condition) => condition.kind === 'country')) || (editing?.conditions.some((condition) => condition.kind === 'country') ?? false) })
   const countries = [...new Set([
     ...(geoStatus.data?.countries || []),
     'ZZ',
@@ -89,6 +90,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
   ])].sort().map((code) => ({ value: code, label: countryName(code) }))
   const [ruleError, setRuleError] = useState<string | null>(null)
   const [error, setError] = useState<unknown>(null)
+  const [diagnosticsRefresh, setDiagnosticsRefresh] = useState(0)
   const [accountsOpened, setAccountsOpened] = useState(false)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [previewOpened, setPreviewOpened] = useState(false)
@@ -133,8 +135,10 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
 
   async function acceptPolicy(policy: AccessPolicy) {
     setDraft(policy); setBaseline(policy); setPreview(null)
+    setDiagnosticsRefresh((value) => value + 1)
     client.setQueryData(accessPolicyKeys.site(siteId), policy)
     await client.invalidateQueries({ queryKey: ['site-detail', siteId] })
+    await client.invalidateQueries({ queryKey: geoAccessKeys.status })
   }
 
   async function apply() {
@@ -147,6 +151,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
       if (policy.apply_status === 'applied') notifySuccess({ message: '访问策略已保存并应用' })
     } catch (failure) {
       setError(failure)
+      await client.invalidateQueries({ queryKey: geoAccessKeys.status })
       if (failure instanceof ApiError && failure.details?.desired_saved === true && typeof failure.details.saved_version === 'number') {
         try {
           const stored = await getAccessPolicy(siteId)
@@ -180,10 +185,10 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
   async function reloadSaved() {
     if (dirty && !window.confirm('放弃当前草稿并重新载入已保存的策略？')) return
     const policy = await client.fetchQuery({ queryKey: accessPolicyKeys.site(siteId), queryFn: () => getAccessPolicy(siteId), staleTime: 0 }).catch(setError)
-    if (policy) { setBaseline(policy); changePolicy({ ...policy, mode: 'unified' }) }
+    if (policy) { setBaseline(policy); changePolicy({ ...policy, mode: 'unified' }); setDiagnosticsRefresh((value) => value + 1) }
   }
 
-  return <SectionCard title="访问策略" description="从上到下判断，首条命中的规则决定结果。拖动或使用上下移动按钮调整顺序，保存后统一生效。">
+  return <SectionCard title="访问策略" description="面板规则从上到下判断，首条命中的规则决定本套检查的动作。自定义配置和上游应用仍独立生效。" actions={<AccessPolicyDiagnostics key={siteId} siteId={siteId} refreshKey={diagnosticsRefresh} />}>
     <Stack gap="md">
       {baseline.mode === 'legacy' && baseline.version === 0 ? <Alert color="yellow" title="正在准备切换">
         现有策略仍在运行。请检查导入规则和行为差异，点击“保存并应用”后切换为统一策略。
@@ -191,6 +196,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
       {baseline.mode === 'legacy' && draft.warnings?.length ? <Alert color="yellow" title="需要检查的行为差异"><Stack gap={4}>{draft.warnings.map((warning, index) => <Text key={index}>{warning}</Text>)}</Stack></Alert> : null}
       {baseline.version > 0 && baseline.apply_status !== 'applied' ? <Alert color="yellow" title="策略已保存，等待应用成功">{baseline.last_error || '请重新同步，确认线上配置与已保存策略一致。'}</Alert> : null}
       {pendingProxy ? <Alert color="yellow" title="先完成关联反代同步">反代配置与访问策略有未完成的关联修改。请点击“重新同步”一起应用，成功后再编辑规则。</Alert> : null}
+      {geoStatus.data?.runtime && (geoStatus.data.runtime.state === 'blocked' || geoStatus.data.runtime.state === 'pending' || geoStatus.data.runtime.legacy_includes > 0) ? <Alert color="yellow" title="请检查地域查询状态">{geoStatus.data.runtime.message || '仍有旧地域配置在运行。'} 请前往面板设置 → GeoIP 查看迁移状态。</Alert> : null}
       {error ? <ErrorAlert error={error} title="未完成应用，草稿已保留" /> : null}
       <Group justify="space-between">
         <Group><Button leftSection={<IconPlus size={16} />} disabled={busy || draft.rules.length >= 256} onClick={() => { setRuleError(null); setEditing(emptyRule()) }}>新增规则</Button><Button variant="default" disabled={busy} onClick={() => setAccountsOpened(true)}>账户管理</Button></Group>
@@ -225,7 +231,7 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
       </Group>
       {previewOpened ? <>
         <Divider label="测试当前草稿" labelPosition="left" />
-        <Text c="dimmed">填写示例请求，查看每条规则的判断和最终动作。密码规则只显示“需要验证”，不接收密码。</Text>
+        <Text c="dimmed">填写示例请求，查看面板规则的判断和动作；预览不执行自定义配置或上游应用逻辑，不代表请求最终响应。密码规则只显示“需要验证”，不接收密码。</Text>
         <SimpleGrid cols={{ base: 1, sm: 2 }}>
           <TextInput label="访问者 IP" description="地域根据此 IP 和当前 GeoIP 数据库判断。" placeholder="203.0.113.8" required disabled={previewMutation.isPending} value={previewRequest.ip} onChange={(event) => { setPreviewRequest({ ...previewRequest, ip: event.currentTarget.value }); setPreview(null) }} />
           <TextInput label="请求路径" placeholder="/admin" required disabled={previewMutation.isPending} value={previewRequest.path} onChange={(event) => { setPreviewRequest({ ...previewRequest, path: event.currentTarget.value }); setPreview(null) }} />
@@ -244,7 +250,10 @@ export function AccessPolicyEditor({ siteId, initialPolicy, focusSource, onCance
         {editing.conditions.length || editing.match === 'any' ? <Select label="匹配方式" disabled={linkedProxy} value={editing.match} allowDeselect={false} data={[{ value: 'all', label: '全部条件满足（并且）' }, { value: 'any', label: '任一条件满足（或者）' }]} onChange={(value) => setEditing({ ...editing, match: value as 'all' | 'any' })} /> : <Alert color="yellow">此规则会处理所有到达它的请求，后面的规则不会再执行。</Alert>}
         {editing.conditions.map((condition, index) => <fieldset disabled={linkedProxy && index === 0} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }} key={index}><Stack gap="xs">
           <Divider label={`条件 ${index + 1}`} labelPosition="left" />
-          <Group align="flex-end"><Select style={{ flex: 1 }} label="条件类型" value={condition.kind} allowDeselect={false} data={Object.entries(conditionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { kind: value as AccessCondition['kind'], operator: value === 'path' ? 'prefix' : 'in', values: [], negate: false } : item) })} /><ActionIcon variant="subtle" color="red" aria-label={`移除条件 ${index + 1}`} disabled={editing.conditions.length === 1} onClick={() => setEditing({ ...editing, conditions: editing.conditions.filter((_, ci) => ci !== index) })}><IconTrash size={16} /></ActionIcon></Group>
+          <Group align="flex-end"><Select style={{ flex: 1 }} label="条件类型" value={condition.kind} allowDeselect={false} data={Object.entries(conditionLabels).map(([value, label]) => ({ value, label }))} onChange={(value) => {
+            if (!value) return
+            setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { kind: value as AccessCondition['kind'], operator: value === 'path' ? 'prefix' : 'in', values: [], negate: false } : item) })
+          }} /><ActionIcon variant="subtle" color="red" aria-label={`移除条件 ${index + 1}`} disabled={editing.conditions.length === 1} onClick={() => setEditing({ ...editing, conditions: editing.conditions.filter((_, ci) => ci !== index) })}><IconTrash size={16} /></ActionIcon></Group>
           {condition.kind === 'path' ? <Select label="路径匹配" error={!['exact', 'prefix'].includes(condition.operator || '') ? '旧路径表达式需要转换：请选择匹配方式并检查匹配值。' : undefined} value={condition.operator || null} allowDeselect={false} data={[{ value: 'prefix', label: '前缀匹配' }, { value: 'exact', label: '完全相等' }]} onChange={(value) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { ...item, operator: value as 'prefix' | 'exact' } : item) })} /> : null}
           {condition.kind === 'country' ? <>
             <MultiSelect label="匹配值" required description={conditionHelp.country} placeholder={geoStatus.isFetching ? '正在加载国家 / 地区…' : '搜索并选择国家 / 地区'} data={countries} searchable clearable nothingFoundMessage="没有匹配的国家 / 地区" maxDropdownHeight={300} value={condition.values} onChange={(values) => setEditing({ ...editing, conditions: editing.conditions.map((item, ci) => ci === index ? { ...item, values } : item) })} />

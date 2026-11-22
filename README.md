@@ -162,7 +162,7 @@ NxPanel 面向单机部署(后续可能支持主从控制)，采用 **API + Agen
 | 访问限制 | Basic Auth 加密访问、禁止访问规则、防盗链规则 |
 | 完整配置编辑 | 编辑站点完整 Nginx 配置，支持 marker 迁移 |
 | 访问分析 | 站点日志扫描、格式检测、趋势、路径/IP 聚合、异常洞察、CSV 导出 |
-| Nginx 管理 | 检测、安装 include 入口、`nginx -t`、reload、主配置编辑、常用参数管理 |
+| Nginx 管理 | 检测、安装 include 入口、`nginx -t`、reload、主配置编辑、常用参数管理、[在线模块目录与管理](docs/function/nginx-modules.md) |
 | 文件管理 | 全局文件管理和站点级文件管理，支持读写、上传、下载、复制、移动、压缩、解压、权限和属主修改 |
 | 日志管理 | 站点 access/error 日志 tail、搜索、下载、实时追踪、历史切割日志查看和删除 |
 | 服务日志 | API/Agent 运行日志 tail、实时流、清空，支持内置切割 |
@@ -259,12 +259,18 @@ https://服务器IP:18888/随机入口路径
 # 安装脚本
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/install.sh | sudo bash
 
-# 升级脚本
+# 升级脚本(0.0.6版本后废弃)
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/upgrade.sh | sudo bash
 
 # 如需卸载,执行
 curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh | sudo bash
 ```
+
+已安装支持在线更新的版本后，点击右上角 **程序版本**，在弹窗中选择稳定版或预览版并查看完整发布说明。**立即更新**只下载、验签和暂存；确认**重启并应用**后才切换面板，不重启站点 Nginx。旧版本需先安装一次支持在线更新的发行包或镜像；Docker 中删除并重建容器会恢复所选镜像自带的面板版本。
+
+开发环境可参考[本地 Nginx 联调](#本地-nginx-联调)配置测试更新源。
+
+使用国家／地区访问限制时，请先在 [Nginx 模块管理](docs/function/nginx-modules.md) 安装 GeoIP2。生产镜像不预装模块；宿主机和 Docker 都从签名目录匹配构建，由 Agent 验证并执行独立模块仓库提供的安装脚本。删除容器不会保留在线安装的模块。迁移已有规则请查看 [GeoIP2 升级与回滚](docs/access-policy.md#geoip2-升级与回滚)。
 
 > 如果系统中已有 Nginx/OpenResty，那么在安装完 NxPanel 后，需要到 Nginx 管理页面，依次点击 检测 Nginx、安装 Include 入口 这2个按钮。
 
@@ -432,6 +438,37 @@ sudo ./bin/nxpanel-agent -config configs/config.yaml
 ```text
 https://127.0.0.1:18888
 ```
+
+### 本地 Nginx 联调
+
+在仓库根目录运行 `make update-fixture` 生成签名测试包，把 `tmp/update-fixture/feed` 整个目录交给 Nginx 托管。例如在一个终端运行：
+
+```bash
+docker run --rm -p 127.0.0.1:18080:80 \
+  --mount "type=bind,source=$PWD/tmp/update-fixture/feed,target=/usr/share/nginx/html,readonly" \
+  nginx:alpine
+```
+
+按前面的源码构建步骤准备配置，确保 `upgrade.enabled: true` 并启动 Agent。启动开发 API 时，用环境变量指定完整的索引 URL 和测试公钥内容：
+
+```bash
+curl -fsS http://127.0.0.1:18080/index.json
+NXPANEL_UPDATE_TEST_FEED=http://127.0.0.1:18080/index.json \
+NXPANEL_UPDATE_TEST_KEYS="$(cat tmp/update-fixture/trust.pub)" \
+make run-api BUILD_TAGS=update_dev VERSION=v0.0.1
+```
+
+`NXPANEL_UPDATE_TEST_FEED` 不写入 `config.yaml`，更改后需重启 API。你也可以填写已有 Nginx 上的索引 URL，例如 `http://localhost:18080/nxpanel-test/index.json`，版本子目录须与索引文件同级。正式构建忽略测试环境变量。直接运行源码版 API 可以检查版本，但未接入更新器，不能安装更新。
+
+要验证完整更新与回滚，构建开发镜像后运行自动联调脚本：
+
+```bash
+docker build -f docker/Dockerfile.nginx --build-arg VERSION=v0.0.1 \
+  --build-arg UPDATE_BUILD_TAGS=embed_web,update_dev -t nxpanel:update-dev .
+bash scripts/test-web-update-docker.sh nxpanel:update-dev
+```
+
+脚本在临时 Docker 网络内托管测试源并设置 `NXPANEL_UPDATE_TEST_FEED=http://update-feed/index.json`，无需手动配置。手动启动容器时用 `docker run -e` 传入这两个变量，URL 应使用面板容器可访问的地址；容器内 `127.0.0.1` 不是宿主机或另一个 Nginx 容器。
 
 ## 配置
 
@@ -610,7 +647,11 @@ data_dir/logs/tasks/
 | Nginx 站点日志切割未执行 | 检查计划任务页面中的 `nginx_log_rotation` 系统任务是否启用、执行历史是否失败 |
 | 配置回写后出现 `配置已通过 RPC 回写` | 这是 API 调用 Agent 写回配置文件的正常日志 |
 | Nginx reload 失败 | 在操作记录中查看 stderr，检查 `nginx -t` 输出和备份记录 |
+| 多个 Nginx 主进程且无法重启 | 在「Nginx 管理 → 运行状态与控制」对照 PID 和配置路径。面板只重启唯一核验的实例；检查是否有残留的同配置主进程、服务归属不一致或共用的 PID 文件。不要仅凭进程名停止实例。 |
+| 重启已执行但运行状态未确认 | 先刷新运行状态，不要立即再次重启。对照操作记录、Agent 日志中的 `verify_restart` 和服务管理器报告的主进程 PID。 |
 | 前端页面 404 | 检查 `web/dist` 是否存在，源码环境运行 `make build-frontend` |
+
+手动启动的 Nginx 只有在 Agent 能安全核验守护进程、启动配置和独立 PID 文件时才可直接重启（Linux 需支持 `pidfd`）。无法核验时，请使用该实例原本的服务管理方式。
 
 ## License
 

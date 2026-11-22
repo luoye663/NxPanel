@@ -70,7 +70,7 @@ func TestPreflightGlobAndRequestValidation(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	s.handleConfigPreflight(w, httptest.NewRequest("POST", "/", bytes.NewReader(data)))
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "deny") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"directive":"deny"`) || !strings.Contains(w.Body.String(), `"complete":true`) {
 		t.Fatalf("glob conflict missed: %d %s", w.Code, w.Body)
 	}
 }

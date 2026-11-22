@@ -28,6 +28,18 @@ func (s *Server) handleAccessPolicyGet(w http.ResponseWriter, r *http.Request) {
 	}
 	WriteOK(w, r, p)
 }
+
+func (s *Server) handleAccessPolicyDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAccessPolicy(w, r) {
+		return
+	}
+	report, err := s.accessPolicySvc.DiagnoseSite(r.Context(), chi.URLParam(r, "site_id"))
+	if err != nil {
+		writeAppError(w, r, err)
+		return
+	}
+	WriteOK(w, r, report)
+}
 func (s *Server) handleAccessPolicySave(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAccessPolicy(w, r) {
 		return

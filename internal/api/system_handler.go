@@ -51,7 +51,7 @@ func (s *Server) handleUpgradeCheck(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	WriteOK(w, r, s.upgradeSvc.GetStatus())
+	WriteOK(w, r, s.enrichUpdateStatus(r.Context(), s.upgradeSvc.GetStatus()))
 }
 
 // handleUpgradeCheckTrigger 手动触发一次升级检查
@@ -71,7 +71,7 @@ func (s *Server) handleUpgradeCheckTrigger(w http.ResponseWriter, r *http.Reques
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	WriteOK(w, r, s.upgradeSvc.CheckNow(ctx))
+	WriteOK(w, r, s.enrichUpdateStatus(ctx, s.upgradeSvc.CheckNow(ctx)))
 }
 
 // getAgentInfo 获取 Agent 连接状态

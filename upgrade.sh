@@ -149,6 +149,12 @@ version_gte() {
 # ============================================================
 
 get_current_version() {
+    if [ -x "$INSTALL_ROOT/current/nxpanel-api" ]; then
+        CURRENT_VERSION=$("$INSTALL_ROOT/current/nxpanel-api" --version 2>/dev/null || echo "")
+        if [ -n "$CURRENT_VERSION" ]; then
+            return
+        fi
+    fi
     if [ -x "$INSTALL_ROOT/bin/nxpanel-api" ]; then
         CURRENT_VERSION=$("$INSTALL_ROOT/bin/nxpanel-api" --version 2>/dev/null || echo "")
     fi
@@ -972,6 +978,10 @@ do_upgrade() {
     fi
     
     log_info "目标版本: $TARGET_VERSION"
+
+    if [ -f "$TEMP_DIR/nxpanel/bin/nxpanel-updater" ]; then
+        die "此版本需要一次性通过发行包的 install.sh 安装更新服务；安装后请使用面板更新。"
+    fi
     
     # 验证包完整性
     if ! verify_package; then
@@ -1112,6 +1122,10 @@ do_rollback() {
 
 main() {
     parse_args "$@"
+
+    if [ -L "$INSTALL_ROOT/current" ] && [[ "$ACTION" == "upgrade" || "$ACTION" == "rollback" ]]; then
+        die "此安装由 Web 更新器管理。请使用面板更新；如需手动救援，请按文档恢复。"
+    fi
     
     case $ACTION in
         upgrade)

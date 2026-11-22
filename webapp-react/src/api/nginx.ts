@@ -60,3 +60,97 @@ export function getNginxParameters(): Promise<NginxParametersResponse> {
 export function saveNginxParameters(data: { parameters: Record<string, string> }): Promise<SaveNginxParametersResponse> {
   return put('/nginx/parameters', data)
 }
+
+export interface NginxRuntimeStatus {
+  running: boolean
+  master_pid: number
+  workers: number
+  processes: number
+  memory_rss: number
+  memory_pss?: number | null
+  uptime_seconds: number
+  instances: { pid: number; conf_path?: string; match: 'matching' | 'other' | 'unknown' }[]
+  blocked_reason?: string
+  other_actions_blocked?: boolean
+  restart_generation?: string
+}
+
+export type NginxControlAction = 'start' | 'stop' | 'restart'
+
+export function getNginxStatus(): Promise<NginxRuntimeStatus> {
+  return get('/nginx/status')
+}
+
+export function controlNginx(action: NginxControlAction, restartGeneration?: string): Promise<NginxReloadResponse> {
+  return post(`/nginx/${action}`, { restart_generation: restartGeneration })
+}
+
+export interface NginxModule {
+  id: string
+  name: string
+  description?: string
+  repository?: string
+  state: 'available' | 'enabled' | 'configured' | 'unavailable' | 'busy' | 'drifted' | 'needs_attention'
+  present: boolean
+  loaded: boolean
+  configured: boolean
+  runtime?: string
+  version?: string
+  reason?: string
+  action?: 'install'
+  uninstall_confirmation?: string
+}
+
+export interface NginxModuleReleases {
+  tags: string[]
+  latest?: string
+  next_page?: number
+}
+
+export interface NginxModulePreflight {
+  tag: string
+  version?: string
+  runtime?: string
+  confirmation?: string
+  reason?: string
+}
+
+export interface NginxModuleJob {
+  id: string
+  module_id: string
+  action: 'install' | 'uninstall'
+  state: 'pending' | 'success' | 'failed' | 'needs_attention'
+  message?: string
+  script_detail?: string
+}
+
+export function getNginxModules(refresh = false): Promise<{
+  modules: NginxModule[]
+  feed_state: 'online' | 'stale' | 'error' | 'busy'
+  feed_message?: string
+  busy?: boolean
+  test_feed?: boolean
+  latest_job?: NginxModuleJob
+}> {
+  return get(refresh ? '/nginx/modules?refresh=1' : '/nginx/modules', { timeout: 26_000 })
+}
+
+export function getNginxModuleReleases(id: string, page: number): Promise<NginxModuleReleases> {
+  return get('/nginx/modules/releases', { params: { id, page }, timeout: 26_000 })
+}
+
+export function getNginxModulePreflight(id: string, tag: string): Promise<NginxModulePreflight> {
+  return get('/nginx/modules/preflight', { params: { id, tag }, timeout: 26_000 })
+}
+
+export function installNginxModule(id: string, tag: string, confirmation: string): Promise<NginxModuleJob> {
+  return post('/nginx/modules/install', { id, tag, confirmation })
+}
+
+export function uninstallNginxModule(id: string, confirmation: string): Promise<NginxModuleJob> {
+  return post('/nginx/modules/uninstall', { id, confirmation })
+}
+
+export function getNginxModuleJob(id: string): Promise<NginxModuleJob> {
+  return get(`/nginx/modules/jobs/${encodeURIComponent(id)}`)
+}

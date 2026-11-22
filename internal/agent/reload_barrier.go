@@ -141,9 +141,16 @@ func (g *nginxGeneration) currentWorkers() (map[nginxProcess]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := map[nginxProcess]bool{}
 	if master == nil {
-		return result, nil
+		return map[nginxProcess]bool{}, nil
+	}
+	return g.workersOf(*master)
+}
+
+func (g *nginxGeneration) workersOf(master nginxProcess) (map[nginxProcess]bool, error) {
+	result := map[nginxProcess]bool{}
+	if current, err := g.identity(master.pid); err != nil || current != master {
+		return result, fmt.Errorf("Nginx master identity changed while inspecting workers")
 	}
 	text, err := procText(filepath.Join(g.proc, master.pid, "task", master.pid, "children"))
 	if os.IsNotExist(err) {
@@ -171,6 +178,9 @@ func (g *nginxGeneration) currentWorkers() (map[nginxProcess]bool, error) {
 		if active {
 			result[ref] = true
 		}
+	}
+	if current, err := g.identity(master.pid); err != nil || current != master {
+		return nil, fmt.Errorf("Nginx master identity changed while inspecting workers")
 	}
 	return result, nil
 }

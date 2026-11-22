@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,45 @@ func TestUpgradeCheckTriggerRequiresAuth(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("未认证应返回 401，实际 %d", rec.Code)
+	}
+}
+
+func TestUpgradeMutationRoutesAndChannel(t *testing.T) {
+	server := newTestServer(t)
+	setupTestAdmin(t, server)
+	csrf, session := parseLoginResponse(t, doLogin(server, "admin", "Test-password-123"))
+	for _, endpoint := range []struct{ path, method, body string }{
+		{"channel", http.MethodPut, `{"channel":"preview"}`},
+		{"prepare", http.MethodPost, `{"version":"v2.0.0"}`},
+		{"activate", http.MethodPost, `{"id":"id"}`},
+		{"cancel", http.MethodPost, `{"id":"id"}`},
+	} {
+		request := func(authenticated, token bool) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(endpoint.method, apiTestPath(server, "/system/upgrade/"+endpoint.path), strings.NewReader(endpoint.body))
+			if authenticated {
+				req.AddCookie(&http.Cookie{Name: "openrest_session", Value: session})
+			}
+			if token {
+				req.Header.Set("X-CSRF-Token", csrf)
+			}
+			res := httptest.NewRecorder()
+			server.Handler().ServeHTTP(res, req)
+			return res
+		}
+		if got := request(false, false).Code; got != http.StatusUnauthorized {
+			t.Errorf("%s without a session: %d", endpoint.path, got)
+		}
+		if got := request(true, false).Code; got != http.StatusForbidden {
+			t.Errorf("%s without CSRF: %d", endpoint.path, got)
+		}
+		if endpoint.path == "channel" {
+			if got := request(true, true); got.Code != http.StatusOK {
+				t.Errorf("channel change: %d %s", got.Code, got.Body)
+			}
+			if value, err := server.settingsRepo.Get(upgradeChannelKey); err != nil || value != "preview" {
+				t.Errorf("channel not persisted: %q %v", value, err)
+			}
+		}
 	}
 }
 

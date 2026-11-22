@@ -8,5 +8,5 @@ set -e
 # with-contenv 确保继承 Docker ENV（NXPANEL_* 配置覆盖）。
 
 exec s6-setuidgid nxpanel \
-    /usr/local/nxpanel/bin/nxpanel-api \
+    /usr/local/nxpanel/current/nxpanel-api \
     -config /opt/nxpanel/data/config.yaml

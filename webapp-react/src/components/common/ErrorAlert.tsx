@@ -8,7 +8,7 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.some((sensitive) => normalized.includes(sensitive))
 }
 
-function sanitizeDetails(value: unknown): unknown {
+export function sanitizeDetails(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeDetails(item))
   }
@@ -30,7 +30,7 @@ interface ErrorAlertProps {
   title?: string
 }
 
-function getWhitelistGuidance(apiError: ApiError | null, message: string): string[] {
+export function getWhitelistGuidance(apiError: ApiError | null, message: string): string[] {
   const details = apiError?.details as { allowed_config?: unknown } | undefined
   const allowedConfig = Array.isArray(details?.allowed_config) ? details.allowed_config.filter((value): value is string => typeof value === 'string') : []
   const hintedByMessage = apiError?.code === 'AGENT_DENIED' || message.includes('白名单') || message.includes('路径不在允许的目录范围内')

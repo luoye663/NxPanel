@@ -18,6 +18,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/luoye663/nxpanel/internal/georuntime"
 	"github.com/luoye663/nxpanel/internal/nginx"
 )
 
@@ -51,6 +52,9 @@ type Service struct {
 	mutationMu    sync.Mutex
 	policyManaged func(string) bool
 	policyRefresh func(context.Context, string) error
+	runtimeMu     sync.Mutex
+	runtimeState  RuntimeStatus
+	policyMigrate func(context.Context, map[string]georuntime.Snapshot, func() (map[string][]string, error)) ([]agentclient.FileChangeRequest, int, int, error)
 }
 
 func NewService(repoStore *repo.GeoAccessRepo, sites siteRepo, ipRules *repo.IPWhitelistRuleRepo,
@@ -150,6 +154,8 @@ func (s *Service) UpdateSettings(ctx context.Context, req UpdateGeoIPSettingsReq
 }
 
 func (s *Service) GetStatus() (*GeoIPStatusResponse, error) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
 	item, err := s.repo.GetGeoIPSettings()
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
@@ -158,10 +164,17 @@ func (s *Service) GetStatus() (*GeoIPStatusResponse, error) {
 	if err != nil {
 		return nil, app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-	return &GeoIPStatusResponse{Installed: item.ActiveCachePath != "" && item.Checksum != "", Checksum: item.Checksum,
+	runtime := s.runtimeState
+	if runtime.State == "" {
+		runtime.State = "idle"
+	}
+	if runtime.Module == "" {
+		runtime.Module = "unchecked"
+	}
+	return &GeoIPStatusResponse{Installed: item.ActiveDBPath != "" && item.Checksum != "", Checksum: item.Checksum,
 		BuildEpoch: item.BuildEpoch, Countries: repo.ParseJSONStringSlice(item.CountriesJSON),
 		LastAttemptAt: item.LastAttemptAt, LastSuccessAt: item.LastSuccessAt, LastError: item.LastError,
-		EnabledSites: len(enabled)}, nil
+		EnabledSites: len(enabled), Runtime: runtime}, nil
 }
 
 func (s *Service) InstallDatabase(ctx context.Context, reader io.Reader, requestID string) (*GeoIPStatusResponse, error) {
@@ -221,38 +234,34 @@ func (s *Service) UpdateDatabase(ctx context.Context, requestID string) (*GeoIPS
 }
 
 func (s *Service) activateDatabase(ctx context.Context, sourcePath, requestID string) error {
-	dbPath, cachePath, checksum, cache, err := installDatabaseFile(s.dataDir, sourcePath)
+	dbPath, checksum, metadata, err := installDatabaseFile(s.dataDir, sourcePath)
 	if err != nil {
 		return app.NewAppError(app.ErrValidationFailed, err.Error(), nil)
 	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
 	old, err := s.repo.GetGeoIPSettings()
 	if err != nil {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
 	updated := *old
-	updated.ActiveDBPath, updated.ActiveCachePath, updated.Checksum, updated.BuildEpoch = dbPath, cachePath, checksum, cache.BuildEpoch
-	countries := make([]string, 0, len(cache.Networks)+1)
-	for country := range cache.Networks {
-		countries = append(countries, country)
+	if old.Checksum != checksum {
+		updated.ActiveCachePath = ""
 	}
-	sort.Strings(countries)
-	if len(countries) == 0 || countries[len(countries)-1] != "ZZ" {
-		countries = append(countries, "ZZ")
-		sort.Strings(countries)
-	}
-	raw, _ := json.Marshal(countries)
+	updated.ActiveDBPath, updated.Checksum, updated.BuildEpoch = dbPath, checksum, metadata.BuildEpoch
+	raw, _ := json.Marshal(metadata.Countries)
 	updated.CountriesJSON = string(raw)
 	updated.LastAttemptAt = time.Now().UTC().Format(time.RFC3339)
 	updated.LastSuccessAt = updated.LastAttemptAt
 	updated.LastError = ""
-	if err := s.repo.SaveGeoIPSettings(&updated); err != nil {
-		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
-	}
-	if err := s.applyAll(ctx, "", requestID, "更新 GeoLite2 数据库"); err != nil {
-		_ = s.repo.SaveGeoIPSettings(old)
+	if err := s.switchRuntimeDatabase(ctx, old, dbPath, requestID); err != nil {
 		return err
 	}
-	return s.refreshAccessPolicies(ctx, requestID)
+	if err := s.repo.SaveGeoIPSettings(&updated); err != nil {
+		s.runtimeState.State, s.runtimeState.Message = "pending", "数据库状态未确认，请重试 GeoIP2 迁移以恢复已确认版本"
+		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
+	}
+	return nil
 }
 
 func (s *Service) GetSiteAccess(siteID string) (*SiteAccessResponse, error) {
@@ -356,7 +365,7 @@ func (s *Service) EnableSite(ctx context.Context, siteID, requestID string) (*Si
 		return siteSettingsResponse(old), nil
 	}
 	geo, err := s.repo.GetGeoIPSettings()
-	if err != nil || geo.ActiveCachePath == "" {
+	if err != nil || geo.ActiveDBPath == "" {
 		return nil, app.NewAppError(app.ErrValidationFailed, "请先安装 GeoLite2 Country 数据库", nil)
 	}
 	if detector, ok := s.agent.(capabilityAgent); ok {
@@ -603,6 +612,9 @@ func (s *Service) SyncAfterIPChange(ctx context.Context, siteID, requestID strin
 }
 
 func (s *Service) Reconcile(ctx context.Context) error {
+	if s.policyMigrate != nil {
+		return s.Migrate(ctx, "startup")
+	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	pendingDisabled, err := s.repo.ListPendingDisabledSiteIDs()
@@ -686,16 +698,6 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 	if err != nil {
 		return app.NewAppError(app.ErrInternalError, err.Error(), nil)
 	}
-	cache := &countryCache{Networks: map[string][]string{}}
-	if len(settings) > 0 {
-		if geoSettings.ActiveCachePath == "" {
-			return app.NewAppError(app.ErrValidationFailed, "GeoLite2 Country 数据库未安装", nil)
-		}
-		cache, err = readCache(geoSettings.ActiveCachePath)
-		if err != nil {
-			return app.NewAppError(app.ErrInternalError, "读取 GeoIP 国家缓存失败: "+err.Error(), nil)
-		}
-	}
 	rulesBySite := make(map[string][]*repo.SiteGeoRule, len(settings))
 	ipBySite := make(map[string][]*repo.SiteIPWhitelistRule, len(settings))
 	for _, setting := range settings {
@@ -712,7 +714,7 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 	if err != nil {
 		return app.NewAppError(app.ErrValidationFailed, err.Error(), nil)
 	}
-	rendered, err := renderConfiguration(s.panelDir, trusted, cache, settings, rulesBySite, ipBySite)
+	rendered, err := renderConfiguration(s.panelDir, trusted, geoSettings.BuildEpoch, settings, rulesBySite, ipBySite)
 	if err != nil {
 		return app.NewAppError(app.ErrValidationFailed, err.Error(), nil)
 	}
@@ -794,6 +796,23 @@ func (s *Service) applyAll(ctx context.Context, affectedSiteID, requestID, messa
 	}
 	if len(changes) == 0 {
 		return nil
+	}
+	if s.policyMigrate != nil {
+		files, err := s.runtimeFiles(ctx, true)
+		if err != nil {
+			return err
+		}
+		if previous, exists := files[rendered.GlobalPath]; exists {
+			if !previous.Shared {
+				return app.ErrValidationFailedMsg("旧地域配置尚未安全迁移；请在 GeoIP 设置中先迁移", nil)
+			}
+			changes[0].ExpectedHash = previous.Hash
+		}
+	}
+	if len(settings) > 0 {
+		if err := s.EnsureRuntime(ctx, requestID); err != nil {
+			return err
+		}
 	}
 	opID := app.NewOperationID()
 	_ = s.operations.Create(&repo.Operation{ID: opID, Action: "site.update_geo_access", TargetType: "site",

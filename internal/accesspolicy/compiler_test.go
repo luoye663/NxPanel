@@ -1,6 +1,7 @@
 package accesspolicy
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -14,7 +15,12 @@ func samplePolicy() Policy {
 }
 func TestFirstMatchOrderAndAuthentication(t *testing.T) {
 	p := samplePolicy()
-	ctx := RenderContext{CountryNetworks: map[string][]string{"CN": {"10.0.0.0/8"}}}
+	ctx := RenderContext{LookupCountry: func(ip netip.Addr) (string, error) {
+		if netip.MustParsePrefix("10.0.0.0/8").Contains(ip) {
+			return "CN", nil
+		}
+		return "ZZ", nil
+	}}
 	got, err := Preview(p, PreviewRequest{IP: "10.2.3.4", Path: "/admin"}, ctx)
 	if err != nil || got.Action.Type != "allow" {
 		t.Fatalf("first allow: %#v %v", got, err)
@@ -79,6 +85,9 @@ func TestCompileBoundsAndInjection(t *testing.T) {
 	}
 	if !strings.Contains(compiled.GlobalContent, "volatile;") {
 		t.Fatal("internal redirect guard must update")
+	}
+	if !strings.Contains(compiled.GlobalContent, "map $nxpanel_geoip_country ") || strings.Contains(compiled.GlobalContent, "_country {\n") {
+		t.Fatal("country conditions must reference the shared lookup, not expand a per-site table")
 	}
 	p.Rules[0].Conditions[0].Values = []string{"127.0.0.1; return 200"}
 	if err := Validate(p); err == nil {

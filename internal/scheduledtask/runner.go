@@ -18,6 +18,8 @@ type Runner struct {
 	sem      chan struct{}
 	mu       sync.RWMutex
 	reloader taskReloader
+	paused   bool
+	active   int
 }
 
 func NewRunner(repo *Repo, registry *Registry, runnerID string, maxConcurrent int) *Runner {
@@ -54,7 +56,35 @@ func (r *Runner) RunVersion(ctx context.Context, taskID, trigger string, expecte
 	case <-ctx.Done():
 		return
 	}
+	r.mu.Lock()
+	if r.paused {
+		r.mu.Unlock()
+		return
+	}
+	r.active++
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.active--
+		r.mu.Unlock()
+	}()
 	r.run(ctx, taskID, trigger, expectedVersion)
+}
+
+func (r *Runner) PauseIfIdle() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active != 0 || r.paused {
+		return false
+	}
+	r.paused = true
+	return true
+}
+
+func (r *Runner) Resume() {
+	r.mu.Lock()
+	r.paused = false
+	r.mu.Unlock()
 }
 
 func (r *Runner) run(ctx context.Context, taskID, trigger string, expectedVersion int) {

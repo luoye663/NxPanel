@@ -103,7 +103,7 @@ export function TaskLogTab() {
           </Group>
         </Group>
         <LogViewer
-          lines={logQuery.data?.lines ?? []}
+          lines={logQuery.data?.lines.slice().reverse() ?? []}
           truncated={logQuery.data?.truncated}
           loading={Boolean(selectedTask) && (logQuery.isLoading || logQuery.isFetching)}
           emptyText={selectedTask ? '暂无日志内容' : '请从左侧选择一个任务'}

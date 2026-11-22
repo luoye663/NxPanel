@@ -14,6 +14,7 @@ import (
 
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/luoye663/nxpanel/internal/georuntime"
 )
 
 type backupBundle struct {
@@ -85,21 +86,40 @@ func (s *Service) WithBackup(ctx context.Context, siteID string, run func([]stri
 
 // RestoreBackup reads only the bounded config prefix, preflights account
 // conflicts, and changes metadata only after the agent successfully restores.
-func (s *Service) RestoreBackup(ctx context.Context, siteID string, archive io.Reader, run func([]string) error) error {
-	bundle, err := readBackupBundle(archive)
+func (s *Service) RestoreBackup(ctx context.Context, siteID string, archive io.Reader, run func([]string, *string) error) error {
+	bundle, hasHTTPConfig, err := readBackupBundle(archive)
 	if err != nil {
 		return err
 	}
 	return s.withBackupLock(ctx, siteID, func() error {
 		var additions []*repo.AuthAccount
+		var httpConfig *string
 		if bundle != nil {
 			var err error
 			additions, err = s.prepareBackupAccounts(siteID, bundle)
 			if err != nil {
 				return err
 			}
+			if needsCountry(bundle.Policy) {
+				if !hasHTTPConfig || s.geo == nil {
+					return fmt.Errorf("地域备份缺少可安全替换的站点配置或 GeoIP2 查询支持")
+				}
+				site, err := s.requireSite(siteID)
+				if err != nil {
+					return err
+				}
+				serverNames := append(repo.ParseJSONStringSlice(site.DomainsJSON), site.PrimaryDomain)
+				compiled, err := Compile(siteID, s.panelDir, bundle.Policy, RenderContext{AuthFiles: bundle.AuthFiles, ServerNames: serverNames})
+				if err != nil {
+					return err
+				}
+				if err := s.geo.EnsureRuntime(ctx, "restore"); err != nil {
+					return err
+				}
+				httpConfig = &compiled.GlobalContent
+			}
 		}
-		if err := run(s.backupPaths(siteID)); err != nil {
+		if err := run(s.backupPaths(siteID), httpConfig); err != nil {
 			return err
 		}
 		if err := s.commitBackupPolicy(ctx, siteID, bundle, additions); err != nil {
@@ -108,57 +128,75 @@ func (s *Service) RestoreBackup(ctx context.Context, siteID string, archive io.R
 		return nil
 	})
 }
-func readBackupBundle(reader io.Reader) (*backupBundle, error) {
+func readBackupBundle(reader io.Reader) (*backupBundle, bool, error) {
 	compressed := &io.LimitedReader{R: reader, N: 128 * 1024 * 1024}
 	gz, err := gzip.NewReader(compressed)
 	if err != nil {
-		return nil, fmt.Errorf("读取访问策略备份: %w", err)
+		return nil, false, fmt.Errorf("读取访问策略备份: %w", err)
 	}
 	defer gz.Close()
 	expanded := &io.LimitedReader{R: gz, N: 256 * 1024 * 1024}
 	tr := tar.NewReader(expanded)
+	var bundle *backupBundle
+	var hasHTTPConfig bool
 	for count := 0; count < MaxRules+16; count++ {
 		header, err := tr.Next()
-		if err == io.EOF {
-			return nil, nil
+		if err == io.EOF || err == nil && (header.Name == "metadata.json" || !strings.HasPrefix(header.Name, "config/")) {
+			if hasHTTPConfig && bundle == nil {
+				return nil, false, fmt.Errorf("备份中的全局访问配置缺少策略快照，无法安全恢复")
+			}
+			return bundle, hasHTTPConfig, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("读取访问策略备份目录: %w", err)
-		}
-		if header.Name == "metadata.json" || !strings.HasPrefix(header.Name, "config/") {
-			return nil, nil
+			return nil, false, fmt.Errorf("读取访问策略备份目录: %w", err)
 		}
 		if header.Size < 0 || header.Size > MaxRenderedBytes {
-			return nil, fmt.Errorf("备份配置超过 64 MiB")
+			return nil, false, fmt.Errorf("备份配置超过 64 MiB")
 		}
-		if header.Name != "config/extra-4.conf" {
+		switch header.Name {
+		case "config/site.conf", "config/access-limit.conf", "config/rewrite.conf", "config/hotlink.conf", "config/extra-5.conf":
+			if header.Typeflag != tar.TypeReg || header.Name == "config/extra-5.conf" && hasHTTPConfig {
+				return nil, false, fmt.Errorf("备份站点配置类型或数量无效")
+			}
+			if header.Name == "config/extra-5.conf" {
+				hasHTTPConfig = true
+			}
+			snapshot, err := georuntime.ReadSnapshot(tr)
+			if err != nil {
+				return nil, false, err
+			}
+			if (snapshot.Legacy || snapshot.Shared) && (header.Name != "config/extra-5.conf" || bundle == nil || !needsCountry(bundle.Policy)) {
+				return nil, false, fmt.Errorf("备份包含无法从策略快照转换的旧地域配置，未写入站点")
+			}
+			continue
+		case "config/extra-4.conf":
+		default:
 			continue
 		}
-		if header.Typeflag != tar.TypeReg {
-			return nil, fmt.Errorf("策略备份必须是普通文件")
+		if header.Typeflag != tar.TypeReg || bundle != nil {
+			return nil, false, fmt.Errorf("策略备份必须是唯一的普通文件")
 		}
 		raw, err := io.ReadAll(io.LimitReader(tr, MaxRenderedBytes+1))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(raw) > MaxRenderedBytes {
-			return nil, fmt.Errorf("策略备份超过 64 MiB")
+			return nil, false, fmt.Errorf("策略备份超过 64 MiB")
 		}
-		var bundle backupBundle
+		bundle = new(backupBundle)
 		decoder := json.NewDecoder(strings.NewReader(string(raw)))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&bundle); err != nil {
-			return nil, fmt.Errorf("策略备份格式错误: %w", err)
+		if err := decoder.Decode(bundle); err != nil {
+			return nil, false, fmt.Errorf("策略备份格式错误: %w", err)
 		}
 		if decoder.Decode(new(any)) != io.EOF {
-			return nil, fmt.Errorf("策略备份包含多余内容")
+			return nil, false, fmt.Errorf("策略备份包含多余内容")
 		}
 		if err := Validate(bundle.Policy); err != nil {
-			return nil, fmt.Errorf("备份策略无效: %w", err)
+			return nil, false, fmt.Errorf("备份策略无效: %w", err)
 		}
-		return &bundle, nil
 	}
-	return nil, fmt.Errorf("备份配置条目超出限制")
+	return nil, false, fmt.Errorf("备份配置条目超出限制")
 }
 func (s *Service) prepareBackupAccounts(siteID string, bundle *backupBundle) ([]*repo.AuthAccount, error) {
 	saved := map[string]*repo.AuthAccount{}

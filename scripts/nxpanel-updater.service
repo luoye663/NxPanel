@@ -1,0 +1,14 @@
+[Unit]
+Description=NxPanel signed update executor
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/nxpanel/bin/nxpanel-updater -home /usr/local/nxpanel -api-user openrest -supervisor systemd
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateNetwork=true
+
+[Install]
+WantedBy=multi-user.target

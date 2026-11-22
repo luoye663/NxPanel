@@ -27,12 +27,23 @@ type Server struct {
 	executor           *NginxExecutor
 	timeouts           NginxTimeouts
 	transactionMu      sync.Mutex // Held through test/reload/rollback, not just the file write.
+	moduleMu           sync.Mutex
+	moduleFeed         moduleFeed
+	moduleSource       moduleSource
 	reloadProbeForTest func(context.Context) (func(context.Context) error, error)
 	// restoreSnapshotHook is only set by tests that inject a post-snapshot fault.
 	restoreSnapshotHook func(string)
 }
 
 func NewServer(cfg *app.Config) (*Server, error) {
+	return newServer(cfg, false)
+}
+
+func NewTrialServer(cfg *app.Config) (*Server, error) {
+	return newServer(cfg, true)
+}
+
+func newServer(cfg *app.Config, trial bool) (*Server, error) {
 	timeouts := NginxTimeouts{
 		Test:   app.ParseDurationOrDefault(cfg.Nginx.TestTimeout, 15*time.Second),
 		Reload: app.ParseDurationOrDefault(cfg.Nginx.ReloadTimeout, 15*time.Second),
@@ -41,18 +52,21 @@ func NewServer(cfg *app.Config) (*Server, error) {
 		Detect: app.ParseDurationOrDefault(cfg.Nginx.DetectTimeout, 10*time.Second),
 	}
 	s := &Server{
-		cfg:      cfg,
-		router:   chi.NewRouter(),
-		policy:   NewPathPolicyFromConfig(cfg),
-		executor: NewNginxExecutor(cfg.Nginx.Bin, cfg.Nginx.ConfPath, timeouts),
-		timeouts: timeouts,
+		cfg:          cfg,
+		router:       chi.NewRouter(),
+		policy:       NewPathPolicyFromConfig(cfg),
+		executor:     NewNginxExecutor(cfg.Nginx.Bin, cfg.Nginx.ConfPath, timeouts),
+		timeouts:     timeouts,
+		moduleSource: configuredModuleSource(),
 	}
 	s.executor.SetOutputLimits(s.commandOutputLimits())
 
 	s.setupMiddleware()
 	s.setupRoutes()
 
-	go s.cleanupBackups()
+	if !trial {
+		go s.cleanupBackups()
+	}
 
 	taskLogDir := cfg.TaskLogDir()
 	if err := os.MkdirAll(taskLogDir, 0755); err != nil {
@@ -60,6 +74,11 @@ func NewServer(cfg *app.Config) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+func (s *Server) StartRuntime() {
+	s.AutoDetectIfNeeded()
+	go s.cleanupBackups()
 }
 
 func (s *Server) cleanupBackups() {

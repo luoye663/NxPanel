@@ -17,8 +17,8 @@
 [Unit]
 Description=NxPanel API/UI Service
 Documentation=https://github.com/luoye663/nxpanel
-After=network.target nxpanel-agent.service
-Wants=nxpanel-agent.service
+After=network.target nxpanel-agent.service nxpanel-updater.service
+Wants=nxpanel-agent.service nxpanel-updater.service
 
 [Service]
 Type=simple
@@ -26,10 +26,8 @@ User=openrest
 Group=openrest
 
 # 二进制文件路径
-ExecStart=/usr/local/nxpanel/bin/nxpanel-api -config /usr/local/nxpanel/configs/config.yaml
-
-RuntimeDirectory=nxpanel
-RuntimeDirectoryMode=0755
+ExecStart=/usr/local/nxpanel/current/nxpanel-api -config /usr/local/nxpanel/configs/config.yaml
+Environment=NXPANEL_UPDATE_HOME=/usr/local/nxpanel
 
 # 优雅关闭
 KillSignal=SIGTERM

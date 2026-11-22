@@ -17,6 +17,7 @@ import (
 	"github.com/luoye663/nxpanel/internal/agentclient"
 	"github.com/luoye663/nxpanel/internal/app"
 	"github.com/luoye663/nxpanel/internal/db/repo"
+	"github.com/luoye663/nxpanel/internal/georuntime"
 	"github.com/luoye663/nxpanel/internal/nginx"
 )
 
@@ -26,7 +27,9 @@ type policyAgent interface {
 }
 
 type countryProvider interface {
-	AccessPolicyData() (map[string][]string, []string, error)
+	AccessPolicyData() (bool, []string, error)
+	LookupCountry(netip.Addr) (string, error)
+	EnsureRuntime(context.Context, string) error
 }
 
 // ProxyCoordinator holds the proxy writer lock while preparing and applying a
@@ -106,33 +109,57 @@ func (s *Service) Get(siteID string) (*Policy, error) {
 	return s.store.LegacyDraft(siteID)
 }
 
+func needsCountry(p Policy) bool {
+	for _, rule := range p.Rules {
+		if !rule.Enabled || rule.SourceDisabled {
+			continue
+		}
+		for _, condition := range rule.Conditions {
+			if condition.Kind == "country" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) CheckGeoIP2Removal() error {
+	items, err := s.store.List()
+	if err != nil {
+		return fmt.Errorf("无法核验统一访问策略，未卸载")
+	}
+	for _, item := range items {
+		applied, err := s.store.GetApplied(item.SiteID)
+		if err != nil {
+			return fmt.Errorf("无法核验已应用访问策略，未卸载")
+		}
+		if needsCountry(item.Policy) || applied != nil && needsCountry(*applied) {
+			return fmt.Errorf("仍有已应用或待应用的地域访问策略（站点 %s），请先停用并同步", item.SiteID)
+		}
+	}
+	return nil
+}
+
 func (s *Service) renderContext(site *repo.Site, p Policy) (RenderContext, []string, error) {
 	if err := s.validateAccountReferences(site.ID, p); err != nil {
 		return RenderContext{}, nil, err
 	}
 	renderCtx := RenderContext{AuthFiles: map[string]string{}}
 	renderCtx.ServerNames = append(repo.ParseJSONStringSlice(site.DomainsJSON), site.PrimaryDomain)
-	needsCountry := false
-	for _, rule := range p.Rules {
-		if !rule.Enabled || rule.SourceDisabled {
-			continue
-		}
-		for _, c := range rule.Conditions {
-			if c.Kind == "country" {
-				needsCountry = true
-			}
-		}
-	}
+	installed := false
 	var proxies []string
 	if s.geo != nil {
 		var err error
-		renderCtx.CountryNetworks, proxies, err = s.geo.AccessPolicyData()
+		installed, proxies, err = s.geo.AccessPolicyData()
 		if err != nil {
 			return renderCtx, nil, err
 		}
 	}
-	if needsCountry && len(renderCtx.CountryNetworks) == 0 {
-		return renderCtx, nil, app.ErrValidationFailedMsg("请先安装 GeoLite2 Country 数据库再启用地域条件", nil)
+	if needsCountry(p) {
+		if !installed {
+			return renderCtx, nil, app.ErrValidationFailedMsg("请先安装 GeoLite2 Country 数据库再启用地域条件", nil)
+		}
+		renderCtx.LookupCountry = s.geo.LookupCountry
 	}
 	for _, rule := range p.Rules {
 		if !rule.Enabled || rule.SourceDisabled || rule.Action.Type != "auth" {
@@ -310,12 +337,14 @@ func (s *Service) apply(ctx context.Context, site *repo.Site, p Policy, compiled
 		if prepErr != nil {
 			return app.ErrValidationFailedMsg(prepErr.Error(), nil)
 		}
-		compiled, proxies, authFiles = currentCompiled, currentProxies, renderCtx.AuthFiles
-		// Custom access directives outside our owned markers cannot be made
-		// reorderable safely. Never silently remove or override them.
-		if err := s.CheckConfig(ctx, site, main); err != nil {
-			return err
+		if needsCountry(p) {
+			if err := s.geo.EnsureRuntime(ctx, requestID); err != nil {
+				return err
+			}
 		}
+		compiled, proxies, authFiles = currentCompiled, currentProxies, renderCtx.AuthFiles
+		// External configuration is independently managed. Its diagnostics are
+		// advisory; nginx -t remains authoritative for the write transaction.
 		accessPath := site.AccessLimitPath
 		if accessPath == "" {
 			accessPath = filepath.Join(s.panelDir, "access-limit", site.PrimaryDomain+".conf")
@@ -460,7 +489,7 @@ func (s *Service) buildFiles(site *repo.Site, p Policy, compiled *CompiledPolicy
 }
 
 func (s *Service) globalPath(siteID string) string {
-	return filepath.Join(s.panelDir, "conf.d", "20-nxpanel-access-policy-"+siteID+".conf")
+	return georuntime.PolicyPath(s.panelDir, siteID)
 }
 func (s *Service) bundlePath(siteID string) string {
 	return filepath.Join(s.panelDir, "access-policy", siteID, "snapshot.json")
@@ -488,7 +517,3 @@ func (s *Service) RefreshActive(ctx context.Context, requestID string) error {
 	}
 	return errors.Join(errs...)
 }
-
-// Owned access blocks and HTTPS redirection have known semantics. For other
-// directives tokenize statements, rather than checking line prefixes (a custom
-// location commonly fits on one line).

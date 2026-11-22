@@ -27,6 +27,10 @@ RUN pnpm run build
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS backend-builder
 
 ARG VERSION=0.1.0-dev
+ARG UPDATE_BUILD_TAGS=embed_web
+ARG MODULE_AGENT_BUILD_TAGS
+ARG NXPANEL_UPDATE_TRUST_KEYS
+ARG NXPANEL_MODULE_TRUST_KEYS
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG TARGETOS
 ARG TARGETARCH
@@ -42,18 +46,23 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY configs/assets.go ./configs/
+COPY configs/templates/ ./configs/templates/
 COPY web/ ./web/
 
 COPY --from=frontend-builder /app/web/dist ./web/dist/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${UPDATE_BUILD_TAGS}" \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \
         -o /out/nxpanel-api ./cmd/nxpanel-api \
- && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION}" \
-        -o /out/nxpanel-agent ./cmd/nxpanel-agent
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${MODULE_AGENT_BUILD_TAGS}" \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS} -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=${NXPANEL_MODULE_TRUST_KEYS}" \
+        -o /out/nxpanel-agent ./cmd/nxpanel-agent \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${UPDATE_BUILD_TAGS}" \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \
+        -o /out/nxpanel-updater ./cmd/nxpanel-updater
 
 # ---- Stage 3：运行时（OpenResty 官方镜像）----
 FROM openresty/openresty:alpine AS runtime
@@ -94,12 +103,10 @@ RUN mkdir -p \
 # 复制二进制（api + agent）
 COPY --from=backend-builder /out/nxpanel-api   /usr/local/nxpanel/bin/
 COPY --from=backend-builder /out/nxpanel-agent /usr/local/nxpanel/bin/
+COPY --from=backend-builder /out/nxpanel-updater /usr/local/nxpanel/bin/
 
 # 复制许可证（BSD 3-Clause 二进制分发要求）
 COPY LICENSE /usr/local/nxpanel/LICENSE
-
-# 复制前端静态资源
-COPY --from=frontend-builder /app/web/dist /usr/local/nxpanel/web/
 
 # 复制配置、模板、nginx.conf 模板（OpenResty 版本）
 COPY configs/config.example.yaml      /usr/local/nxpanel/config/config.yaml
@@ -113,6 +120,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
 # 默认目录属主：api 写 data/nginx；openresty worker(nobody) 写日志
 RUN chown -R nxpanel:nxpanel /opt/nxpanel/data /opt/nxpanel/nginx \
+ && ln -s bin /usr/local/nxpanel/current \
  && chown -R nobody:nobody /www/wwwlogs /var/log/nginx \
  && chmod +x /usr/local/nxpanel/scripts/entrypoint.sh \
              /usr/local/nxpanel/scripts/render-nginx-conf.sh \
@@ -121,6 +129,8 @@ RUN chown -R nxpanel:nxpanel /opt/nxpanel/data /opt/nxpanel/nginx \
 
 # OpenResty 二进制与配置路径
 ENV NXPANEL_API_LISTEN=0.0.0.0:18888 \
+    NXPANEL_UPDATE_HOME=/usr/local/nxpanel \
+    NXPANEL_UPDATE_DOCKER=1 \
     NXPANEL_NGINX_BIN=/usr/local/openresty/nginx/sbin/nginx \
     NXPANEL_NGINX_CONF_PATH=/opt/nxpanel/nginx/nginx.conf \
     NXPANEL_NGINX_PANEL_DIR=/opt/nxpanel/nginx \

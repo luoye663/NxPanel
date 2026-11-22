@@ -1,8 +1,8 @@
 import { Badge, Button, Checkbox, Grid, Stack, Text } from '@mantine/core'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { IconLink, IconRefresh, IconSearch, IconShieldCheck } from '@tabler/icons-react'
-import { detectNginx, ensureInclude, reloadNginx, testNginx, type NginxDetectResponse, type NginxEnsureIncludeResponse, type NginxReloadResponse, type NginxTestResponse } from '@/api/nginx'
+import { IconLink, IconSearch, IconShieldCheck } from '@tabler/icons-react'
+import { detectNginx, ensureInclude, testNginx, type NginxDetectResponse, type NginxEnsureIncludeResponse, type NginxTestResponse } from '@/api/nginx'
 import { queryKeys } from '@/api/hooks'
 import { MonoText } from '@/components/common/MonoText'
 import { SectionCard } from '@/components/common/SectionCard'
@@ -21,11 +21,9 @@ export function NginxActions() {
   const [detectResult, setDetectResult] = useState<NginxDetectResponse | null>(null)
   const [ensureResult, setEnsureResult] = useState<NginxEnsureIncludeResponse | null>(null)
   const [testResult, setTestResult] = useState<NginxTestResponse | null>(null)
-  const [reloadResult, setReloadResult] = useState<NginxReloadResponse | null>(null)
   const detectMutation = useMutation({ mutationFn: detectNginx })
   const ensureMutation = useMutation({ mutationFn: ensureInclude })
   const testMutation = useMutation({ mutationFn: testNginx })
-  const reloadMutation = useMutation({ mutationFn: reloadNginx })
 
   async function refreshOverview() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.systemOverview })
@@ -67,20 +65,6 @@ export function NginxActions() {
     }
   }
 
-  function handleReload() {
-    confirmDanger({
-      title: 'Reload Nginx',
-      message: 'Reload 会先执行 nginx -t，再重新加载 Nginx 配置。如果配置异常可能影响线上服务。确认继续？',
-      confirmLabel: '确认 Reload',
-      errorTitle: 'Reload 失败',
-      onConfirm: async () => {
-        const result = await reloadMutation.mutateAsync({ test_before_reload: true })
-        setReloadResult(result)
-        notifySuccess({ message: 'Nginx Reload 成功' })
-        await refreshOverview()
-      },
-    })
-  }
 
   return (
     <Stack gap="sm">
@@ -91,10 +75,10 @@ export function NginxActions() {
               <Button className="nginxActionButton" leftSection={<IconSearch size={16} />} loading={detectMutation.isPending} onClick={handleDetect}>检测 Nginx</Button>
               {detectResult ? (
                 <Grid w="100%" mt="xs">
-                  <Grid.Col span={{ base: 12, md: 6 }}><Text size="sm" c="dimmed">Nginx 路径</Text><MonoText value={detectResult.bin} maxWidth="100%" /></Grid.Col>
-                  <Grid.Col span={{ base: 12, md: 6 }}><Text size="sm" c="dimmed">版本</Text><Text>{detectResult.version || '-'}</Text></Grid.Col>
-                  <Grid.Col span={{ base: 12, md: 6 }}><Text size="sm" c="dimmed">主配置</Text><MonoText value={detectResult.conf_path} maxWidth="100%" /></Grid.Col>
-                  <Grid.Col span={{ base: 12, md: 6 }}><Text size="sm" c="dimmed">Prefix</Text><MonoText value={detectResult.prefix} maxWidth="100%" /></Grid.Col>
+                  <Grid.Col span={12}><Text size="sm" c="dimmed">Nginx 路径</Text><MonoText value={detectResult.bin} maxWidth="100%" /></Grid.Col>
+                  <Grid.Col span={12}><Text size="sm" c="dimmed">版本</Text><Text>{detectResult.version || '-'}</Text></Grid.Col>
+                  <Grid.Col span={12}><Text size="sm" c="dimmed">主配置</Text><MonoText value={detectResult.conf_path} maxWidth="100%" /></Grid.Col>
+                  <Grid.Col span={12}><Text size="sm" c="dimmed">Prefix</Text><MonoText value={detectResult.prefix} maxWidth="100%" /></Grid.Col>
                   <Grid.Col span={12}><Badge color={detectResult.test_ok ? 'green' : 'red'} variant="light">配置测试 {detectResult.test_ok ? '通过' : '未通过'}</Badge><OutputBlock value={detectResult.stderr} /></Grid.Col>
                 </Grid>
               ) : null}
@@ -113,18 +97,13 @@ export function NginxActions() {
       </Grid>
 
       <Grid>
-        <Grid.Col span={{ base: 12, md: 6 }}>
+        <Grid.Col span={12}>
           <SectionCard title="配置测试" description="执行 nginx -t 检查当前配置是否正确。">
             <Button className="nginxActionButton" leftSection={<IconShieldCheck size={16} />} loading={testMutation.isPending} onClick={handleTest}>执行 nginx -t</Button>
             {testResult ? <Stack mt="md" gap="xs"><Badge color={testResult.ok ? 'green' : 'red'} variant="light">{testResult.ok ? '通过' : '未通过'}</Badge><OutputBlock value={testResult.stdout || testResult.stderr} /></Stack> : null}
           </SectionCard>
         </Grid.Col>
-        <Grid.Col span={{ base: 12, md: 6 }}>
-          <SectionCard title="Reload Nginx" description="重新加载 Nginx 配置，默认先自动执行 nginx -t。">
-            <Button className="nginxActionButton" color="red" leftSection={<IconRefresh size={16} />} loading={reloadMutation.isPending} onClick={handleReload}>Reload Nginx</Button>
-            {reloadResult ? <Stack mt="md" gap="xs"><Badge color={reloadResult.ok ? 'green' : 'red'} variant="light">{reloadResult.ok ? '成功' : '失败'}</Badge><MonoText value={reloadResult.operation_id} maxWidth="100%" /></Stack> : null}
-          </SectionCard>
-        </Grid.Col>
+
       </Grid>
     </Stack>
   )

@@ -61,6 +61,11 @@ func (s *Service) PrepareProxyChange(ctx context.Context, site *repo.Site, proxi
 	if err != nil {
 		return fail(err)
 	}
+	if needsCountry(*p) {
+		if err := s.geo.EnsureRuntime(ctx, "proxy"); err != nil {
+			return fail(err)
+		}
+	}
 	mainIndex := -1
 	var main []byte
 	for i, change := range changes {
@@ -75,9 +80,6 @@ func (s *Service) PrepareProxyChange(ctx context.Context, site *repo.Site, proxi
 	}
 	if mainIndex < 0 {
 		return fail(fmt.Errorf("反代事务缺少主配置"))
-	}
-	if err := s.CheckConfig(ctx, site, main); err != nil {
-		return fail(err)
 	}
 	desired, err := s.store.SaveDesired(site.ID, *p, p.Version)
 	if err != nil {
