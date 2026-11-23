@@ -86,6 +86,7 @@ func (s *Server) setupRoutes() {
 			r.Get("/nginx/modules", s.handleNginxModules)
 			r.Get("/nginx/modules/releases", s.handleNginxModuleReleases)
 			r.Get("/nginx/modules/preflight", s.handleNginxModulePreflight)
+			r.Post("/nginx/modules/build", s.handleNginxModuleBuild)
 			r.Post("/nginx/modules/install", s.handleNginxModuleInstall)
 			r.Post("/nginx/modules/uninstall", s.handleNginxModuleUninstall)
 			r.Get("/nginx/modules/jobs/{operation_id}", s.handleNginxModuleJob)

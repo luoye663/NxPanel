@@ -14,10 +14,9 @@ jq -e --arg local_images "${NXPANEL_MODULE_SMOKE_LOCAL_IMAGES:-0}" 'type == "arr
     (.image | test("^(ghcr\\.io|docker\\.io)/([a-z0-9][a-z0-9_.-]*/)+[a-z0-9][a-z0-9_.-]*@sha256:[0-9a-f]{64}$") or
         ($local_images == "1" and test("^sha256:[0-9a-f]{64}$"))) and
     (.binary | test("^/([a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+$")))' <<< "$recipes" >/dev/null
-"$go_bin" run ./cmd/nxpanel-module-catalog -check-candidate -input "$candidate"
-manifest=$work/catalog.json
-jq -er --arg arch "$arch_filter" '.assets |= map(select($arch == "" or .target.arch == $arch))' \
-    "$candidate/candidate.json" > "$manifest"
+"$go_bin" build -o "$work/catalog" ./cmd/nxpanel-module-catalog
+"$work/catalog" -check-candidate -input "$candidate"
+manifest=$candidate/candidate.json
 mmdb_commit=c454a21f31fd17f2843f16094e9afb3a14a42078
 mmdb_sha=fc12d6470b35b70bd3e4534dd433d3e262a6c73f7682f85c344e832d4190f02b
 if jq -e 'any(.modules[]; .id == "geoip2")' "$manifest" >/dev/null; then
@@ -37,19 +36,23 @@ while IFS=$'\t' read -r image arch binary; do
         --mount "type=bind,source=$smoke_dir/check-release-action.sh,target=/verify.sh,readonly"
         --entrypoint /bin/sh)
     target=$("${runner[@]}" "$image" /verify.sh "$binary" target)
-    mapfile -t matches < <(jq -r --arg target "$target" '
-      .modules as $modules | .assets | to_entries[] | .key as $index | .value |
-      select((.target | [.os,.arch,.runtime,.runtime_version,.binary_sha256] | @tsv) == $target) |
-      .name as $asset | .module as $id | $modules[] | select(.id == $id) |
-      [$index,.id,.symbol,$asset,.install.name,.uninstall.name] | @tsv' "$manifest")
-    ((${#matches[@]} > 0)) || { printf 'No candidate target matches %s\n' "$target" >&2; exit 1; }
-    for match in "${matches[@]}"; do
-        IFS=$'\t' read -r index id symbol asset install uninstall <<< "$match"
-        timeout 90 "${runner[@]}" \
-            --mount "type=bind,source=$candidate,target=/candidate,readonly" \
-            --mount "type=bind,source=$work/test.mmdb,target=/test.mmdb,readonly" \
-            "$image" /verify.sh "$binary" "$id" "$symbol" "$asset" "$install" "$uninstall"
-        verified[$index]=1
-    done
+    IFS=$'\t' read -r os observed_arch runtime version digest <<< "$target"
+    [[ "$observed_arch" == "$arch" ]]
+    jq -n --arg os "$os" --arg arch "$arch" --arg runtime "$runtime" --arg version "$version" --arg digest "$digest" \
+        '{os:$os,arch:$arch,runtime:$runtime,runtime_version:$version,binary_sha256:$digest}' > "$work/target.json"
+    if ! match=$("$work/catalog" -match-target "$work/target.json" -input "$candidate"); then
+        printf 'No unambiguous candidate for %s (%s)\n' "$target" "$image" >&2
+        exit 1
+    fi
+    details=$(jq -er --argjson match "$match" '.modules[0] | [.id,.symbol,$match.name,.install.name,.uninstall.name] | @tsv' "$manifest")
+    IFS=$'\t' read -r id symbol asset install uninstall <<< "$details"
+    timeout 90 "${runner[@]}" \
+        --mount "type=bind,source=$candidate,target=/candidate,readonly" \
+        --mount "type=bind,source=$work/test.mmdb,target=/test.mmdb,readonly" \
+        "$image" /verify.sh "$binary" "$id" "$symbol" "$asset" "$install" "$uninstall"
+    verified[$asset]=1
 done < <(jq -r --arg arch "$arch_filter" '.[] | select($arch == "" or .arch == $arch) | [.image,.arch,.binary] | @tsv' <<< "$recipes")
-[[ ${#verified[@]} -eq $(jq -er '.assets | length | select(. > 0)' "$manifest") ]]
+expected=$(jq -er --arg arch "$arch_filter" '[.assets[] | select($arch == "" or .target.arch == $arch).name] | unique | select(length > 0) | .[]' "$manifest")
+while IFS= read -r asset; do
+    [[ ${verified[$asset]+verified} ]] || { printf 'Candidate asset was not exercised: %s\n' "$asset" >&2; exit 1; }
+done <<< "$expected"

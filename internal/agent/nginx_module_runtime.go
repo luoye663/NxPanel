@@ -243,7 +243,9 @@ func moduleTarget(instance moduleRuntime, version CmdResult) (nginxmodule.Target
 	target := nginxmodule.Target{Arch: runtime.GOARCH, BinarySHA256: instance.binaryHash}
 	for _, line := range strings.Split(version.Stdout+"\n"+version.Stderr, "\n") {
 		if value, ok := strings.CutPrefix(line, "nginx version: "); ok {
-			target.Runtime, target.RuntimeVersion, _ = strings.Cut(strings.TrimSpace(value), "/")
+			if fields := strings.Fields(value); len(fields) != 0 {
+				target.Runtime, target.RuntimeVersion, _ = strings.Cut(fields[0], "/")
+			}
 		}
 	}
 	if target.Runtime != "nginx" && target.Runtime != "openresty" || target.RuntimeVersion == "" {
@@ -272,14 +274,6 @@ func moduleOS(data string) string {
 		case "VERSION_ID":
 			version = strings.Trim(value, "\"'")
 		}
-	}
-	if id == "rocky" || id == "debian" {
-		version, _, _ = strings.Cut(version, ".")
-	}
-	if id == "alpine" {
-		major, rest, _ := strings.Cut(version, ".")
-		minor, _, _ := strings.Cut(rest, ".")
-		version = major + "." + minor
 	}
 	return id + ":" + version
 }

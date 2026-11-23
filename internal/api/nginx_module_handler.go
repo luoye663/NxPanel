@@ -106,7 +106,28 @@ func writeModuleLookup(w http.ResponseWriter, r *http.Request, data any, err err
 		WriteError(w, r, response.StatusCode, "NGINX_MODULE_LOOKUP_FAILED", response.Message, nil)
 		return
 	}
-	WriteError(w, r, http.StatusServiceUnavailable, app.ErrAgentUnavailable, "无法查询模块版本，请确认 Agent 和 GitHub 连接正常", nil)
+	WriteError(w, r, http.StatusServiceUnavailable, app.ErrAgentUnavailable, "无法查询模块，请确认 Agent 和官方模块服务连接正常", nil)
+}
+
+func (s *Server) handleNginxModuleBuild(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ID  string `json:"id"`
+		Tag string `json:"tag"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	if !DecodeJSON(w, r, &request) {
+		return
+	}
+	if !nginxmodule.ValidID(request.ID) || !nginxmodule.ValidTag(request.Tag) {
+		WriteError(w, r, http.StatusBadRequest, app.ErrBadRequest, "无效的模块构建请求", nil)
+		return
+	}
+	if s.agentClient == nil {
+		WriteError(w, r, http.StatusServiceUnavailable, app.ErrAgentUnavailable, "Agent 不可用", nil)
+		return
+	}
+	data, err := s.agentClient.NginxModuleBuild(r.Context(), request.ID, request.Tag)
+	writeModuleLookup(w, r, data, err)
 }
 
 func (s *Server) handleNginxModuleUninstall(w http.ResponseWriter, r *http.Request) {

@@ -15,6 +15,9 @@ import (
 )
 
 func configuredModuleSource() moduleSource {
+	if os.Getenv("NXPANEL_MODULE_TEST_FEED") == "" && os.Getenv("NXPANEL_MODULE_TEST_KEYS") == "" {
+		return officialModuleSource()
+	}
 	return parseModuleSource(os.Getenv("NXPANEL_MODULE_TEST_FEED"), os.Getenv("NXPANEL_MODULE_TEST_KEYS"), inModuleContainer())
 }
 

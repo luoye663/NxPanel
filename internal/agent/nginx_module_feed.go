@@ -21,8 +21,6 @@ import (
 const moduleStateDir = "/var/lib/nxpanel-nginx-modules"
 const moduleTestStateDir = moduleStateDir + "-test"
 
-const moduleIndexURL = "https://raw.githubusercontent.com/luoye663/NxPanel/main/" + nginxmodule.IndexPath
-
 type moduleFeed struct {
 	entries  []nginxmodule.IndexEntry
 	floor    nginxmodule.Floor
@@ -57,10 +55,11 @@ func (source moduleSource) trustKeys() (map[string]ed25519.PublicKey, error) {
 }
 
 type moduleSource struct {
-	test bool
-	base string
-	keys map[string]ed25519.PublicKey
-	err  error
+	test       bool
+	base       string
+	keys       map[string]ed25519.PublicKey
+	err        error
+	buildToken string
 }
 
 func (source moduleSource) stateDir() string {
@@ -70,51 +69,27 @@ func (source moduleSource) stateDir() string {
 	return moduleStateDir
 }
 
-var moduleHTTPClient = &http.Client{
-	Timeout: 12 * time.Second,
-	Transport: &http.Transport{
-		MaxResponseHeaderBytes: 64 << 10,
-		DisableCompression:     true,
-		MaxIdleConns:           4,
-		IdleConnTimeout:        30 * time.Second,
-	},
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) > 2 || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.Port() != "" ||
-			(req.URL.Host != "release-assets.githubusercontent.com" && req.URL.Host != "objects.githubusercontent.com") {
-			return fmt.Errorf("非官方 GitHub Release 下载地址")
-		}
-		return nil
-	},
-}
-
 func (source moduleSource) fetch(ctx context.Context, name string, limit int64, releases ...nginxmodule.Release) ([]byte, error) {
-	address, client, label := moduleIndexURL+name, moduleCatalogClient, "官方 GitHub 模块索引"
+	if source.err != nil {
+		return nil, source.err
+	}
+	if source.base == "" {
+		return nil, fmt.Errorf("未配置官方模块服务地址")
+	}
+	address := source.base + name
 	if len(releases) == 1 {
 		release := releases[0]
-		address, client, label = nginxmodule.ReleaseURL(release, name), moduleHTTPClient, "GitHub 模块产物"
+		address = source.base + "repos/" + release.Repository + "/releases/download/" + release.Tag + "/" + name
 	}
-	if source.test {
-		if source.err != nil {
-			return nil, source.err
-		}
-		address, client, label = source.base+name, moduleCatalogClient, "本地模块测试源"
-		if len(releases) == 1 {
-			release := releases[0]
-			address = source.base + "repos/" + release.Repository + "/releases/download/" + release.Tag + "/" + name
-		}
-	}
-	return fetchModuleResource(ctx, client, address, label, limit)
+	return fetchModuleResource(ctx, moduleCatalogClient, address, "模块服务", limit)
 }
 
-var errModuleResourceNotFound = errors.New("GitHub 资源不存在（HTTP 404）")
+var errModuleResourceNotFound = errors.New("模块资源不存在（HTTP 404）")
 
 func fetchModuleResource(ctx context.Context, client *http.Client, address, label string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
-	}
-	if req.URL.Host == "api.github.com" {
-		req.Header.Set("Accept", "application/vnd.github+json")
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -131,8 +106,13 @@ func fetchModuleResource(ctx context.Context, client *http.Client, address, labe
 }
 
 var moduleCatalogClient = &http.Client{
-	Timeout:       12 * time.Second,
-	Transport:     moduleHTTPClient.Transport,
+	Timeout: 12 * time.Second,
+	Transport: &http.Transport{
+		MaxResponseHeaderBytes: 64 << 10,
+		DisableCompression:     true,
+		MaxIdleConns:           4,
+		IdleConnTimeout:        30 * time.Second,
+	},
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 

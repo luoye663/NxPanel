@@ -6,6 +6,11 @@ image=${1:-nxpanel:module-dev}
 artifacts=$(realpath -e "${2:?Supply the external Alpine build directory with GeoIP2 and fixture-http}")
 fixture_mode=${3:-}
 [[ -z "$fixture_mode" || "$fixture_mode" == --manual ]]
+incompatible=${NXPANEL_MODULE_INCOMPATIBLE_FIXTURE:-}
+if [[ -n "$incompatible" ]]; then
+    incompatible=$(realpath -e "$incompatible")
+    [[ -z "$fixture_mode" && -s "$incompatible/target.json" && -s "$incompatible/ngx_http_nxpanel_fixture_module.so" ]]
+fi
 image=$(docker image inspect "$image" --format '{{.Id}}')
 nonce=$(openssl rand -hex 6)
 network=nxpanel-module-test-$nonce
@@ -36,16 +41,28 @@ target=$(docker run --rm --entrypoint /bin/sh "$image" -ec '
     case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac
     release=$("$NXPANEL_NGINX_BIN" -V 2>&1 | sed -n "s/^nginx version: //p")
     . /etc/os-release
-    printf "%s\t%s\t%s\t%s\t%s\n" "$arch" "${release%/*}" "${release#*/}" "$(sha256sum "$NXPANEL_NGINX_BIN" | cut -d " " -f 1)" "$ID:$(printf "%s\n" "$VERSION_ID" | cut -d . -f 1,2)"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$arch" "${release%/*}" "${release#*/}" "$(sha256sum "$NXPANEL_NGINX_BIN" | cut -d " " -f 1)" "$ID:$(printf "%s\n" "$VERSION_ID" | cut -d . -f 1,2)" "$ID" "$VERSION_ID"
 ')
-IFS=$'\t' read -r arch runtime version digest os <<< "$target"
+IFS=$'\t' read -r arch runtime version digest os os_id os_version <<< "$target"
 jq -n --arg arch "$arch" --arg runtime "$runtime" --arg digest "$digest" --arg version "$version" --arg os "$os" \
-    '{os:$os,arch:$arch,runtime:$runtime,runtime_version:$version,binary_sha256:$digest}' > "$work/builds/geoip2/docker/target.json"
-if ! jq -e --slurpfile expected "$work/builds/geoip2/docker/target.json" '. == $expected[0]' "$artifacts/target.json" >/dev/null; then
-    printf 'External module build does not match the running image.\n' >&2
+    '{os:$os,arch:$arch,runtime:$runtime,runtime_version:$version,binary_sha256:$digest}' > "$work/builds/fixture-http/docker/target.json"
+if ! jq -e --slurpfile actual "$work/builds/fixture-http/docker/target.json" \
+    'del(.binary_sha256) == ($actual[0] | del(.binary_sha256))' "$artifacts/target.json" >/dev/null; then
+    printf 'External module build targets a different OS, architecture or runtime version.\n' >&2
     exit 1
 fi
-cp "$work/builds/geoip2/docker/target.json" "$work/builds/fixture-http/docker/"
+if [[ ${NXPANEL_MODULE_EXPECT_DIFFERENT_BINARY:-0} == 1 ]]; then
+    jq -e --arg digest "$digest" '.binary_sha256 != $digest' "$artifacts/target.json" >/dev/null
+fi
+range_target() {
+    jq -e --arg os_id "$os_id" --arg os_version "$os_version" --arg arch "$arch" --arg runtime "$runtime" --arg version "$version" \
+        '.compatibility = [{os_id:$os_id, arch:$arch, runtime:$runtime, os_version:{min:$os_version,max:$os_version}, runtime_version:{min:$version,max:$version}}]' "$1"
+}
+range_target "$artifacts/target.json" > "$work/builds/geoip2/docker/target.json"
+if [[ -n "$incompatible" ]]; then
+    cp "$incompatible/ngx_http_nxpanel_fixture_module.so" "$work/builds/fixture-http/docker/"
+    range_target "$incompatible/target.json" > "$work/builds/fixture-http/docker/target.json"
+fi
 "$go_bin" run ./cmd/nxpanel-module-catalog -test-fixture -metadata scripts/nginx-module-smoke/catalog.json \
     -sequence "$(date +%s)" -input "$work/builds" -output "$work/fixture"
 
@@ -128,6 +145,18 @@ expect() {
 list '?refresh=1' | expect '.data.feed_state == "online" and ([.data.modules[].id] | sort == ["fixture-http","geoip2"])'
 feed_log=$(docker logs "$feed" 2>&1)
 [[ "$feed_log" != *'GET /repos/'* ]]
+if [[ -n "$incompatible" ]]; then
+    request=$(available fixture-http)
+    master=$(docker exec "$panel" /command/s6-svstat -o pid /run/service/nginx-service)
+    before=$(main_hash)
+    old_workers=$(workers)
+    change_module install "$request" | expect '.state == "failed" and (.message | test("not binary compatible|version [0-9]+ instead of [0-9]+"))'
+    test "$(main_hash)" = "$before"
+    test "$(workers)" = "$old_workers"
+    docker exec "$panel" test ! -e /var/lib/nxpanel-nginx-modules-test/active/fixture-http.conf
+    printf 'In-range ABI mismatch was rejected without changing configuration or workers.\n'
+    exit 0
+fi
 request=$(available)
 master=$(docker exec "$panel" /command/s6-svstat -o pid /run/service/nginx-service)
 before=$(main_hash)
@@ -188,11 +217,11 @@ docker exec "$panel" sh -ec 'printf "%s\n" "geoip2_proxy_recursive on;" > /opt/n
     "$NXPANEL_NGINX_BIN" -t -c "$NXPANEL_NGINX_CONF_PATH"'
 change_module uninstall "$(uninstall_request)" | expect '.state == "failed" and (.message | contains("仍引用该模块"))'
 docker exec "$panel" rm /opt/nxpanel/nginx/conf.d/module-test-dependency.conf
+docker stop "$feed" >/dev/null
 change_module uninstall "$(uninstall_request)" | expect '.state == "success" and .action == "uninstall"'
 list | expect '(.data.modules[] | select(.id == "geoip2") | .loaded | not)'
 docker exec "$panel" sh -ec 'test -f /var/lib/nxpanel-nginx-modules-test/*/geoip2.so'
 test "$(docker exec "$panel" /command/s6-svstat -o pid /run/service/nginx-service)" = "$master"
-docker stop "$feed" >/dev/null
 change_module uninstall "$(uninstall_request fixture-http)" | expect '.state == "success" and .module_id == "fixture-http" and (.script_detail | test("SHA-256 [0-9a-f]{64}.* 0$"))'
 mv -- "$work/good.json" "$index_signature"
 docker start "$feed" >/dev/null

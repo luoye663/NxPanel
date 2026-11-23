@@ -81,6 +81,18 @@ func (c *Client) UninstallNginxModule(ctx context.Context, request nginxmodule.I
 	return c.nginxModuleAction(ctx, "uninstall", request)
 }
 
+func (c *Client) NginxModuleBuild(ctx context.Context, id, tag string) (nginxmodule.BuildStatus, error) {
+	var resp struct {
+		OK   bool                    `json:"ok"`
+		Data nginxmodule.BuildStatus `json:"data"`
+	}
+	err := c.postJSON(ctx, "/internal/v1/nginx/modules/build", map[string]string{"id": id, "tag": tag}, &resp)
+	if err == nil && !resp.OK {
+		err = fmt.Errorf("Agent 模块构建响应无效")
+	}
+	return resp.Data, err
+}
+
 func (c *Client) nginxModuleAction(ctx context.Context, action string, request nginxmodule.InstallRequest) (nginxmodule.Result, error) {
 	var result nginxmodule.Result
 	var resp struct {

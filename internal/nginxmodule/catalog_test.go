@@ -109,13 +109,13 @@ func TestReleaseTrustAndCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range original.Assets {
-		if matched, ok := verified.Match(expected.Target); !ok || matched != expected {
-			t.Fatalf("unexpected matching artifact for %s: %+v", expected.Target.OS, matched)
+		if matched, err := verified.Match(expected.Target); err != nil || matched.Target != expected.Target || matched.SHA256 != expected.SHA256 {
+			t.Fatalf("unexpected matching artifact for %s: %+v %v", expected.Target.OS, matched, err)
 		}
 	}
 	wrongAlpineBinary := alpine.Target
 	wrongAlpineBinary.BinarySHA256 = target.BinarySHA256
-	if _, ok := verified.Match(wrongAlpineBinary); ok {
+	if _, err := verified.Match(wrongAlpineBinary); err == nil {
 		t.Fatal("accepted the other distribution's binary fingerprint")
 	}
 	for _, change := range []func(*Target){
@@ -125,7 +125,7 @@ func TestReleaseTrustAndCompatibility(t *testing.T) {
 	} {
 		probe := target
 		change(&probe)
-		if _, ok := verified.Match(probe); ok {
+		if _, err := verified.Match(probe); err == nil {
 			t.Fatalf("accepted an incompatible build: %+v", probe)
 		}
 	}

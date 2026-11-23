@@ -23,9 +23,10 @@ func TestModuleOSPointReleases(t *testing.T) {
 		want      string
 	}{
 		{"debian", "13", "Debian GNU/Linux 13 (trixie)", "debian:13"},
-		{"debian", "13.1", "Debian GNU/Linux 13.1 (trixie)", "debian:13"},
+		{"debian", "13.1", "Debian GNU/Linux 13.1 (trixie)", "debian:13.1"},
 		{"ubuntu", "24.04", "Ubuntu 24.04.2 LTS", "ubuntu:24.04"},
-		{"rocky", "9.8", "Rocky Linux 9.8", "rocky:9"},
+		{"rocky", "9.8", "Rocky Linux 9.8", "rocky:9.8"},
+		{"alpine", "3.21.3", "Alpine Linux v3.21", "alpine:3.21.3"},
 	} {
 		t.Run(scenario.id+":"+scenario.versionID, func(t *testing.T) {
 			release := fmt.Sprintf("ID=%s\nVERSION_ID=%q\nPRETTY_NAME=%q\n", scenario.id, scenario.versionID, scenario.pretty)
@@ -93,18 +94,45 @@ func TestModuleRPCRejectsUnknownInputs(t *testing.T) {
 func TestModuleConfirmationAndArtifactDigest(t *testing.T) {
 	instance := moduleRuntime{binaryHash: strings.Repeat("a", 64), confPath: "/etc/nginx/nginx.conf", conf: []byte("events {}")}
 	instance.selection.status.RestartGeneration = "generation-1"
-	ticket := moduleConfirmation(instance, "catalog-1")
-	if moduleConfirmation(instance, "catalog-2") == ticket {
+	target := nginxmodule.Target{OS: "alpine:3.21.3", Arch: "amd64", Runtime: "nginx", RuntimeVersion: "1.27.5", BinarySHA256: instance.binaryHash}
+	ticket := moduleConfirmation(instance, target, "catalog-1")
+	if moduleConfirmation(instance, target, "catalog-2") == ticket {
 		t.Fatal("confirmation reused across catalogs")
 	}
+	updated := target
+	updated.OS = "alpine:3.21.4"
+	if moduleConfirmation(instance, updated, "catalog-1") == ticket {
+		t.Fatal("confirmation reused after a system point release changed")
+	}
+	changed := instance
+	changed.binaryHash = strings.Repeat("b", 64)
+	if moduleConfirmation(changed, target, "catalog-1") == ticket {
+		t.Fatal("confirmation reused after the runtime binary changed")
+	}
 	instance.conf = []byte("events {} http {}")
-	if moduleConfirmation(instance, "catalog-1") == ticket {
+	if moduleConfirmation(instance, target, "catalog-1") == ticket {
 		t.Fatal("confirmation reused across configuration changes")
 	}
 	body := []byte("verified bytes")
 	asset := nginxmodule.Asset{Size: int64(len(body)), SHA256: sha256Text(body)}
 	if !moduleAssetMatches(body, asset) || moduleAssetMatches([]byte("modified bytes"), asset) || moduleAssetMatches(append(body, '\n'), asset) {
 		t.Fatal("incorrect artifact size or digest check")
+	}
+}
+
+func TestInstalledModuleAssetRequiresSignedBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "module.so")
+	body := []byte("verified module")
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	asset := nginxmodule.Asset{Size: int64(len(body)), SHA256: sha256Text(body)}
+	if got, ok := readInstalledModuleAsset(path, asset); !ok || string(got) != string(body) {
+		t.Fatalf("verified installed module was not reused: %q", got)
+	}
+	asset.SHA256 = strings.Repeat("a", 64)
+	if _, ok := readInstalledModuleAsset(path, asset); ok {
+		t.Fatal("accepted unrelated system module bytes")
 	}
 }
 

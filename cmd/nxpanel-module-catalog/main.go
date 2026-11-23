@@ -20,12 +20,19 @@ import (
 
 type moduleDefinition struct {
 	nginxmodule.Module
-	Version string `json:"version"`
+	Version         string `json:"version"`
+	BuildFromSource bool   `json:"build_from_source,omitempty"`
 }
 
 type releaseCandidate struct {
-	Modules []nginxmodule.Module `json:"modules"`
-	Assets  []nginxmodule.Asset  `json:"assets"`
+	Modules []nginxmodule.Module     `json:"modules"`
+	Assets  []nginxmodule.Asset      `json:"assets"`
+	Build   *nginxmodule.BuildRecipe `json:"build,omitempty"`
+}
+
+type buildTarget struct {
+	nginxmodule.Target
+	Compatibility []nginxmodule.Compatibility `json:"compatibility,omitempty"`
 }
 
 func main() {
@@ -36,13 +43,14 @@ func main() {
 	metadata := flag.String("metadata", "", "path to module-definitions.json")
 	prepare := flag.Bool("prepare", false, "package one module's existing build artifacts as an unsigned release candidate")
 	check := flag.Bool("check-candidate", false, "validate a candidate and its files without signing")
+	match := flag.String("match-target", "", "select a candidate asset for the observed target JSON file")
 	candidate := flag.Bool("candidate", false, "sign a verified release candidate (read it for -test-fixture)")
 	index := flag.Bool("sign-index", false, "sign an index JSON array")
 	checkIndex := flag.Bool("check-index", false, "verify an index directory using only public keys")
 	fixture := flag.Bool("test-fixture", false, "generate a local index, GitHub-style releases, and ephemeral public trust key")
 	flag.Parse()
 	if *index || *checkIndex || *baseIndex != "" {
-		if *prepare || *check || *candidate || *fixture || *metadata != "" {
+		if *prepare || *check || *match != "" || *candidate || *fixture || *metadata != "" {
 			log.Fatal("index operations cannot be combined with candidate or fixture options")
 		}
 		switch {
@@ -55,6 +63,19 @@ func main() {
 		}
 		return
 	}
+	if *match != "" {
+		if *prepare || *check || *candidate || *fixture || *metadata != "" || *sequence != 0 {
+			log.Fatal("-match-target cannot be combined with other candidate or fixture options")
+		}
+		var target nginxmodule.Target
+		must(readJSON(*match, 1024, &target))
+		manifest, err := loadCandidateManifest(*input)
+		must(err)
+		asset, err := manifest.Match(target)
+		must(err)
+		must(json.NewEncoder(os.Stdout).Encode(asset))
+		return
+	}
 	switch {
 	case *prepare && !*check && !*candidate && !*fixture && *metadata != "" && *sequence == 0:
 		definitions, err := loadDefinitions(*metadata)
@@ -64,7 +85,7 @@ func main() {
 		}
 		manifest, files, err := assembleManifest(*input, definitions[0])
 		if err == nil {
-			err = addJSON(files, "candidate.json", releaseCandidate{Modules: []nginxmodule.Module{manifest.Module}, Assets: manifest.Assets})
+			err = addJSON(files, "candidate.json", releaseCandidate{Modules: []nginxmodule.Module{manifest.Module}, Assets: manifest.Assets, Build: manifest.Build})
 		}
 		must(err)
 		must(writeFiles(*output, files))
@@ -76,7 +97,7 @@ func main() {
 	case *fixture && !*prepare && !*check && (*candidate == (*metadata == "")) && *sequence != 0:
 		must(writeTestFixture(*input, *output, *metadata, *sequence))
 	default:
-		log.Fatal("choose -prepare, -check-candidate, -candidate, -sign-index, -check-index, or -test-fixture (with -metadata or -candidate)")
+		log.Fatal("choose -prepare, -check-candidate, -match-target, -candidate, -sign-index, -check-index, or -test-fixture (with -metadata or -candidate)")
 	}
 }
 
@@ -173,7 +194,7 @@ func addManifest(files map[string][]byte, manifest nginxmodule.Manifest, entry n
 }
 
 func assembleManifest(input string, definition moduleDefinition) (nginxmodule.Manifest, map[string][]byte, error) {
-	manifest := nginxmodule.Manifest{Protocol: nginxmodule.Protocol, Module: definition.Module}
+	manifest := nginxmodule.Manifest{Protocol: nginxmodule.Protocol, Module: definition.Module, Assets: []nginxmodule.Asset{}}
 	module := &manifest.Module
 	if !nginxmodule.ValidID(module.ID) || !nginxmodule.ValidSymbol(module.Symbol) {
 		return manifest, nil, fmt.Errorf("invalid module ID or symbol")
@@ -197,12 +218,12 @@ func assembleManifest(input string, definition moduleDefinition) (nginxmodule.Ma
 		*action.spec = nginxmodule.Script{Name: name, Size: int64(len(body)), SHA256: digest}
 	}
 	paths, err := filepath.Glob(filepath.Join(dir, "*", "target.json"))
-	if err != nil || len(paths) == 0 || len(paths) > 128 {
+	if err != nil || len(paths) == 0 && !definition.BuildFromSource || len(paths) > 128 {
 		return manifest, nil, fmt.Errorf("invalid number of build targets for %s", module.ID)
 	}
 	for _, path := range paths {
-		var target nginxmodule.Target
-		if err := readJSON(path, 1024, &target); err != nil {
+		var target buildTarget
+		if err := readJSON(path, 8<<10, &target); err != nil {
 			return manifest, nil, err
 		}
 		body, err := readBuildFile(filepath.Join(filepath.Dir(path), module.Symbol+".so"), nginxmodule.MaxAsset)
@@ -212,21 +233,41 @@ func assembleManifest(input string, definition moduleDefinition) (nginxmodule.Ma
 		digest := fmt.Sprintf("%x", sha256.Sum256(body))
 		name := nginxmodule.AssetName(module.ID, digest)
 		files[name] = body
-		manifest.Assets = append(manifest.Assets, nginxmodule.Asset{Module: module.ID, Version: definition.Version, Target: target, Name: name, SHA256: digest, Size: int64(len(body))})
+		manifest.Assets = append(manifest.Assets, nginxmodule.Asset{Module: module.ID, Version: definition.Version, Target: target.Target, Compatibility: target.Compatibility, Name: name, SHA256: digest, Size: int64(len(body))})
+	}
+	manifest.Protocol = nginxmodule.ManifestProtocol(manifest.Assets)
+	if definition.BuildFromSource {
+		body, err := readBuildFile(filepath.Join(dir, "source.tar.gz"), nginxmodule.MaxSource)
+		if err != nil {
+			return manifest, nil, err
+		}
+		digest := fmt.Sprintf("%x", sha256.Sum256(body))
+		name := nginxmodule.SourceName(module.ID, digest)
+		files[name] = body
+		manifest.Protocol = nginxmodule.BuildProtocol
+		manifest.Build = &nginxmodule.BuildRecipe{Source: nginxmodule.Script{Name: name, Size: int64(len(body)), SHA256: digest}}
 	}
 	return manifest, files, manifest.Validate()
 }
 
-func readCandidate(input string) (nginxmodule.Manifest, map[string][]byte, error) {
+func loadCandidateManifest(input string) (nginxmodule.Manifest, error) {
 	var candidate releaseCandidate
 	if err := readJSON(filepath.Join(input, "candidate.json"), nginxmodule.MaxEnvelope, &candidate); err != nil {
-		return nginxmodule.Manifest{}, nil, err
+		return nginxmodule.Manifest{}, err
 	}
 	if len(candidate.Modules) != 1 {
-		return nginxmodule.Manifest{}, nil, fmt.Errorf("a release candidate must contain exactly one module")
+		return nginxmodule.Manifest{}, fmt.Errorf("a release candidate must contain exactly one module")
 	}
-	manifest := nginxmodule.Manifest{Protocol: nginxmodule.Protocol, Module: candidate.Modules[0], Assets: candidate.Assets}
-	if err := manifest.Validate(); err != nil {
+	manifest := nginxmodule.Manifest{Protocol: nginxmodule.ManifestProtocol(candidate.Assets), Module: candidate.Modules[0], Assets: candidate.Assets, Build: candidate.Build}
+	if candidate.Build != nil {
+		manifest.Protocol = nginxmodule.BuildProtocol
+	}
+	return manifest, manifest.Validate()
+}
+
+func readCandidate(input string) (nginxmodule.Manifest, map[string][]byte, error) {
+	manifest, err := loadCandidateManifest(input)
+	if err != nil {
 		return manifest, nil, err
 	}
 	files := make(map[string][]byte)
@@ -251,6 +292,12 @@ func readCandidate(input string) (nginxmodule.Manifest, map[string][]byte, error
 	}
 	for _, asset := range manifest.Assets {
 		if err := load(asset.Name, asset.Size, asset.SHA256); err != nil {
+			return manifest, nil, err
+		}
+	}
+	if manifest.Build != nil {
+		source := manifest.Build.Source
+		if err := load(source.Name, source.Size, source.SHA256); err != nil {
 			return manifest, nil, err
 		}
 	}

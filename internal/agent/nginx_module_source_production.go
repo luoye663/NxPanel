@@ -2,4 +2,4 @@
 
 package agent
 
-func configuredModuleSource() moduleSource { return moduleSource{} }
+func configuredModuleSource() moduleSource { return officialModuleSource() }

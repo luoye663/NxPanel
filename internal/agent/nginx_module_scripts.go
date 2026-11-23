@@ -18,13 +18,15 @@ import (
 	"unicode"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/update"
 )
 
 type moduleReceipt struct {
-	Tag       string `json:"tag"`
-	Manifest  []byte `json:"manifest"`
-	Signature []byte `json:"signature"`
-	Uninstall []byte `json:"uninstall"`
+	Tag       string                   `json:"tag"`
+	Manifest  []byte                   `json:"manifest"`
+	Signature []byte                   `json:"signature"`
+	Uninstall []byte                   `json:"uninstall"`
+	Build     *nginxmodule.SignedBuild `json:"build,omitempty"`
 }
 
 type moduleScriptTask struct {
@@ -68,12 +70,41 @@ func moduleScriptMatches(body []byte, script nginxmodule.Script) bool {
 	return int64(len(body)) == script.Size && sha256Text(body) == script.SHA256 && !bytes.ContainsRune(body, 0)
 }
 
+func readInstalledModuleAsset(path string, asset nginxmodule.Asset) ([]byte, bool) {
+	if _, err := trustedRuntimeDir(filepath.Dir(path)); err != nil {
+		return nil, false
+	}
+	file, err := openRuntimeRegular(path)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	body, err := readModuleBytes(file, asset.Size)
+	return body, err == nil && moduleAssetMatches(body, asset)
+}
+
+func installedModuleAsset(runtime, symbol string, asset nginxmodule.Asset) ([]byte, bool) {
+	var directories []string
+	switch runtime {
+	case "nginx":
+		directories = []string{"/usr/lib/nginx/modules", "/usr/lib64/nginx/modules"}
+	case "openresty":
+		directories = []string{"/usr/local/openresty/nginx/modules"}
+	}
+	for _, directory := range directories {
+		if body, ok := readInstalledModuleAsset(filepath.Join(directory, symbol+".so"), asset); ok {
+			return body, true
+		}
+	}
+	return nil, false
+}
+
 func (s *Server) uninstallOffer(ctx context.Context, offer *moduleOffer, target nginxmodule.Target) error {
 	source := s.moduleSource
 	var receipt moduleReceipt
 	err := modulePrivateDir(source.receiptDir(), false)
 	if err == nil {
-		err = readModuleState(source.receiptPath(offer.module.ID), 2*(2*nginxmodule.MaxEnvelope+nginxmodule.MaxScript), &receipt)
+		err = readModuleState(source.receiptPath(offer.module.ID), 2*(3*nginxmodule.MaxEnvelope+nginxmodule.MaxScript), &receipt)
 	}
 	if err != nil {
 		return fmt.Errorf("已安装模块的卸载凭据无法读取")
@@ -91,17 +122,33 @@ func (s *Server) uninstallOffer(ctx context.Context, offer *moduleOffer, target 
 		return err
 	}
 	module := manifest.Module
-	asset, found := manifest.Match(target)
-	if !found || module.Symbol != offer.managed.symbol {
+	if module.Symbol != offer.managed.symbol {
 		return fmt.Errorf("没有与已安装模块匹配的签名卸载脚本")
 	}
 	digest, err := fingerprintModuleBinary(ctx, offer.managed.path)
-	if err != nil || asset.SHA256 != digest || !moduleScriptMatches(receipt.Uninstall, module.Uninstall) {
+	if err != nil || !moduleScriptMatches(receipt.Uninstall, module.Uninstall) {
 		return fmt.Errorf("已安装模块或卸载脚本的 SHA-256 无法核验")
 	}
-	offer.module, offer.asset, offer.receipt, offer.path = module, asset, receipt, offer.managed.path
-	offer.identity = "uninstall " + module.ID + " " + sha256Text(receipt.Manifest) + " " + module.Uninstall.SHA256 + " " + offer.managed.identity()
-	return nil
+	assets := manifest.Assets
+	if receipt.Build != nil {
+		publishers, err := entry.PublicKeys()
+		if err != nil {
+			return err
+		}
+		result, err := receipt.Build.Verify(manifest, receipt.Manifest, nginxmodule.BuildTrustKeys, nginxmodule.TrustKeys, update.TrustKeys, publishers)
+		if err != nil || result.Request.Target != target {
+			return fmt.Errorf("无法核验当前运行时的构建卸载凭据")
+		}
+		assets = []nginxmodule.Asset{result.Asset}
+	}
+	for _, asset := range assets {
+		if asset.SHA256 == digest && (receipt.Build != nil || asset.Matches(target)) {
+			offer.module, offer.asset, offer.target, offer.receipt, offer.path = module, asset, target, receipt, offer.managed.path
+			offer.identity = "uninstall " + module.ID + " " + sha256Text(receipt.Manifest) + " " + module.Uninstall.SHA256 + " " + offer.managed.identity()
+			return nil
+		}
+	}
+	return fmt.Errorf("已安装模块的摘要或当前环境与签名卸载凭据不匹配")
 }
 
 func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninstall bool) nginxmodule.Result {
@@ -133,7 +180,13 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		return failure(err.Error())
 	}
 	if !uninstall {
-		assetBody, err = source.fetch(ctx, offer.asset.Name, offer.asset.Size, offer.module.Release)
+		if installed, ok := installedModuleAsset(offer.target.Runtime, offer.module.Symbol, offer.asset); ok {
+			assetBody = installed
+		} else if offer.receipt.Build == nil {
+			assetBody, err = source.fetch(ctx, offer.asset.Name, offer.asset.Size, offer.module.Release)
+		} else {
+			assetBody, err = source.fetch(ctx, "builds/"+offer.buildRequest.Key()+"/asset", offer.asset.Size)
+		}
 		if err != nil {
 			return failure(err.Error())
 		}
@@ -165,7 +218,7 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		return failure(err.Error())
 	}
 	currentTarget, err := moduleTarget(instance, version)
-	if err != nil || currentTarget != offer.asset.Target {
+	if err != nil || currentTarget != offer.target {
 		return failure("Nginx 运行时已变化，请重新确认")
 	}
 	managed, err := source.managedModules(instance)
@@ -177,9 +230,9 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 	precondition := err == nil && !static
 	if uninstall {
 		digest, err := fingerprintModuleBinary(ctx, entry.path)
-		precondition = precondition && err == nil && digest == offer.asset.SHA256 && entry.path == offer.path && len(paths) == 1 && instance.moduleRefs[entry.path] == 1 && entry.identity() == offer.managed.identity() && moduleConfirmation(instance, offer.identity) == offer.status.UninstallConfirmation
+		precondition = precondition && err == nil && digest == offer.asset.SHA256 && entry.path == offer.path && len(paths) == 1 && instance.moduleRefs[entry.path] == 1 && entry.identity() == offer.managed.identity() && moduleConfirmation(instance, currentTarget, offer.identity) == offer.status.UninstallConfirmation
 	} else {
-		precondition = precondition && !loaded && len(paths) == 0 && entry.path == "" && moduleConfirmation(instance, offer.identity) == offer.confirmation
+		precondition = precondition && !loaded && len(paths) == 0 && entry.path == "" && moduleConfirmation(instance, currentTarget, offer.identity) == offer.confirmation
 	}
 	if !precondition || ctx.Err() != nil || !moduleScriptMatches(scriptBody, script) {
 		return failure("模块、配置或运行时状态已变化，未启动脚本")
@@ -227,7 +280,7 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 	env := []string{
 		"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "LANG=C", "HOME=" + dir, "TMPDIR=" + dir,
 		"NXMODULE_PROTOCOL=1", "NXMODULE_ACTION=" + action, "NXMODULE_ID=" + id, "NXMODULE_SYMBOL=" + offer.module.Symbol,
-		"NXMODULE_OS=" + currentTarget.OS, "NXMODULE_ARCH=" + currentTarget.Arch, "NXMODULE_RUNTIME=" + currentTarget.Runtime,
+		"NXMODULE_OS=" + nginxmodule.LegacyOS(currentTarget.OS), "NXMODULE_ARCH=" + currentTarget.Arch, "NXMODULE_RUNTIME=" + currentTarget.Runtime,
 		"NXMODULE_ASSET=" + assetFile, "NXMODULE_ASSET_SHA256=" + offer.asset.SHA256, "NXMODULE_DEST=" + offer.path,
 		"NXMODULE_WORK=" + dir, "NXMODULE_STATE=" + source.stateDir(), "NXMODULE_FRAGMENT=" + source.fragmentPath(id),
 		"NXMODULE_NGINX=" + canonicalRuntimePath(instance.bin), "NXMODULE_CONF=" + instance.confPath,

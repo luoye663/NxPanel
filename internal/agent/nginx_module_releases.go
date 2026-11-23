@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/update"
 )
 
 type githubModuleRelease struct {
@@ -24,17 +25,13 @@ func (release githubModuleRelease) stable() bool {
 		release.PublishedAt != nil && !release.PublishedAt.IsZero() && nginxmodule.ValidTag(release.Tag)
 }
 
-func (source moduleSource) githubReleases(ctx context.Context, repo, endpoint, query string, output any) error {
-	url := "https://api.github.com/repos/" + repo + "/releases" + endpoint + query
-	if source.test {
-		url = source.base + "repos/" + repo + "/releases" + endpoint + ".json"
-	}
-	body, err := fetchModuleResource(ctx, moduleCatalogClient, url, "模块 Release 列表", 4<<20)
+func (source moduleSource) storeReleases(ctx context.Context, repo, endpoint string, output any) error {
+	body, err := source.fetch(ctx, "repos/"+repo+"/releases"+endpoint+".json", 4<<20)
 	if err != nil {
 		return err
 	}
 	if err := json.Unmarshal(body, output); err != nil {
-		return fmt.Errorf("GitHub Release 响应无效")
+		return fmt.Errorf("模块服务 Release 响应无效")
 	}
 	return nil
 }
@@ -42,16 +39,11 @@ func (source moduleSource) githubReleases(ctx context.Context, repo, endpoint, q
 func (source moduleSource) releasePage(ctx context.Context, entry nginxmodule.IndexEntry, page int) (nginxmodule.ReleasePage, error) {
 	result := nginxmodule.ReleasePage{Tags: []string{}}
 	var releases []githubModuleRelease
-	endpoint := ""
-	if source.test {
-		endpoint = "/pages/" + strconv.Itoa(page)
-	}
-	query := fmt.Sprintf("?per_page=%d&page=%d", nginxmodule.ReleasePageSize, page)
-	if err := source.githubReleases(ctx, entry.Repository, endpoint, query, &releases); err != nil {
+	if err := source.storeReleases(ctx, entry.Repository, "/pages/"+strconv.Itoa(page), &releases); err != nil {
 		return result, err
 	}
 	if releases == nil || len(releases) > nginxmodule.ReleasePageSize {
-		return result, fmt.Errorf("GitHub Release 分页响应无效")
+		return result, fmt.Errorf("模块 Release 分页响应无效")
 	}
 	seen := make(map[string]bool)
 	for _, release := range releases {
@@ -65,7 +57,7 @@ func (source moduleSource) releasePage(ctx context.Context, entry nginxmodule.In
 	}
 	if page == 1 {
 		var latest githubModuleRelease
-		err := source.githubReleases(ctx, entry.Repository, "/latest", "", &latest)
+		err := source.storeReleases(ctx, entry.Repository, "/latest", &latest)
 		if err != nil && !errors.Is(err, errModuleResourceNotFound) {
 			return result, err
 		}
@@ -82,7 +74,7 @@ func (source moduleSource) releasePage(ctx context.Context, entry nginxmodule.In
 func (source moduleSource) releaseManifest(ctx context.Context, entry nginxmodule.IndexEntry, tag string) (nginxmodule.Manifest, moduleReceipt, error) {
 	var published githubModuleRelease
 	var receipt moduleReceipt
-	if err := source.githubReleases(ctx, entry.Repository, "/tags/"+tag, "", &published); err != nil {
+	if err := source.storeReleases(ctx, entry.Repository, "/tags/"+tag, &published); err != nil {
 		return nginxmodule.Manifest{}, receipt, err
 	}
 	if !published.stable() || published.Tag != tag {
@@ -150,7 +142,7 @@ func (s *Server) handleNginxModulePreflight(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 24*time.Second)
 	defer cancel()
 	offer, err := s.prepareModuleInstall(ctx, id, tag, false)
-	result := nginxmodule.Preflight{Tag: tag, Version: offer.asset.Version, Runtime: offer.status.Runtime, Confirmation: offer.confirmation}
+	result := nginxmodule.Preflight{Tag: tag, Version: offer.asset.Version, Runtime: offer.status.Runtime, Confirmation: offer.confirmation, Build: offer.buildStatus}
 	if err != nil {
 		result.Reason = err.Error()
 	}
@@ -187,9 +179,27 @@ func (s *Server) prepareModuleInstall(ctx context.Context, id, tag string, fresh
 	if err != nil {
 		return offer, err
 	}
-	asset, found := manifest.Match(target)
-	if !found {
-		return offer, fmt.Errorf("所选 Release 没有匹配当前系统、架构和 Nginx 二进制的构建")
+	asset, err := manifest.Match(target)
+	if errors.Is(err, nginxmodule.ErrNoMatch) && manifest.Build != nil {
+		request := observedBuildRequest(ctx, instance, target, manifest, receipt.Manifest)
+		offer.buildRequest = &request
+		status, statusErr := s.moduleSource.buildStatus(ctx, request, false)
+		if statusErr != nil {
+			return offer, statusErr
+		}
+		if status.State != "ready" {
+			offer.buildStatus = &status
+			return offer, fmt.Errorf("所选版本没有可安装成品")
+		}
+		var built nginxmodule.BuildResult
+		var signed nginxmodule.SignedBuild
+		built, signed, err = s.moduleSource.getBuild(ctx, request, manifest, receipt.Manifest, entry)
+		if err == nil {
+			asset, receipt.Build = built.Asset, &signed
+		}
+	}
+	if err != nil {
+		return offer, err
 	}
 	path := s.moduleSource.assetPath(id, asset.SHA256)
 	if err := s.moduleActionReadiness(ctx, instance, true, id, path); err != nil {
@@ -199,8 +209,37 @@ func (s *Server) prepareModuleInstall(ctx context.Context, id, tag string, fresh
 	if err != nil {
 		return offer, err
 	}
-	offer.module, offer.asset, offer.path, offer.receipt = manifest.Module, asset, path, receipt
+	offer.module, offer.asset, offer.target, offer.path, offer.receipt = manifest.Module, asset, target, path, receipt
 	offer.identity = "install " + sha256Text(entryBytes) + " " + sha256Text(receipt.Manifest) + " " + asset.SHA256
-	offer.confirmation = moduleConfirmation(instance, offer.identity)
+	offer.confirmation = moduleConfirmation(instance, target, offer.identity)
 	return offer, nil
+}
+
+func (s *Server) handleNginxModuleBuild(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ID  string `json:"id"`
+		Tag string `json:"tag"`
+	}
+	if update.Decode(http.MaxBytesReader(w, r.Body, 1024), &request) != nil || !nginxmodule.ValidID(request.ID) || !nginxmodule.ValidTag(request.Tag) {
+		writeAgentError(w, http.StatusBadRequest, "无效的模块构建请求")
+		return
+	}
+	if !s.moduleMu.TryLock() {
+		writeAgentError(w, http.StatusConflict, errModuleBusy.Error())
+		return
+	}
+	defer s.moduleMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 24*time.Second)
+	defer cancel()
+	offer, _ := s.prepareModuleInstall(ctx, request.ID, request.Tag, true)
+	if offer.buildRequest == nil || offer.buildStatus == nil || !offer.buildStatus.CanSubmit {
+		writeAgentError(w, http.StatusConflict, "当前环境不能提交构建，请重新检查")
+		return
+	}
+	status, err := s.moduleSource.buildStatus(ctx, *offer.buildRequest, true)
+	if err != nil {
+		writeAgentError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeAgentOK(w, status)
 }

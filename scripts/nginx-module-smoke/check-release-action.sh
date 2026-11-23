@@ -4,18 +4,18 @@ umask 077
 
 binary=$(readlink -f "$1")
 . /etc/os-release
-case "$ID" in
-    debian|rocky) VERSION_ID=${VERSION_ID%%.*} ;;
-    alpine) VERSION_ID=$(printf '%s\n' "$VERSION_ID" | cut -d . -f 1,2) ;;
-esac
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac
-runtime=$("$binary" -V 2>&1 | sed -n 's/^nginx version: //p')
+runtime=$("$binary" -V 2>&1 | awk '/^nginx version: / {print $3}')
 digest() { sha256sum < "$1" | awk '{ print $1 }'; }
 fingerprint=$(digest "$binary")
 if [ "$2" = target ]; then
     printf '%s\t%s\t%s\t%s\t%s\n' "$ID:$VERSION_ID" "$arch" "${runtime%/*}" "${runtime#*/}" "$fingerprint"
     exit 0
 fi
+case "$ID" in
+    debian|rocky) VERSION_ID=${VERSION_ID%%.*} ;;
+    alpine) VERSION_ID=$(printf '%s\n' "$VERSION_ID" | cut -d . -f 1,2) ;;
+esac
 
 module=$2 symbol=$3 asset=/candidate/$4 install=/candidate/$5 uninstall=/candidate/$6
 work=$(mktemp -d)

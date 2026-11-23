@@ -22,13 +22,18 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 	t.Setenv("NXPANEL_MODULE_RELEASE_TRUST_KEYS", encoded)
 	t.Setenv("NXPANEL_MODULE_RELEASE_SIGNING_KEYS", "test:"+base64.StdEncoding.EncodeToString(private.Seed()))
 	target := nginxmodule.Target{OS: "rocky:9", Arch: "arm64", Runtime: "openresty", RuntimeVersion: "1.27.1.2", BinarySHA256: strings.Repeat("e", 64)}
+	built := buildTarget{Target: target, Compatibility: []nginxmodule.Compatibility{{
+		OSID: "rocky", Arch: "arm64", Runtime: "openresty",
+		OSVersion:      nginxmodule.VersionRange{Min: "9.8", Max: "9.10"},
+		RuntimeVersion: nginxmodule.VersionRange{Min: "1.27.1.2", Max: "1.31.1.1"},
+	}}}
 	input, prepared, output := t.TempDir(), t.TempDir(), t.TempDir()
 	builds := map[string][]byte{
 		"geoip2/install.sh":                   []byte("#!/bin/sh\nexit 0\n"),
 		"geoip2/uninstall.sh":                 []byte("#!/bin/sh\nexit 0\n"),
 		"geoip2/host/" + nginxmodule.Filename: []byte("tested build"),
 	}
-	if err := addJSON(builds, "geoip2/host/target.json", target); err != nil {
+	if err := addJSON(builds, "geoip2/host/target.json", built); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeFiles(input, builds); err != nil {
@@ -60,8 +65,17 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 	}
 	entry := indexEntry(manifest, encoded)
 	verified, err := nginxmodule.VerifyManifest(read(output, nginxmodule.ManifestName), read(output, nginxmodule.ManifestSig), entry, module.Release.Tag, false)
-	if asset, ok := verified.Match(target); err != nil || !ok || string(read(output, asset.Name)) != "tested build" {
+	if err != nil || verified.Protocol != nginxmodule.RangeProtocol {
+		t.Fatalf("expected a signed range manifest: %+v %v", verified, err)
+	}
+	observed := target
+	observed.OS, observed.BinarySHA256, observed.RuntimeVersion = "rocky:9.9", strings.Repeat("f", 64), "1.31.1.1"
+	if asset, err := verified.Match(observed); err != nil || asset.Target != target || string(read(output, asset.Name)) != "tested build" {
 		t.Fatalf("release did not contain the expected build: %+v %v", asset, err)
+	}
+	modified := strings.Replace(string(read(output, nginxmodule.ManifestName)), `"max":"9.10"`, `"max":"9.11"`, 1)
+	if _, err := nginxmodule.VerifyManifest([]byte(modified), read(output, nginxmodule.ManifestSig), entry, module.Release.Tag, false); err == nil {
+		t.Fatal("a modified compatibility range still verifies")
 	}
 	assetPath := filepath.Join(prepared, manifest.Assets[0].Name)
 	priorWrite := time.Unix(123456789, 0)

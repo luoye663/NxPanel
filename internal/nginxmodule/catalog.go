@@ -30,6 +30,7 @@ const (
 	ReleasePurpose  = "nxpanel-nginx-module-release/v1"
 	DynamicKind     = "nginx_dynamic_so"
 	Protocol        = 1
+	RangeProtocol   = 2
 	MaxModules      = 32
 	MaxEnvelope     = 128 << 10
 	MaxAsset        = 4 << 20
@@ -77,18 +78,20 @@ func GeoIP2Module() Module {
 }
 
 type Asset struct {
-	Module  string `json:"module"`
-	Version string `json:"version"`
-	Target  Target `json:"target"`
-	Name    string `json:"name"`
-	Size    int64  `json:"size"`
-	SHA256  string `json:"sha256"`
+	Module        string          `json:"module"`
+	Version       string          `json:"version"`
+	Target        Target          `json:"target"`
+	Compatibility []Compatibility `json:"compatibility,omitempty"`
+	Name          string          `json:"name"`
+	Size          int64           `json:"size"`
+	SHA256        string          `json:"sha256"`
 }
 
 type Manifest struct {
-	Protocol int     `json:"protocol"`
-	Module   Module  `json:"module"`
-	Assets   []Asset `json:"assets"`
+	Protocol int          `json:"protocol"`
+	Module   Module       `json:"module"`
+	Assets   []Asset      `json:"assets"`
+	Build    *BuildRecipe `json:"build,omitempty"`
 }
 
 type IndexEntry struct {
@@ -271,32 +274,38 @@ func VerifyManifest(raw, signature []byte, entry IndexEntry, tag string, test bo
 
 func (manifest Manifest) Validate() error {
 	module := manifest.Module
-	if manifest.Protocol != Protocol || !validIdentity(module.ID, module.Name, module.Description, module.Symbol) || module.Kind != DynamicKind ||
+	protocol := ManifestProtocol(manifest.Assets)
+	if manifest.Build != nil {
+		protocol = BuildProtocol
+		if !manifest.Build.valid(module.ID) || !update.ValidVersion(module.Release.Tag) {
+			return fmt.Errorf("无效的模块源码构建配方")
+		}
+	}
+	if manifest.Protocol != protocol {
+		return fmt.Errorf("不支持的模块 Release 清单协议: %d", manifest.Protocol)
+	}
+	if !validIdentity(module.ID, module.Name, module.Description, module.Symbol) || module.Kind != DynamicKind ||
 		!ValidRepository(module.Release.Repository) || !ValidTag(module.Release.Tag) || !module.Install.valid(module.ID, "install") ||
-		!module.Uninstall.valid(module.ID, "uninstall") || len(manifest.Assets) == 0 || len(manifest.Assets) > 128 {
+		!module.Uninstall.valid(module.ID, "uninstall") || len(manifest.Assets) == 0 && manifest.Build == nil || len(manifest.Assets) > 128 {
 		return fmt.Errorf("无效的模块 Release 清单")
 	}
 	seen := make(map[Target]bool)
 	for _, asset := range manifest.Assets {
 		target := asset.Target
 		if asset.Module != module.ID || !update.ValidVersion(asset.Version) || asset.Version != manifest.Assets[0].Version || !osPattern.MatchString(target.OS) ||
-			target.Arch != "amd64" && target.Arch != "arm64" || target.Runtime != "nginx" && target.Runtime != "openresty" ||
-			!versionPattern.MatchString(target.RuntimeVersion) || !ValidDigest(target.BinarySHA256) || seen[target] ||
+			!validPlatform(target.Arch, target.Runtime) ||
+			!versionPattern.MatchString(target.RuntimeVersion) || !ValidDigest(target.BinarySHA256) || asset.Compatibility == nil && seen[target] ||
 			!ValidDigest(asset.SHA256) || asset.Name != AssetName(asset.Module, asset.SHA256) || asset.Size <= 0 || asset.Size > MaxAsset {
 			return fmt.Errorf("无效或重复的模块构建目标")
 		}
-		seen[target] = true
-	}
-	return nil
-}
-
-func (manifest Manifest) Match(target Target) (Asset, bool) {
-	for _, asset := range manifest.Assets {
-		if asset.Target == target {
-			return asset, true
+		if err := validateCompatibility(asset.Compatibility); err != nil {
+			return err
+		}
+		if asset.Compatibility == nil {
+			seen[target] = true
 		}
 	}
-	return Asset{}, false
+	return nil
 }
 
 type Listing struct {
@@ -341,11 +350,12 @@ type ReleasePage struct {
 }
 
 type Preflight struct {
-	Tag          string `json:"tag"`
-	Version      string `json:"version,omitempty"`
-	Runtime      string `json:"runtime,omitempty"`
-	Confirmation string `json:"confirmation,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	Tag          string       `json:"tag"`
+	Version      string       `json:"version,omitempty"`
+	Runtime      string       `json:"runtime,omitempty"`
+	Confirmation string       `json:"confirmation,omitempty"`
+	Reason       string       `json:"reason,omitempty"`
+	Build        *BuildStatus `json:"build,omitempty"`
 }
 
 type Result struct {

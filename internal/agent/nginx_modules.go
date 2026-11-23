@@ -20,11 +20,14 @@ type moduleOffer struct {
 	status       nginxmodule.Status
 	module       nginxmodule.Module
 	asset        nginxmodule.Asset
+	target       nginxmodule.Target
 	managed      managedModule
 	path         string
 	identity     string
 	confirmation string
 	receipt      moduleReceipt
+	buildRequest *nginxmodule.BuildRequest
+	buildStatus  *nginxmodule.BuildStatus
 }
 
 func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +219,7 @@ func (s *Server) describeModule(ctx context.Context, instance moduleRuntime, ver
 		if err := s.moduleActionReadiness(ctx, instance, len(workers) != 0, module.ID, managed.path); err != nil {
 			status.Reason = err.Error()
 		} else if err := s.uninstallOffer(ctx, &offer, target); err == nil {
-			status.UninstallConfirmation = moduleConfirmation(instance, offer.identity)
+			status.UninstallConfirmation = moduleConfirmation(instance, offer.target, offer.identity)
 			status.Version = offer.asset.Version
 		} else {
 			status.Reason = err.Error()
@@ -250,8 +253,8 @@ func (entry managedModule) identity() string {
 	return sha256Text(entry.fragment)
 }
 
-func moduleConfirmation(instance moduleRuntime, identity string) string {
-	value := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%x", instance.selection.status.RestartGeneration, instance.binaryHash, identity, instance.confPath, sha256.Sum256(instance.conf))
+func moduleConfirmation(instance moduleRuntime, target nginxmodule.Target, identity string) string {
+	value := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%x", instance.selection.status.RestartGeneration, instance.binaryHash, target.OS, target.Arch, target.Runtime, target.RuntimeVersion, identity, instance.confPath, sha256.Sum256(instance.conf))
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
 
