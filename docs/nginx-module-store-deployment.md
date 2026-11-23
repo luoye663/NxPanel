@@ -63,6 +63,7 @@ sudo install -m 0600 -o 65532 -g 65532 \
 | `.env` 配置 | 填写方式 |
 | --- | --- |
 | `BUILDER_TOKEN_HASHES` | 各授权面板令牌原文的 SHA-256，小写十六进制、逗号分隔；留空则不接受新构建 |
+| `BUILDER_WEB_KEY` | 可选，运维看板登录 Key，建议用 `openssl rand -hex 32` 生成；留空关闭看板。与面板构建令牌无关 |
 | `BUILDER_GITHUB_TOKEN` | 可选的最小权限只读 GitHub 令牌，用于提高 GitHub API 配额 |
 | `BUILDER_WORK` | 上一步准备的宿主机绝对路径 |
 | `BUILDER_DOCKER_SOCKET` / `BUILDER_DOCKER_GID` | 构建 daemon 的 Socket 路径与 Worker 可访问 Socket 的 GID；普通 Docker 可用 `stat -c '%g' /var/run/docker.sock` 查询，不要假定为 `0` |
@@ -136,6 +137,8 @@ curl --fail --silent --show-error http://127.0.0.1:19092/v1/trust.json
 ## 7. 配置 HTTPS 反代
 
 给模块域名配置 HTTPS，将 `/v1/` 和 `/health` 原样反代到 `http://127.0.0.1:19092`。保留请求方法、路径和 `Authorization` 头；不要重定向下载，也不要在反代日志里打印令牌。公网入口应对 IP、连接数和下载带宽限流；构建提交接口 `POST /v1/builds` 建议单独限流。不要把本地 HTTP 端口或 Docker Socket 暴露到公网。
+
+配置了 `BUILDER_WEB_KEY` 时，可把 `/admin/` 原样反代到同一端口并保留原始 `Host`，不新增监听端口。看板需要 HTTPS，不要缓存响应或记录登录请求正文。只更新 API 也能打开看板；同步、Worker 和签名器更新后才会上报心跳和详细阶段。
 
 从能访问模块域名的主机检查公网入口，把示例域名替换为实际地址：
 
