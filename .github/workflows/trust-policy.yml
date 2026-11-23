@@ -1,0 +1,55 @@
+name: NxPanel trust policy
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Verify root-signed policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - id: policies
+        env:
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          policy=catalog/trust/trust.json
+          signature=catalog/trust/trust.sig
+          git fetch --no-tags --depth=1 origin "$MERGE_SHA"
+          if git diff --quiet HEAD "$MERGE_SHA" -- "$policy" "$signature"; then
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/trust-proposed" "$RUNNER_TEMP/trust-base"
+          git show "$MERGE_SHA:$policy" > "$RUNNER_TEMP/trust-proposed/trust.json"
+          git show "$MERGE_SHA:$signature" > "$RUNNER_TEMP/trust-proposed/trust.sig"
+          if git cat-file -e "HEAD:$policy" 2>/dev/null || git cat-file -e "HEAD:$signature" 2>/dev/null; then
+            git show "HEAD:$policy" > "$RUNNER_TEMP/trust-base/trust.json"
+            git show "HEAD:$signature" > "$RUNNER_TEMP/trust-base/trust.sig"
+            echo 'previous=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo 'verify=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7
+        if: steps.policies.outputs.verify == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Verify with the trusted base implementation
+        if: steps.policies.outputs.verify == 'true'
+        env:
+          NXPANEL_ROOT_PUBLIC_KEY: ${{ vars.NXPANEL_ROOT_PUBLIC_KEY }}
+          NXPANEL_PREVIOUS_ROOT_PUBLIC_KEY: ${{ vars.NXPANEL_PREVIOUS_ROOT_PUBLIC_KEY }}
+          HAVE_PREVIOUS: ${{ steps.policies.outputs.previous }}
+        run: |
+          set -euo pipefail
+          args=(-check "$RUNNER_TEMP/trust-proposed")
+          if [[ "$HAVE_PREVIOUS" == true ]]; then
+            args+=(-previous "$RUNNER_TEMP/trust-base")
+          fi
+          go run ./cmd/nxpanel-trust "${args[@]}"

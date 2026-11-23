@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "sequence": 1,
+  "update_keys": "release-1:REPLACE_WITH_UPDATE_PUBLIC_KEY",
+  "build_keys": "module-build-1:REPLACE_WITH_BUILD_PUBLIC_KEY",
+  "modules": [
+    {
+      "id": "geoip2",
+      "name": "GeoIP2（HTTP）",
+      "description": "使用 MaxMind MMDB 查询客户端国家或地区。",
+      "repository": "luoye663/NxPanel-NginxModel-GeoIP2",
+      "symbol": "ngx_http_geoip2_module",
+      "keys": "geoip2-1:REPLACE_WITH_GEOIP2_PUBLIC_KEY"
+    }
+  ]
+}

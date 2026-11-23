@@ -16,6 +16,8 @@ tmp
 test-results
 docs/dev-spec
 docs/doc-change
+docs/function/signing-trust.md
+docs/release-guide.md
 
 # ------------------------------
 # Editor / AI tools
@@ -35,6 +37,7 @@ CLAUDE.md
 .env
 !.env.example
 configs/config.yaml
+/keys/
 
 *.pem
 *.key
