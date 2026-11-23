@@ -21,7 +21,7 @@
 
 ## 2. 构建服务镜像
 
-在 NxPanel 主仓库根目录执行。如果独立仓库放在其他位置，修改 `BUILDER_SRC`；两条构建命令应使用同一份已审核的 `NXPANEL_SRC` 和同一个[根公钥](function/signing-trust.md)：
+在 NxPanel 主仓库根目录执行（需要 Make）。如果独立仓库放在其他位置，修改 `BUILDER_SRC`。`make docker` 用同一份已审核的 `NXPANEL_SRC` 和同一个[根公钥](function/signing-trust.md)构建 `service` 和 `worker` 镜像：
 
 ```bash
 export NXPANEL_SRC="$PWD"
@@ -29,12 +29,7 @@ export BUILDER_SRC="$NXPANEL_SRC/local-module-repos/nginx-module-builder"
 export BUILDER_WORK=/var/lib/nxpanel-module-builder/work
 cd "$BUILDER_SRC"
 
-docker build --build-context "nxpanel=$NXPANEL_SRC" --target service \
-  --build-arg NXPANEL_ROOT_PUBLIC_KEY="$(cat /path/to/root/trust.pub)" \
-  -t nxpanel-module-builder:service .
-docker build --build-context "nxpanel=$NXPANEL_SRC" --target worker \
-  --build-arg NXPANEL_ROOT_PUBLIC_KEY="$(cat /path/to/root/trust.pub)" \
-  -t nxpanel-module-builder:worker .
+NXPANEL_ROOT_PUBLIC_KEY="$(cat /path/to/root/trust.pub)" make docker
 ```
 
 ## 3. 准备持久化目录和 `.env`
@@ -78,7 +73,7 @@ sudo install -m 0600 -o 65532 -g 65532 \
 
 `adapters.json` 放在构建服务仓库根目录。只提供目录和现成 `.so` 时，新建此文件并填入 `[]`，然后跳到第 6 步。开启按需构建时，先按目标运行时选构建模式，再构建并发布适配器镜像。
 
-| `mode` | `Dockerfile.runtime` target | 临时镜像构建上下文中的输入 |
+| `mode` | `docker/Dockerfile.runtime` target | 临时镜像构建上下文中的输入 |
 | --- | --- | --- |
 | `apt` | `apt` | `runtime-source.gpg`、`repository.gpg`、`runtime.list`。使用相同发行版的基础镜像；APT 源只指向对应的官方运行时软件源，`signed-by` 指向 `/usr/share/keyrings/nxpanel-builder-repository.gpg` |
 | `rpm` | `rpm` | `runtime-source.gpg`、`repository.gpg`、`nxpanel-builder-runtime.repo`。DNF 源 ID 必须是 `nxpanel-builder-runtime`，使用官方软件源并开启 `gpgcheck=1` |
@@ -97,7 +92,7 @@ deb [signed-by=/usr/share/keyrings/nxpanel-builder-repository.gpg] https://nginx
 ```bash
 docker buildx build --platform linux/amd64 --target apt \
   --build-arg "BASE=$BASE" --build-arg RUNTIME=nginx \
-  -f "$BUILDER_SRC/Dockerfile.runtime" -t "$ADAPTER_TAG" --push "$ADAPTER_CONTEXT"
+  -f "$BUILDER_SRC/docker/Dockerfile.runtime" -t "$ADAPTER_TAG" --push "$ADAPTER_CONTEXT"
 docker buildx imagetools inspect "$ADAPTER_TAG"
 ```
 
@@ -118,6 +113,8 @@ docker buildx imagetools inspect "$ADAPTER_TAG"
 Worker 还会检查实际系统版本、Nginx/OpenResty 版本和二进制 SHA-256；即使配置能匹配，也不承诺未验证的包可构建。默认工具链带 GeoIP2 的头文件，其他模块的额外构建依赖应由运维审核并加入镜像。构建请求不能指定下载 URL、上传文件或传入命令。**每个准备上线的系统、运行时、架构组合应先在测试环境验收。**
 
 ## 6. 启动服务并检查同步
+
+只提供目录和现成模块时，用 `docker compose up -d api sync`，并只查看这两个容器的日志。启用按需构建时，启动全部服务：
 
 ```bash
 cd "$BUILDER_SRC"
