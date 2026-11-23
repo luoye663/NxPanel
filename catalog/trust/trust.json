@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "sequence": 1,
+  "issued_at": "2026-11-23T18:29:16Z",
+  "expires_at": "2027-05-22T18:29:16Z",
+  "update_keys": "release-1:Pgy7fGe4Saet8cOkyRqs6ts3WVpuYGi3+L3/fi0SDvM=",
+  "build_keys": "module-build-1:i/iC9PTI4WiyWTGAY8SrbtprJvw7sAQlIojhHosbhIg=",
+  "modules": [
+    {
+      "id": "geoip2",
+      "name": "GeoIP2（HTTP）",
+      "description": "使用 MaxMind MMDB 查询客户端国家或地区。",
+      "repository": "luoye663/NxPanel-NginxModel-GeoIP2",
+      "symbol": "ngx_http_geoip2_module",
+      "keys": "geoip2-1:H0cQi7X9F5qs+Hq7u2YYj+SsDF/yVTlJfgzyMaoWd1g="
+    }
+  ]
+}
