@@ -1,49 +1,15 @@
-# Nginx 模块管理
+# Nginx 模块发布与联调
 
-当前以 **GeoIP2** 为例。主仓库的 `main` 提供已签名的模块列表；每个模块仓库独立发布 GitHub Release。面板打开列表时不访问各模块仓库，点击安装后才读取所选模块的 Release，验证签名、兼容性、脚本和 `.so`。普通用户不需要生成密钥或手动运行脚本。
+当前以 **GeoIP2** 为例。主仓库的 `main` 提供已签名的模块列表；模块仓库在 GitHub 发版，由官方模块服务同步。面板只访问该服务，不直连 GitHub，Agent 验证原发布者签名、脚本和 `.so`。源码 Release 可在缺少成品时申请按需构建；生产服务器不安装编译工具。
 
-- [二进制安装](#二进制安装宿主机) · [Docker 安装](#docker-安装) · [卸载和排查](#卸载和排查)
+- [模块商店使用指南](../nginx-module-store-usage.md) · [模块服务部署指南](../nginx-module-store-deployment.md)
 - [本地联调](#本地联调) · [官方发布](#官方发布)
-
-> Agent 验签并核对模块文件后，以 root 运行安装脚本。脚本会检查并平滑重载 Nginx；缺少 `libmaxminddb` 时，从当前系统配置的软件源安装，不添加新源。
-
-## 二进制安装（宿主机）
-
-1. 按 [二进制部署说明](../../README.md#二进制模式安装-nxpanel) 安装支持模块管理的 NxPanel。确认宿主机上的 Nginx 或 OpenResty 已运行，并已被面板检测到。
-2. 登录面板，打开 **Nginx 管理 → 模块管理**（`/nginx?tab=modules`），点击 **刷新在线目录**。
-3. 找到 **GeoIP2**，点击 **安装**。默认选择最新正式版，也可加载并选择历史正式版；等面板预检通过再确认。安装成功后到 **GeoIP 设置**安装 MMDB。安装模块本身不会下载数据库或启用地域规则。
-
-## Docker 安装
-
-1. 按 [Docker 部署说明](../../README.md#docker-部署) 启动 NxPanel。已有 Compose 配置时，在其目录按所用镜像执行一条：
-
-   ```sh
-   docker compose --profile nginx up -d
-   # 如果使用 OpenResty，改为：docker compose --profile openresty up -d
-   ```
-
-2. 登录容器里的面板，打开 **Nginx 管理 → 模块管理**，点击 **刷新在线目录**。
-3. 点击 **GeoIP2 → 安装**，选择版本，等预检通过再确认。模块和所需依赖装在容器内，不装到宿主机。成功后如需地域规则，再到 **GeoIP 设置**安装 MMDB。
-
-**镜像不预装 GeoIP2，删除并重建容器也不会保留它。** 重建前先停用并同步依赖模块的规则，处理手写配置中的 GeoIP2 指令。新容器启动后，重新安装模块，再恢复这些规则和配置。
-
-## 卸载和排查
-
-1. 先停用并同步依赖 GeoIP2 的地域规则，移除手写 Nginx 配置中的 GeoIP2 指令。参见 [GeoIP2 升级与回滚](../access-policy.md#geoip2-升级与回滚)。
-2. 到 **模块管理**点击 **卸载**。面板只卸载它管理的模块，不删除 MMDB、规则、运行库或缓存的 `.so`。凭据有效时可以离线卸载；手工加载、静态编译的模块不由面板卸载。已安装模块不会自动升级，换版本需先卸载，再选择要安装的正式版本。
-
-| 遇到的情况 | 怎么处理 |
-| --- | --- |
-| 在线目录不可用 | 点击**刷新在线目录**。检查 Agent 能否访问 GitHub 主仓库、索引和签名是否一同发布。缓存只供查看，不能用于新安装。 |
-| 找得到模块，但所选版本不可安装 | 检查该正式 Release 的签名是否可信、是否提供与本机系统、架构、Nginx/OpenResty 版本和二进制 SHA-256 完全匹配的构建。不会自动回退到其他版本。 |
-| Nginx 已运行，但模块页提示无法核验实例或挂载路径 | 在「状态管理」确认面板实例和 worker。用 systemd 部署时保留 `PrivateTmp`、`ProtectSystem` 等安全加固，检查 unit 的主进程、启动配置，以及 Agent 和 Nginx 是否看到同一份主配置和模块目录。 |
-| 模块加载目录与当前 Agent 的模块源不匹配 | 本地测试源使用 `/var/lib/nxpanel-nginx-modules-test/active/*.conf`，正式源使用 `/var/lib/nxpanel-nginx-modules/active/*.conf`。切换前用安装时的 Agent 版本和模块源卸载已安装模块（测试源需保留原公钥），不要直接改写 `include` 路径或移动模块文件。 |
-| 提示仍有依赖或缺少卸载凭据 | 先处理仍引用模块的规则或配置。凭据缺失、损坏或其签名公钥已撤销时，面板不会执行卸载。 |
-| 提示「需人工检查」 | 查看操作记录和 Nginx 日志。备份当前配置、`/var/lib/nxpanel-nginx-modules/script-task.json` 和记录中的工作目录。对比 `*.before`，确认配置和运行状态恢复后再归档记录，不要强行重试。 |
 
 ## 本地联调
 
 **只用测试 VM 或临时容器。** 测试签名仅由 `module_dev` Agent 接受，不需要生产密钥。独立示例仓库默认放在 `local-module-repos/nginx-module-assets-example/`，不会随主仓库克隆；放在其他位置时，请设置 `NXPANEL_MODULE_EXAMPLE` 为它的绝对路径。
+
+测试源使用 `/var/lib/nxpanel-nginx-modules-test/active/*.conf`，正式源使用 `/var/lib/nxpanel-nginx-modules/active/*.conf`。切换前用安装时的 Agent 和签名源卸载已安装模块，不要直接改写 `include` 路径或移动模块文件。
 
 ### Docker 联调
 
@@ -107,11 +73,19 @@
 
 **模块仓库独立发版，NxPanel 主仓库维护发布工具和模块索引。** GeoIP2 的构建目标配置、安装／卸载脚本和发布工作流都在独立模块仓库。已登记的模块发新版不需要改主仓库。
 
+配置服务地址、发行版公钥和构建授权见[模块服务部署指南](../nginx-module-store-deployment.md)。
+
 ### 发布新版本
 
-1. 在模块仓库用 `publish-targets.json` 列出要支持的 Nginx/OpenResty 目标。所有目标的 `.so` 放在**同一个 Release**，不另发 Docker 镜像。新增系统、包版本或架构时，在模块仓库维护目标配方与构建脚本；不存在匹配配方的环境不会被标为支持。
+**优先发布签名源码。** 在示例模块仓库运行 **Publish GeoIP2 source release**，填新 tag；审核签名任务后，工作流发布源码归档、清单和安装／卸载脚本。无需为每个运行时编译成品。启用前先固定兼容的 `.github/nxpanel-tools.sha` 并部署支持源码清单的模块服务和 Agent。
+
+**需要预编译成品时**，继续使用原工作流：
+
+1. 在模块仓库用 `publish-targets.json` 固定构建环境，并可为同一 `.so` 声明多条 `compatibility` 规则。每条包含 `os_id`、`arch`、`runtime`，以及 `os_version` 和 `runtime_version` 的 `{min, max}` 闭区间。区间直接匹配本机报告的数字版本，不绑定构建环境或构建指纹；实际 ABI 仍由 Nginx 试载检查。不同产物的兼容范围不应重叠。所有 `.so` 放在**同一个 Release**，不另发 Docker 镜像。
 2. 在模块仓库 **Actions → Publish GeoIP2 module → Run workflow** 选择默认分支，只填一个新 tag，例如 `v3.4.0`。Actions 在各目标的临时容器内编译，打包后用实际运行时测试安装、查询和卸载。无需预先上传文件或创建 prerelease。
 3. 全部目标通过后审核签名任务。Actions 上传 `.so`、安装／卸载脚本及签名清单，再发布正式版。新模块可以先发布，但完成下方登记后，面板才会列出它。
+
+含 `compatibility` 的清单需要支持范围匹配的 Agent；先升级 Agent，再用更新过的发布工具和新 tag 发布。旧清单、签名和离线卸载凭据继续可用。运行时换包前仍建议先卸载托管模块，避免 Nginx 启动时加载不兼容的旧模块。
 
 **本地构建**：在独立模块仓库执行下列命令。脚本源码在 `modules/geoip2/`，要提交；`.work/builds/` 是编译中间目录，`.work/bundle/` 是唯一候选包，两者都不提交。命令不签名、不上传。
 

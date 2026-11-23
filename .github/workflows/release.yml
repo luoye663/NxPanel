@@ -207,6 +207,8 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
           NXPANEL_MODULE_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
+          NXPANEL_MODULE_STORE_URL: ${{ vars.NXPANEL_MODULE_STORE_URL }}
+          NXPANEL_MODULE_BUILD_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_BUILD_TRUST_KEYS }}
         run: |
           make release VERSION="$VERSION" BUILD_TIME="$BUILD_TIME"
           make release-update-arm64 VERSION="$VERSION"
@@ -337,6 +339,8 @@ jobs:
             VERSION=${{ needs.validate.outputs.version }}
             NXPANEL_UPDATE_TRUST_KEYS=${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
             NXPANEL_MODULE_TRUST_KEYS=${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
+            NXPANEL_MODULE_STORE_URL=${{ vars.NXPANEL_MODULE_STORE_URL }}
+            NXPANEL_MODULE_BUILD_TRUST_KEYS=${{ vars.NXPANEL_MODULE_BUILD_TRUST_KEYS }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.variant }}

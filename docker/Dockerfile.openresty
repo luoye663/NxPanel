@@ -31,6 +31,8 @@ ARG UPDATE_BUILD_TAGS=embed_web
 ARG MODULE_AGENT_BUILD_TAGS
 ARG NXPANEL_UPDATE_TRUST_KEYS
 ARG NXPANEL_MODULE_TRUST_KEYS
+ARG NXPANEL_MODULE_STORE_URL
+ARG NXPANEL_MODULE_BUILD_TRUST_KEYS
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG TARGETOS
 ARG TARGETARCH
@@ -58,7 +60,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \
         -o /out/nxpanel-api ./cmd/nxpanel-api \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${MODULE_AGENT_BUILD_TAGS}" \
-        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS} -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=${NXPANEL_MODULE_TRUST_KEYS}" \
+        -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/app.Version=${VERSION} -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS} -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=${NXPANEL_MODULE_TRUST_KEYS} -X github.com/luoye663/nxpanel/internal/nginxmodule.StoreURL=${NXPANEL_MODULE_STORE_URL} -X github.com/luoye663/nxpanel/internal/nginxmodule.BuildTrustKeys=${NXPANEL_MODULE_BUILD_TRUST_KEYS}" \
         -o /out/nxpanel-agent ./cmd/nxpanel-agent \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags="${UPDATE_BUILD_TAGS}" \
         -ldflags="-s -w -X github.com/luoye663/nxpanel/internal/update.TrustKeys=${NXPANEL_UPDATE_TRUST_KEYS}" \

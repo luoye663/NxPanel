@@ -49,6 +49,8 @@ x-nxpanel-common: &nxpanel-common
   environment:
     - NXPANEL_AGENT_TOKEN=${NXPANEL_AGENT_TOKEN:?必须在 .env 中设置 NXPANEL_AGENT_TOKEN}
     - NXPANEL_LOG_LEVEL=${NXPANEL_LOG_LEVEL:-info}
+    - NXPANEL_MODULE_STORE_URL=${NXPANEL_MODULE_STORE_URL:-}
+    - NXPANEL_MODULE_BUILD_TOKEN=${NXPANEL_MODULE_BUILD_TOKEN:-}
 
 services:
   nxpanel-nginx:

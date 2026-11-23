@@ -26,7 +26,7 @@ GHCR_USERNAME ?= $(GITHUB_ACTOR)
 # 版本号（可通过 -ldflags 注入）
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
 BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/update.TrustKeys=$(NXPANEL_UPDATE_TRUST_KEYS) -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=$(NXPANEL_MODULE_TRUST_KEYS)
+LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/update.TrustKeys=$(NXPANEL_UPDATE_TRUST_KEYS) -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=$(NXPANEL_MODULE_TRUST_KEYS) -X github.com/luoye663/nxpanel/internal/nginxmodule.StoreURL=$(NXPANEL_MODULE_STORE_URL) -X github.com/luoye663/nxpanel/internal/nginxmodule.BuildTrustKeys=$(NXPANEL_MODULE_BUILD_TRUST_KEYS)
 
 # 构建目标
 .PHONY: all build build-api build-agent build-frontend clean test test-commit-message setup-git-hooks run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
