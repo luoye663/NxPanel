@@ -2,7 +2,7 @@ import { Alert, Anchor, Badge, Button, Group, Loader, Modal, Select, Stack, Text
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { geoAccessKeys } from '@/api/geoAccess'
-import { getNginxModuleJob, getNginxModulePreflight, getNginxModuleReleases, getNginxModules, installNginxModule, uninstallNginxModule } from '@/api/nginx'
+import { getNginxModuleJob, getNginxModulePreflight, getNginxModuleReleases, getNginxModules, installNginxModule, requestNginxModuleBuild, uninstallNginxModule } from '@/api/nginx'
 import type { NginxModule } from '@/api/nginx'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { SectionCard } from '@/components/common/SectionCard'
@@ -74,7 +74,7 @@ export function NginxModulesTab() {
   return (
     <Stack gap="md">
       <Group justify="space-between">
-        <Text size="sm" c="dimmed">{list.data?.test_feed ? '当前使用本地测试源，仅用于联调。' : '模块从 NxPanel 索引发现；选择版本后，Agent 验证对应仓库的 Release 和运行时兼容性。'}</Text>
+        <Text size="sm" c="dimmed">{list.data?.test_feed ? '当前使用本地测试源，仅用于联调。' : '模块由官方服务交付；Agent 验证发布者签名和本机兼容性。'}</Text>
         <Button variant="default" size="xs" loading={list.isFetching || refresh.isPending} onClick={() => refresh.mutate()}>刷新在线目录</Button>
       </Group>
       {list.isLoading ? <Loader size="sm" /> : null}
@@ -130,7 +130,11 @@ function ModuleInstallDialog({ module, busy, submitting, error, onClose, onInsta
   const preflight = useQuery({
     queryKey: ['nginx', 'module-preflight', module.id, tag], queryFn: () => getNginxModulePreflight(module.id, tag!),
     enabled: !!tag && !releases.isPending, retry: false,
+    refetchInterval: (query) => query.state.data?.build?.state === 'queued' || query.state.data?.build?.state === 'building' ? 5_000 : false,
   })
+  const build = useMutation({ mutationFn: (version: string) => requestNginxModuleBuild(module.id, version), onSuccess: () => { void preflight.refetch() } })
+  const buildStatus = preflight.data?.build
+  const buildLabels = { missing: '需构建', queued: '构建排队中', building: '构建中', ready: '已构建', failed: '构建失败', unsupported: '不支持构建' }
   const confirmation = preflight.data?.confirmation
   return (
     <Modal opened title={`安装 ${module.name}`} onClose={onClose} closeOnClickOutside={!submitting} closeOnEscape={!submitting} withCloseButton={!submitting}>
@@ -138,14 +142,17 @@ function ModuleInstallDialog({ module, busy, submitting, error, onClose, onInsta
         {releases.isPending ? <Loader size="sm" /> : null}
         {releases.isError ? <><ErrorAlert error={releases.error} title="无法读取模块 Release" /><Button variant="default" onClick={() => void releases.refetch()}>重试</Button></> : null}
         {tags.length ? <Select label="Release 版本" placeholder="选择要安装的版本" value={tag ?? null}
-          onChange={setSelectedTag} disabled={submitting} searchable allowDeselect={false}
+          onChange={(value) => { build.reset(); setSelectedTag(value) }} disabled={submitting || build.isPending} searchable allowDeselect={false}
           data={tags.map((value) => ({ value, label: value === latest ? `${value}（最新正式版）` : value }))} /> : null}
         {!releases.isPending && !releases.isError && !tags.length ? <Text size="sm">未找到正式 Release。</Text> : null}
         {releases.hasNextPage ? <Button variant="default" disabled={submitting} loading={releases.isFetchingNextPage}
           onClick={() => void releases.fetchNextPage()}>加载更早版本</Button> : null}
         {preflight.isFetching ? <Text size="sm">正在验证签名及运行时兼容性…</Text> : null}
         {preflight.isError ? <><ErrorAlert error={preflight.error} title="模块预检失败" /><Button variant="default" onClick={() => void preflight.refetch()}>重新检查</Button></> : null}
-        {preflight.data?.reason ? <><Alert color="yellow" title="此版本不可安装">{preflight.data.reason}</Alert><Button variant="default" disabled={preflight.isFetching} onClick={() => void preflight.refetch()}>重新检查</Button></> : null}
+        {buildStatus ? <Alert title={buildLabels[buildStatus.state]}>{buildStatus.message}</Alert> : null}
+        {buildStatus?.can_submit && tag ? <Button variant="light" loading={build.isPending} onClick={() => build.mutate(tag)}>申请构建</Button> : null}
+        {build.isError ? <ErrorAlert error={build.error} title="构建请求未受理" /> : null}
+        {preflight.data?.reason ? <>{!buildStatus ? <Alert color="yellow" title="此版本不可安装">{preflight.data.reason}</Alert> : null}<Button variant="default" disabled={preflight.isFetching} onClick={() => void preflight.refetch()}>重新检查</Button></> : null}
         {confirmation ? <Alert color="orange" title={`确认安装 ${preflight.data?.version}（${tag}）`}>
           将在 {preflight.data?.runtime || '当前 Nginx 实例'} 上以 root 执行已签名脚本。脚本可安装依赖、修改配置并重载 Nginx。
         </Alert> : null}

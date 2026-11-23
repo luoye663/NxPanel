@@ -113,6 +113,13 @@ export interface NginxModulePreflight {
   runtime?: string
   confirmation?: string
   reason?: string
+  build?: NginxModuleBuild
+}
+
+export interface NginxModuleBuild {
+  state: 'missing' | 'queued' | 'building' | 'ready' | 'failed' | 'unsupported'
+  message?: string
+  can_submit?: boolean
 }
 
 export interface NginxModuleJob {
@@ -141,6 +148,10 @@ export function getNginxModuleReleases(id: string, page: number): Promise<NginxM
 
 export function getNginxModulePreflight(id: string, tag: string): Promise<NginxModulePreflight> {
   return get('/nginx/modules/preflight', { params: { id, tag }, timeout: 26_000 })
+}
+
+export function requestNginxModuleBuild(id: string, tag: string): Promise<NginxModuleBuild> {
+  return post('/nginx/modules/build', { id, tag }, { timeout: 26_000 })
 }
 
 export function installNginxModule(id: string, tag: string, confirmation: string): Promise<NginxModuleJob> {
