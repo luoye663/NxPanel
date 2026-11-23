@@ -26,7 +26,8 @@ GHCR_USERNAME ?= $(GITHUB_ACTOR)
 # 版本号（可通过 -ldflags 注入）
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
 BUILD_TIME  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/update.TrustKeys=$(NXPANEL_UPDATE_TRUST_KEYS) -X github.com/luoye663/nxpanel/internal/nginxmodule.TrustKeys=$(NXPANEL_MODULE_TRUST_KEYS) -X github.com/luoye663/nxpanel/internal/nginxmodule.StoreURL=$(NXPANEL_MODULE_STORE_URL) -X github.com/luoye663/nxpanel/internal/nginxmodule.BuildTrustKeys=$(NXPANEL_MODULE_BUILD_TRUST_KEYS)
+LDFLAGS     = -s -w -X github.com/luoye663/nxpanel/internal/app.Version=$(VERSION) -X github.com/luoye663/nxpanel/internal/trust.RootPublicKey=$(NXPANEL_ROOT_PUBLIC_KEY) -X github.com/luoye663/nxpanel/internal/nginxmodule.StoreURL=$(NXPANEL_MODULE_STORE_URL)
+DOCKER_RELEASE_ARGS = --build-arg VERSION=$(VERSION) --build-arg NXPANEL_ROOT_PUBLIC_KEY="$(NXPANEL_ROOT_PUBLIC_KEY)" --build-arg NXPANEL_MODULE_STORE_URL="$(NXPANEL_MODULE_STORE_URL)"
 
 # 构建目标
 .PHONY: all build build-api build-agent build-frontend clean test test-commit-message setup-git-hooks run-api run-agent lint fmt vet tidy help test-install-compat test-install-compat-full docker-build-nginx docker-build-openresty docker-build docker-multiarch docker-login-ghcr docker-push docker-push-dockerhub docker-push-dockerhub-amd64 docker-push-dockerhub-arm64 docker-push-dockerhub-multiarch docker-push-ghcr docker-push-ghcr-amd64 docker-push-ghcr-arm64 docker-push-ghcr-multiarch docker-push-all
@@ -58,12 +59,12 @@ build-all: build-frontend build
 
 ## docker-build-nginx: 构建 nginx 变体镜像（独享模式，含 nginx+agent+api）
 docker-build-nginx:
-	docker build -f docker/Dockerfile.nginx --build-arg VERSION=$(VERSION) \
+	docker build -f docker/Dockerfile.nginx $(DOCKER_RELEASE_ARGS) \
 		-t nxpanel:nginx-$(VERSION) -t nxpanel:nginx-latest .
 
 ## docker-build-openresty: 构建 openresty 变体镜像（独享模式，含 openresty+agent+api）
 docker-build-openresty:
-	docker build -f docker/Dockerfile.openresty --build-arg VERSION=$(VERSION) \
+	docker build -f docker/Dockerfile.openresty $(DOCKER_RELEASE_ARGS) \
 		-t nxpanel:openresty-$(VERSION) -t nxpanel:openresty-latest .
 
 ## docker-build: 构建两个变体镜像（本地，单架构）
@@ -71,10 +72,10 @@ docker-build: docker-build-nginx docker-build-openresty
 
 ## docker-multiarch: 多架构构建（amd64+arm64），需 docker buildx；仅加载到本地
 docker-multiarch:
-	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --platform $(DOCKER_PLATFORMS) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.nginx -t $(DOCKER_NS):nginx-$(VERSION) -t $(DOCKER_NS):nginx-latest \
 		--load .
-	docker buildx build --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --platform $(DOCKER_PLATFORMS) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.openresty -t $(DOCKER_NS):openresty-$(VERSION) -t $(DOCKER_NS):openresty-latest \
 		--load .
 
@@ -98,11 +99,11 @@ docker-push: docker-push-dockerhub
 ## docker-push-dockerhub: 构建指定平台并只推送到 Docker Hub（默认 linux/amd64）
 docker-push-dockerhub:
 	@echo "==> 构建并推送 nginx 变体到 Docker Hub（$(DOCKERHUB_PLATFORM)）"
-	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.nginx \
 		-t $(DOCKERHUB_NS):nginx-$(VERSION) -t $(DOCKERHUB_NS):nginx-latest .
 	@echo "==> 构建并推送 openresty 变体到 Docker Hub（$(DOCKERHUB_PLATFORM)）"
-	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKERHUB_PLATFORM) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.openresty \
 		-t $(DOCKERHUB_NS):openresty-$(VERSION) -t $(DOCKERHUB_NS):openresty-latest .
 	@echo "==> Docker Hub 推送完成"
@@ -123,11 +124,11 @@ docker-push-dockerhub-multiarch:
 ##   需要：docker login ghcr.io
 docker-push-ghcr:
 	@echo "==> 构建并推送 nginx 变体到 GHCR（$(GHCR_PLATFORM)）"
-	docker buildx build --push --platform $(GHCR_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(GHCR_PLATFORM) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.nginx \
 		-t $(DOCKER_NS):nginx-$(VERSION) -t $(DOCKER_NS):nginx-latest .
 	@echo "==> 构建并推送 openresty 变体到 GHCR（$(GHCR_PLATFORM)）"
-	docker buildx build --push --platform $(GHCR_PLATFORM) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(GHCR_PLATFORM) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.openresty \
 		-t $(DOCKER_NS):openresty-$(VERSION) -t $(DOCKER_NS):openresty-latest .
 	@echo "==> GHCR 推送完成"
@@ -148,12 +149,12 @@ docker-push-ghcr-multiarch:
 ##   需要：docker login docker.io && docker login ghcr.io
 docker-push-all:
 	@echo "==> 构建并推送 nginx 变体到 Docker Hub + GHCR（$(DOCKER_PLATFORMS)）"
-	docker buildx build --push --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKER_PLATFORMS) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.nginx \
 		-t $(DOCKERHUB_NS):nginx-$(VERSION) -t $(DOCKERHUB_NS):nginx-latest \
 		-t $(DOCKER_NS):nginx-$(VERSION) -t $(DOCKER_NS):nginx-latest .
 	@echo "==> 构建并推送 openresty 变体到 Docker Hub + GHCR（$(DOCKER_PLATFORMS)）"
-	docker buildx build --push --platform $(DOCKER_PLATFORMS) --build-arg VERSION=$(VERSION) \
+	docker buildx build --push --platform $(DOCKER_PLATFORMS) $(DOCKER_RELEASE_ARGS) \
 		-f docker/Dockerfile.openresty \
 		-t $(DOCKERHUB_NS):openresty-$(VERSION) -t $(DOCKERHUB_NS):openresty-latest \
 		-t $(DOCKER_NS):openresty-$(VERSION) -t $(DOCKER_NS):openresty-latest .

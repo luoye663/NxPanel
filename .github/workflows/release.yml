@@ -34,7 +34,7 @@ jobs:
         id: inputs
         env:
           VERSION_INPUT: ${{ inputs.version }}
-          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
+          NXPANEL_ROOT_PUBLIC_KEY: ${{ vars.NXPANEL_ROOT_PUBLIC_KEY }}
         run: |
           set -euo pipefail
 
@@ -46,8 +46,8 @@ jobs:
             echo "Expected vX.Y.Z, vX.Y.Z-beta.N or vX.Y.Z-rc.N." >&2
             exit 1
           fi
-          if [[ -z "$NXPANEL_UPDATE_TRUST_KEYS" ]]; then
-            echo "Configure the NXPANEL_UPDATE_TRUST_KEYS repository variable before releasing." >&2
+          if [[ -z "$NXPANEL_ROOT_PUBLIC_KEY" ]]; then
+            echo "Configure the NXPANEL_ROOT_PUBLIC_KEY repository variable before releasing." >&2
             exit 1
           fi
 
@@ -205,10 +205,8 @@ jobs:
         env:
           BUILD_TIME: ${{ needs.validate.outputs.build_time }}
           VERSION: ${{ needs.validate.outputs.version }}
-          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
-          NXPANEL_MODULE_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
+          NXPANEL_ROOT_PUBLIC_KEY: ${{ vars.NXPANEL_ROOT_PUBLIC_KEY }}
           NXPANEL_MODULE_STORE_URL: ${{ vars.NXPANEL_MODULE_STORE_URL }}
-          NXPANEL_MODULE_BUILD_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_BUILD_TRUST_KEYS }}
         run: |
           make release VERSION="$VERSION" BUILD_TIME="$BUILD_TIME"
           make release-update-arm64 VERSION="$VERSION"
@@ -244,7 +242,7 @@ jobs:
       - name: Create signed manifest and update packages
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-          NXPANEL_UPDATE_TRUST_KEYS: ${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
+          NXPANEL_ROOT_PUBLIC_KEY: ${{ vars.NXPANEL_ROOT_PUBLIC_KEY }}
           NXPANEL_UPDATE_SIGNING_KEYS: ${{ secrets.NXPANEL_UPDATE_SIGNING_KEYS }}
         run: go run ./cmd/nxpanel-update-package -version "$VERSION" -amd64 release/nxpanel/bin -arm64 release/update-arm64
       - uses: actions/upload-artifact@v7
@@ -337,10 +335,8 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.validate.outputs.version }}
-            NXPANEL_UPDATE_TRUST_KEYS=${{ vars.NXPANEL_UPDATE_TRUST_KEYS }}
-            NXPANEL_MODULE_TRUST_KEYS=${{ vars.NXPANEL_MODULE_TRUST_KEYS }}
+            NXPANEL_ROOT_PUBLIC_KEY=${{ vars.NXPANEL_ROOT_PUBLIC_KEY }}
             NXPANEL_MODULE_STORE_URL=${{ vars.NXPANEL_MODULE_STORE_URL }}
-            NXPANEL_MODULE_BUILD_TRUST_KEYS=${{ vars.NXPANEL_MODULE_BUILD_TRUST_KEYS }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.variant }}
