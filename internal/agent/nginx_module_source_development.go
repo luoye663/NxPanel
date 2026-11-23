@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
-	"github.com/luoye663/nxpanel/internal/update"
+	"github.com/luoye663/nxpanel/internal/trust"
 )
 
 func configuredModuleSource() moduleSource {
@@ -51,10 +51,7 @@ func parseModuleSource(feed, keys string, container bool) moduleSource {
 			return source
 		}
 	}
-	source.keys, source.err = nginxmodule.Keys(keys, update.TrustKeys)
-	if source.err == nil {
-		_, source.err = nginxmodule.Keys(keys, nginxmodule.TrustKeys)
-	}
+	source.keys, source.err = nginxmodule.Keys(keys, trust.RootPublicKey)
 	if source.err == nil {
 		address.Path = strings.TrimSuffix(address.Path, nginxmodule.IndexName)
 		source.base = address.String()

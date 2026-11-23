@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/trust"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -24,6 +25,7 @@ const moduleTestStateDir = moduleStateDir + "-test"
 type moduleFeed struct {
 	entries  []nginxmodule.IndexEntry
 	floor    nginxmodule.Floor
+	policy   trust.Policy
 	fetched  time.Time
 	failedAt time.Time
 	fetchErr error
@@ -42,16 +44,6 @@ type moduleIndexSnapshot struct {
 	Index     []byte            `json:"index"`
 	Signature []byte            `json:"signature"`
 	Floor     nginxmodule.Floor `json:"floor"`
-}
-
-func (source moduleSource) trustKeys() (map[string]ed25519.PublicKey, error) {
-	if source.err != nil {
-		return nil, source.err
-	}
-	if source.test {
-		return source.keys, nil
-	}
-	return nginxmodule.Keys(nginxmodule.TrustKeys, update.TrustKeys)
 }
 
 type moduleSource struct {
@@ -189,7 +181,8 @@ func (s *Server) loadModuleFeed(ctx context.Context, fresh bool) (_ moduleFeed, 
 	if !fresh && s.moduleFeed.fetchErr != nil && time.Since(s.moduleFeed.failedAt) < 10*time.Second {
 		return moduleFeed{}, s.moduleFeed.fetchErr
 	}
-	if !fresh && s.moduleFeed.fetchErr == nil && time.Since(s.moduleFeed.fetched) < 2*time.Minute {
+	if !fresh && s.moduleFeed.fetchErr == nil && time.Since(s.moduleFeed.fetched) < 2*time.Minute &&
+		(source.test || s.moduleFeed.policy.RequireCurrent(time.Now()) == nil) {
 		return s.moduleFeed, nil
 	}
 	defer func() {
@@ -204,11 +197,15 @@ func (s *Server) loadModuleFeed(ctx context.Context, fresh bool) (_ moduleFeed, 
 	if err != nil && !os.IsNotExist(err) {
 		return moduleFeed{}, err
 	}
-	raw, err := source.fetch(ctx, nginxmodule.IndexName, nginxmodule.MaxEnvelope)
+	name, sigName, limit, sigLimit := trust.Name, trust.Signature, int64(trust.MaxPolicy), int64(trust.MaxSig)
+	if source.test {
+		name, sigName, limit, sigLimit = nginxmodule.IndexName, nginxmodule.IndexSigName, nginxmodule.MaxEnvelope, nginxmodule.MaxEnvelope
+	}
+	raw, err := source.fetch(ctx, name, limit)
 	if err != nil {
 		return moduleFeed{}, err
 	}
-	signature, err := source.fetch(ctx, nginxmodule.IndexSigName, nginxmodule.MaxEnvelope)
+	signature, err := source.fetch(ctx, sigName, sigLimit)
 	if err != nil {
 		return moduleFeed{}, err
 	}
@@ -223,13 +220,22 @@ func (s *Server) loadModuleFeed(ctx context.Context, fresh bool) (_ moduleFeed, 
 			return moduleFeed{}, err
 		}
 	}
+	if !source.test {
+		if err := feed.policy.RequireCurrent(time.Now()); err != nil {
+			return moduleFeed{}, err
+		}
+	}
 	feed.fetched = time.Now()
 	s.moduleFeed = feed
 	return s.moduleFeed, nil
 }
 
 func (source moduleSource) indexStatePath() string {
-	return filepath.Join(source.stateDir(), "index-snapshot.json")
+	name := "trust-snapshot.json"
+	if source.test {
+		name = "index-snapshot.json"
+	}
+	return filepath.Join(source.stateDir(), name)
 }
 
 func (source moduleSource) savedIndex() (moduleFeed, error) {
@@ -248,26 +254,21 @@ func (source moduleSource) readIndexSnapshot() (moduleIndexSnapshot, error) {
 	if err := readModuleState(source.indexStatePath(), 4*nginxmodule.MaxEnvelope, &snapshot); err != nil {
 		return snapshot, err
 	}
-	var signature nginxmodule.IndexSignature
-	if len(snapshot.Index) > nginxmodule.MaxEnvelope || len(snapshot.Signature) > nginxmodule.MaxEnvelope ||
-		update.Decode(bytes.NewReader(snapshot.Signature), &signature) != nil || snapshot.Floor.Sequence == 0 ||
-		snapshot.Floor.Sequence != signature.Sequence || snapshot.Floor.Digest != sha256Text(snapshot.Index) {
+	verified, err := source.verifyIndex(snapshot, snapshot.Floor)
+	if err != nil || verified.floor != snapshot.Floor {
 		return snapshot, fmt.Errorf("本地模块索引版本记录不可核验")
 	}
 	return snapshot, nil
 }
 
 func (source moduleSource) verifyIndex(snapshot moduleIndexSnapshot, floor nginxmodule.Floor) (moduleFeed, error) {
-	keys, err := source.trustKeys()
-	if err != nil {
-		return moduleFeed{}, err
+	if source.test {
+		entries, next, err := nginxmodule.VerifyIndex(snapshot.Index, snapshot.Signature, source.keys, nil, floor, true)
+		return moduleFeed{entries: entries, floor: next}, err
 	}
-	updateKeys, err := update.Keys(update.TrustKeys)
-	if err != nil {
-		return moduleFeed{}, err
-	}
-	entries, next, err := nginxmodule.VerifyIndex(snapshot.Index, snapshot.Signature, keys, updateKeys, floor, source.test)
-	return moduleFeed{entries: entries, floor: next}, err
+	signed := trust.Signed{Policy: snapshot.Index, Signature: snapshot.Signature}
+	policy, next, err := signed.Verify(trust.RootPublicKey, trust.Floor(floor), time.Now())
+	return moduleFeed{entries: nginxmodule.PolicyEntries(policy), floor: nginxmodule.Floor(next), policy: policy}, err
 }
 
 func moduleAssetMatches(body []byte, asset nginxmodule.Asset) bool {

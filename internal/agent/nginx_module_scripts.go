@@ -18,7 +18,6 @@ import (
 	"unicode"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
-	"github.com/luoye663/nxpanel/internal/update"
 )
 
 type moduleReceipt struct {
@@ -131,11 +130,7 @@ func (s *Server) uninstallOffer(ctx context.Context, offer *moduleOffer, target 
 	}
 	assets := manifest.Assets
 	if receipt.Build != nil {
-		publishers, err := entry.PublicKeys()
-		if err != nil {
-			return err
-		}
-		result, err := receipt.Build.Verify(manifest, receipt.Manifest, nginxmodule.BuildTrustKeys, nginxmodule.TrustKeys, update.TrustKeys, publishers)
+		result, err := receipt.Build.Verify(manifest, receipt.Manifest, feed.policy.Build)
 		if err != nil || result.Request.Target != target {
 			return fmt.Errorf("无法核验当前运行时的构建卸载凭据")
 		}
@@ -270,6 +265,9 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 	argv := instance.selection.options.args()
 	if ctx.Err() != nil {
 		return failure("模块任务已取消，未启动脚本")
+	}
+	if !uninstall && !source.test && !time.Now().Before(offer.trustExpiry) {
+		return failure("授权清单已过期")
 	}
 	journal := source.scriptJournal()
 	if err := writeModuleState(journal, moduleScriptTask{Module: id, Version: offer.asset.Version, Action: action, SHA256: script.SHA256, Directory: dir}); err != nil {

@@ -9,9 +9,8 @@ import (
 )
 
 func TestSignedBuildBindsPublisherReleaseAndTarget(t *testing.T) {
-	keys, signers, buildKey := keypair(t)
-	publishers, _, _ := keypair(t)
-	_, _, indexKey := keypair(t)
+	_, signers, buildKey := keypair(t)
+	_, _, publisherKey := keypair(t)
 	digest := strings.Repeat("a", 64)
 	module := GeoIP2Module()
 	module.Release = Release{Repository: "example/geoip2", Tag: "v3.4.0"}
@@ -26,22 +25,19 @@ func TestSignedBuildBindsPublisherReleaseAndTarget(t *testing.T) {
 	result := BuildResult{Request: request, Asset: Asset{Module: module.ID, Version: request.Tag, Target: request.Target, Name: AssetName(module.ID, digest), SHA256: digest, Size: 1024}}
 	body := jsonBytes(t, result)
 	signed := SignedBuild{Result: body, Signature: jsonBytes(t, Sign(body, signers, BuildPurpose, false))}
-	if got, err := signed.Verify(manifest, raw, buildKey, indexKey, "", publishers); err != nil || got.Request != request {
+	if got, err := signed.Verify(manifest, raw, buildKey); err != nil || got.Request != request {
 		t.Fatalf("verify: %+v %v", got, err)
 	}
-	if _, err := signed.Verify(manifest, raw, buildKey, indexKey, "", keys); err == nil {
-		t.Fatal("publisher and builder keys were allowed to overlap")
+	if _, err := signed.Verify(manifest, raw, publisherKey); err == nil {
+		t.Fatal("unrelated publisher key verified a build")
 	}
-	if _, err := signed.Verify(manifest, raw, buildKey, buildKey, "", publishers); err == nil {
-		t.Fatal("index and builder keys were allowed to overlap")
-	}
-	if _, err := signed.Verify(manifest, append(append([]byte{}, raw...), '\n'), buildKey, indexKey, "", publishers); err == nil {
+	if _, err := signed.Verify(manifest, append(append([]byte{}, raw...), '\n'), buildKey); err == nil {
 		t.Fatal("signature not bound to original manifest")
 	}
 	result.Asset.Target.RuntimeVersion = "1.30.8"
 	modified, _ := json.Marshal(result)
 	signed.Result = modified
-	if _, err := signed.Verify(manifest, raw, buildKey, indexKey, "", publishers); err == nil {
+	if _, err := signed.Verify(manifest, raw, buildKey); err == nil {
 		t.Fatal("tampered target was accepted")
 	}
 }

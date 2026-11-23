@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/luoye663/nxpanel/internal/trust"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -23,7 +24,6 @@ const (
 	Symbol          = "ngx_http_geoip2_module"
 	IndexName       = "modules.json"
 	IndexSigName    = "modules.sig.json"
-	IndexPath       = "catalog/nginx-modules/"
 	ManifestName    = "module-release.json"
 	ManifestSig     = "module-release.sig.json"
 	IndexPurpose    = "nxpanel-nginx-module-index/v1"
@@ -40,8 +40,6 @@ const (
 	ReleasePageSize = 20
 	MaxReleasePage  = 100
 )
-
-var TrustKeys string
 
 type Target struct {
 	OS             string `json:"os"`
@@ -106,6 +104,14 @@ type IndexEntry struct {
 type Floor struct {
 	Sequence uint64 `json:"sequence"`
 	Digest   string `json:"digest"`
+}
+
+func PolicyEntries(policy trust.Policy) []IndexEntry {
+	entries := make([]IndexEntry, 0, len(policy.Modules))
+	for _, module := range policy.Modules {
+		entries = append(entries, IndexEntry(module))
+	}
+	return entries
 }
 
 type IndexSignature struct {

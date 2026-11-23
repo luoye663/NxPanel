@@ -2,12 +2,12 @@ package nginxmodule
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"regexp"
 
+	"github.com/luoye663/nxpanel/internal/trust"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -20,7 +20,6 @@ const (
 
 var (
 	StoreURL       string
-	BuildTrustKeys string
 	packageVersion = regexp.MustCompile(`^[0-9][0-9A-Za-z.+:~_-]{0,126}$`)
 )
 
@@ -70,11 +69,10 @@ type SignedBuild struct {
 	Signature json.RawMessage `json:"signature"`
 }
 
-func (signed SignedBuild) Verify(manifest Manifest, raw []byte, keys, indexKeys, updateKeys string, publisherKeys map[string]ed25519.PublicKey) (BuildResult, error) {
+func (signed SignedBuild) Verify(manifest Manifest, raw []byte, keys string) (BuildResult, error) {
 	var result BuildResult
-	buildKeys, err := Keys(keys, updateKeys)
-	index, indexErr := update.Keys(indexKeys)
-	if err != nil || indexErr != nil || sameKey(buildKeys, index) || sameKey(buildKeys, publisherKeys) || update.VerifySignature(signed.Result, signed.Signature, buildKeys, BuildPurpose) != nil {
+	buildKeys, err := trust.Keys(keys)
+	if err != nil || update.VerifySignature(signed.Result, signed.Signature, buildKeys, BuildPurpose) != nil {
 		return result, fmt.Errorf("构建服务签名不可信")
 	}
 	if update.Decode(bytes.NewReader(signed.Result), &result) != nil || !result.Request.Valid() || manifest.Build == nil ||

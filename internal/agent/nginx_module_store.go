@@ -69,9 +69,9 @@ func observedBuildRequest(ctx context.Context, instance moduleRuntime, target ng
 	return request
 }
 
-func (source moduleSource) buildStatus(ctx context.Context, request nginxmodule.BuildRequest, submit bool) (nginxmodule.BuildStatus, error) {
+func (source moduleSource) buildStatus(ctx context.Context, request nginxmodule.BuildRequest, keys string, submit bool) (nginxmodule.BuildStatus, error) {
 	var status nginxmodule.BuildStatus
-	if source.test || source.base == "" || !request.Valid() || nginxmodule.BuildTrustKeys == "" {
+	if source.test || source.base == "" || !request.Valid() || keys == "" {
 		return nginxmodule.BuildStatus{State: "unsupported", Message: "当前 Agent 未配置可信的按需构建服务"}, nil
 	}
 	method, endpoint := http.MethodPost, "builds/lookup"
@@ -114,7 +114,7 @@ func (source moduleSource) buildStatus(ctx context.Context, request nginxmodule.
 	return status, nil
 }
 
-func (source moduleSource) getBuild(ctx context.Context, request nginxmodule.BuildRequest, manifest nginxmodule.Manifest, raw []byte, entry nginxmodule.IndexEntry) (nginxmodule.BuildResult, nginxmodule.SignedBuild, error) {
+func (source moduleSource) getBuild(ctx context.Context, request nginxmodule.BuildRequest, manifest nginxmodule.Manifest, raw []byte, keys string) (nginxmodule.BuildResult, nginxmodule.SignedBuild, error) {
 	var result nginxmodule.BuildResult
 	var signed nginxmodule.SignedBuild
 	data, err := source.fetch(ctx, "builds/"+request.Key()+"/result", nginxmodule.MaxEnvelope)
@@ -124,11 +124,7 @@ func (source moduleSource) getBuild(ctx context.Context, request nginxmodule.Bui
 	if update.Decode(bytes.NewReader(data), &signed) != nil {
 		return result, signed, fmt.Errorf("构建结果响应无效")
 	}
-	publishers, err := entry.PublicKeys()
-	if err != nil {
-		return result, signed, err
-	}
-	result, err = signed.Verify(manifest, raw, nginxmodule.BuildTrustKeys, nginxmodule.TrustKeys, update.TrustKeys, publishers)
+	result, err = signed.Verify(manifest, raw, keys)
 	if err == nil && result.Request != request {
 		err = fmt.Errorf("构建结果与请求的运行时不匹配")
 	}

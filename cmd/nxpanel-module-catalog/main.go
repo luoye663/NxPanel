@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/trust"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -36,33 +38,17 @@ type buildTarget struct {
 }
 
 func main() {
-	input := flag.String("input", "module-builds", "input directory (modules.json file for -sign-index)")
+	input := flag.String("input", "module-builds", "input directory")
 	output := flag.String("output", "module-release", "output directory")
-	sequence := flag.Uint64("sequence", 0, "strictly increasing index sequence")
-	baseIndex := flag.String("base-index-dir", "", "directory containing the current main index for signing or verification")
+	sequence := flag.Uint64("sequence", 0, "local fixture index sequence")
+	policyDir := flag.String("trust-dir", trust.Path, "directory with the signed root policy")
 	metadata := flag.String("metadata", "", "path to module-definitions.json")
 	prepare := flag.Bool("prepare", false, "package one module's existing build artifacts as an unsigned release candidate")
 	check := flag.Bool("check-candidate", false, "validate a candidate and its files without signing")
 	match := flag.String("match-target", "", "select a candidate asset for the observed target JSON file")
 	candidate := flag.Bool("candidate", false, "sign a verified release candidate (read it for -test-fixture)")
-	index := flag.Bool("sign-index", false, "sign an index JSON array")
-	checkIndex := flag.Bool("check-index", false, "verify an index directory using only public keys")
 	fixture := flag.Bool("test-fixture", false, "generate a local index, GitHub-style releases, and ephemeral public trust key")
 	flag.Parse()
-	if *index || *checkIndex || *baseIndex != "" {
-		if *prepare || *check || *match != "" || *candidate || *fixture || *metadata != "" {
-			log.Fatal("index operations cannot be combined with candidate or fixture options")
-		}
-		switch {
-		case *index && !*checkIndex && (*sequence != 0) != (*baseIndex != ""):
-			must(signIndex(*input, *output, *baseIndex, *sequence))
-		case *checkIndex && !*index && *sequence == 0:
-			must(verifyIndex(*input, *baseIndex))
-		default:
-			log.Fatal("choose -sign-index with either -sequence or -base-index-dir, or -check-index with optional -base-index-dir")
-		}
-		return
-	}
 	if *match != "" {
 		if *prepare || *check || *candidate || *fixture || *metadata != "" || *sequence != 0 {
 			log.Fatal("-match-target cannot be combined with other candidate or fixture options")
@@ -93,11 +79,11 @@ func main() {
 		_, _, err := readCandidate(*input)
 		must(err)
 	case *candidate && !*prepare && !*check && !*fixture && *metadata == "" && *sequence == 0:
-		must(signRelease(*input, *output))
+		must(signRelease(*input, *output, *policyDir))
 	case *fixture && !*prepare && !*check && (*candidate == (*metadata == "")) && *sequence != 0:
 		must(writeTestFixture(*input, *output, *metadata, *sequence))
 	default:
-		log.Fatal("choose -prepare, -check-candidate, -match-target, -candidate, -sign-index, -check-index, or -test-fixture (with -metadata or -candidate)")
+		log.Fatal("choose -prepare, -check-candidate, -match-target, -candidate, or -test-fixture (with -metadata or -candidate)")
 	}
 }
 
@@ -118,17 +104,12 @@ func loadDefinitions(path string) ([]moduleDefinition, error) {
 	return definitions, nil
 }
 
-func signingKeys(trust map[string]ed25519.PublicKey, env string) (map[string]ed25519.PrivateKey, error) {
+func signingKeys(public string, env string) (map[string]ed25519.PrivateKey, error) {
 	keys := make(map[string]ed25519.PrivateKey)
 	for _, entry := range strings.Split(os.Getenv(env), ",") {
-		id, encoded, ok := strings.Cut(entry, ":")
-		seed, err := base64.StdEncoding.DecodeString(encoded)
-		if !ok || err != nil || len(seed) != ed25519.SeedSize || keys[id] != nil {
+		id, key, err := trust.AuthorizedPrivate(entry, public)
+		if err != nil || keys[id] != nil {
 			return nil, fmt.Errorf("invalid signing secret in %s", env)
-		}
-		key := ed25519.NewKeyFromSeed(seed)
-		if !key.Public().(ed25519.PublicKey).Equal(trust[id]) {
-			return nil, fmt.Errorf("signing secret does not match configured trust keys")
 		}
 		keys[id] = key
 	}
@@ -145,17 +126,21 @@ func signedIndex(raw []byte, sequence uint64, keys map[string]ed25519.PrivateKey
 	return files, err
 }
 
-func signRelease(input, output string) error {
+func signRelease(input, output, policyDir string) error {
 	manifest, files, err := readCandidate(input)
 	if err != nil {
 		return err
 	}
-	entry := indexEntry(manifest, os.Getenv("NXPANEL_MODULE_RELEASE_TRUST_KEYS"))
-	trust, err := entry.PublicKeys()
+	policy, err := trust.CurrentDir(policyDir, os.Getenv("NXPANEL_ROOT_PUBLIC_KEY"), time.Now())
 	if err != nil {
 		return err
 	}
-	keys, err := signingKeys(trust, "NXPANEL_MODULE_RELEASE_SIGNING_KEYS")
+	module, ok := policy.Module(manifest.Module.ID)
+	if !ok || module.Symbol != manifest.Module.Symbol || !strings.EqualFold(module.Repository, manifest.Module.Release.Repository) {
+		return fmt.Errorf("module, repository or symbol not authorized by root policy")
+	}
+	entry := nginxmodule.IndexEntry(module)
+	keys, err := signingKeys(entry.Keys, "NXPANEL_MODULE_RELEASE_SIGNING_KEYS")
 	if err != nil {
 		return err
 	}

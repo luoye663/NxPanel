@@ -10,14 +10,115 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/trust"
 )
 
 type moduleTestTransport func(*http.Request) (*http.Response, error)
 
 func (transport moduleTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return transport(request)
+}
+
+func TestRootPolicyAuthorizesMirroredReleaseAndOfflineReceipt(t *testing.T) {
+	keyPair := func(id string) (string, ed25519.PrivateKey) {
+		t.Helper()
+		public, private, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id + ":" + base64.StdEncoding.EncodeToString(public), private
+	}
+	root, rootPrivate := keyPair("root")
+	publisher, publisherPrivate := keyPair("publisher")
+	oldRoot, oldClient := trust.RootPublicKey, moduleCatalogClient
+	trust.RootPublicKey = root
+	t.Cleanup(func() { trust.RootPublicKey, moduleCatalogClient = oldRoot, oldClient })
+	entry := trust.Module{ID: "geoip2", Name: "GeoIP2", Description: "GeoIP2 module", Repository: "official/geoip2", Symbol: nginxmodule.Symbol, Keys: publisher}
+	now := time.Now()
+	policy := trust.Policy{Version: 1, Sequence: 1, IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Modules: []trust.Module{entry}}
+	snapshot := func() moduleIndexSnapshot {
+		t.Helper()
+		body, err := json.Marshal(policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signed, err := trust.Sign(body, rootPrivate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return moduleIndexSnapshot{Index: signed.Policy, Signature: signed.Signature}
+	}
+	const host = "modules.example.test"
+	source := moduleSource{base: "https://" + host + "/v1/"}
+	original := snapshot()
+	feed, err := source.verifyIndex(original, nginxmodule.Floor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, ok := feed.entry(entry.ID)
+	if !ok {
+		t.Fatal("root-authorized module missing")
+	}
+	module := registered.DisplayModule()
+	module.Release.Tag = "v3.4.0"
+	script := []byte("fixture uninstall")
+	digest := sha256Text(script)
+	module.Install = nginxmodule.Script{Name: nginxmodule.ScriptName(module.ID, "install", digest), Size: int64(len(script)), SHA256: digest}
+	module.Uninstall = nginxmodule.Script{Name: nginxmodule.ScriptName(module.ID, "uninstall", digest), Size: int64(len(script)), SHA256: digest}
+	manifest := nginxmodule.Manifest{Protocol: nginxmodule.BuildProtocol, Module: module, Build: &nginxmodule.BuildRecipe{Source: nginxmodule.Script{Name: nginxmodule.SourceName(module.ID, digest), Size: 10, SHA256: digest}}}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := json.Marshal(nginxmodule.Sign(raw, map[string]ed25519.PrivateKey{"publisher": publisherPrivate}, nginxmodule.ReleasePurpose, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	releasePath := "/v1/repos/official/geoip2/releases/"
+	assets := releasePath + "download/v3.4.0/"
+	files := map[string][]byte{
+		releasePath + "tags/v3.4.0.json":  []byte(`{"tag_name":"v3.4.0","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z"}`),
+		assets + nginxmodule.ManifestName: raw,
+		assets + nginxmodule.ManifestSig:  signature,
+	}
+	moduleCatalogClient = &http.Client{Transport: moduleTestTransport(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Scheme != "https" || request.URL.Host != host {
+			t.Fatalf("module Agent left the store origin: %s", request.URL)
+		}
+		status, body := http.StatusOK, files[request.URL.Path]
+		if body == nil {
+			status = http.StatusNotFound
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	_, receipt, err := source.releaseManifest(t.Context(), registered, module.Release.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Sequence++
+	policy.IssuedAt, policy.ExpiresAt = now.Add(-2*time.Hour), now.Add(-time.Hour)
+	expired, err := source.verifyIndex(snapshot(), feed.floor)
+	if err != nil || expired.policy.RequireCurrent(now) == nil {
+		t.Fatalf("expired policy must remain usable only as an offline proof: %v", err)
+	}
+	registered, _ = expired.entry(entry.ID)
+	offline, err := nginxmodule.VerifyManifest(receipt.Manifest, receipt.Signature, registered, receipt.Tag, false)
+	if err != nil || !moduleScriptMatches(script, offline.Module.Uninstall) {
+		t.Fatalf("offline receipt cannot be verified against cached authorization: %v", err)
+	}
+	policy.Sequence++
+	policy.ExpiresAt = now.Add(time.Hour)
+	policy.Modules = []trust.Module{}
+	revoked, err := source.verifyIndex(snapshot(), expired.floor)
+	if _, ok := revoked.entry(entry.ID); err != nil || ok {
+		t.Fatal("revoked module still authorized")
+	}
+	if _, err := source.verifyIndex(original, revoked.floor); err == nil {
+		t.Fatal("replayed root policy restored revoked module")
+	}
 }
 
 func TestModuleReleaseDiscoveryAndIndependentHistory(t *testing.T) {

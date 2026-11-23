@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luoye663/nxpanel/internal/nginxmodule"
+	"github.com/luoye663/nxpanel/internal/trust"
 )
 
 func TestIndependentReleaseRoundTrip(t *testing.T) {
@@ -19,7 +20,6 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded := "test:" + base64.StdEncoding.EncodeToString(public)
-	t.Setenv("NXPANEL_MODULE_RELEASE_TRUST_KEYS", encoded)
 	t.Setenv("NXPANEL_MODULE_RELEASE_SIGNING_KEYS", "test:"+base64.StdEncoding.EncodeToString(private.Seed()))
 	target := nginxmodule.Target{OS: "rocky:9", Arch: "arm64", Runtime: "openresty", RuntimeVersion: "1.27.1.2", BinarySHA256: strings.Repeat("e", 64)}
 	built := buildTarget{Target: target, Compatibility: []nginxmodule.Compatibility{{
@@ -52,7 +52,26 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 	if err := writeFiles(prepared, files); err != nil {
 		t.Fatal(err)
 	}
-	if err := signRelease(prepared, output); err != nil {
+	entry := indexEntry(manifest, encoded)
+	root, rootPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NXPANEL_ROOT_PUBLIC_KEY", "root:"+base64.StdEncoding.EncodeToString(root))
+	policyDir := t.TempDir()
+	now := time.Now()
+	policy, err := json.Marshal(trust.Policy{Version: 1, Sequence: 1, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), Modules: []trust.Module{trust.Module(entry)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := trust.Sign(policy, rootPrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFiles(policyDir, map[string][]byte{trust.Name: signed.Policy, trust.Signature: signed.Signature}); err != nil {
+		t.Fatal(err)
+	}
+	if err := signRelease(prepared, output, policyDir); err != nil {
 		t.Fatal(err)
 	}
 	read := func(dir, name string) []byte {
@@ -63,7 +82,6 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 		}
 		return body
 	}
-	entry := indexEntry(manifest, encoded)
 	verified, err := nginxmodule.VerifyManifest(read(output, nginxmodule.ManifestName), read(output, nginxmodule.ManifestSig), entry, module.Release.Tag, false)
 	if err != nil || verified.Protocol != nginxmodule.RangeProtocol {
 		t.Fatalf("expected a signed range manifest: %+v %v", verified, err)
@@ -82,7 +100,7 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 	if err := os.Chtimes(assetPath, priorWrite, priorWrite); err != nil {
 		t.Fatal(err)
 	}
-	if err := signRelease(prepared, prepared); err != nil {
+	if err := signRelease(prepared, prepared, policyDir); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(assetPath); err != nil || !info.ModTime().Equal(priorWrite) {
@@ -95,12 +113,12 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 	if err := writeTestFixture(prepared, fixture, "", 41); err != nil {
 		t.Fatal(err)
 	}
-	trust, err := nginxmodule.Keys(strings.TrimSpace(string(read(fixture, "trust.pub"))), encoded)
+	fixtureKeys, err := nginxmodule.Keys(strings.TrimSpace(string(read(fixture, "trust.pub"))), encoded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	feed := filepath.Join(fixture, "feed")
-	entries, _, err := nginxmodule.VerifyIndex(read(feed, nginxmodule.IndexName), read(feed, nginxmodule.IndexSigName), trust, nil, nginxmodule.Floor{}, true)
+	entries, _, err := nginxmodule.VerifyIndex(read(feed, nginxmodule.IndexName), read(feed, nginxmodule.IndexSigName), fixtureKeys, nil, nginxmodule.Floor{}, true)
 	if err != nil || len(entries) != 1 || entries[0].Keys == encoded {
 		t.Fatalf("invalid fixture index: %+v %v", entries, err)
 	}
@@ -111,7 +129,7 @@ func TestIndependentReleaseRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(prepared, manifest.Module.Uninstall.Name), []byte("#!/bin/sh\nexit 1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := signRelease(prepared, t.TempDir()); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+	if err := signRelease(prepared, t.TempDir(), policyDir); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Fatalf("modified script must not be signed: %v", err)
 	}
 	candidate.Modules = append(candidate.Modules, candidate.Modules[0])

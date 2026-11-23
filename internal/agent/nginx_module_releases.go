@@ -164,6 +164,7 @@ func (s *Server) prepareModuleInstall(ctx context.Context, id, tag string, fresh
 	}
 	instance, version, managed, runtimeErr := s.moduleSnapshot(ctx)
 	offer = s.describeModule(ctx, instance, version, entry.DisplayModule(), managed[id], false, true, runtimeErr)
+	offer.buildKeys, offer.trustExpiry = feed.policy.Build, feed.policy.ExpiresAt
 	if offer.status.Action != "install" {
 		reason := offer.status.Reason
 		if reason == "" {
@@ -183,7 +184,7 @@ func (s *Server) prepareModuleInstall(ctx context.Context, id, tag string, fresh
 	if errors.Is(err, nginxmodule.ErrNoMatch) && manifest.Build != nil {
 		request := observedBuildRequest(ctx, instance, target, manifest, receipt.Manifest)
 		offer.buildRequest = &request
-		status, statusErr := s.moduleSource.buildStatus(ctx, request, false)
+		status, statusErr := s.moduleSource.buildStatus(ctx, request, offer.buildKeys, false)
 		if statusErr != nil {
 			return offer, statusErr
 		}
@@ -193,7 +194,7 @@ func (s *Server) prepareModuleInstall(ctx context.Context, id, tag string, fresh
 		}
 		var built nginxmodule.BuildResult
 		var signed nginxmodule.SignedBuild
-		built, signed, err = s.moduleSource.getBuild(ctx, request, manifest, receipt.Manifest, entry)
+		built, signed, err = s.moduleSource.getBuild(ctx, request, manifest, receipt.Manifest, offer.buildKeys)
 		if err == nil {
 			asset, receipt.Build = built.Asset, &signed
 		}
@@ -236,7 +237,11 @@ func (s *Server) handleNginxModuleBuild(w http.ResponseWriter, r *http.Request) 
 		writeAgentError(w, http.StatusConflict, "当前环境不能提交构建，请重新检查")
 		return
 	}
-	status, err := s.moduleSource.buildStatus(ctx, *offer.buildRequest, true)
+	if !time.Now().Before(offer.trustExpiry) {
+		writeAgentError(w, http.StatusConflict, "授权清单已过期")
+		return
+	}
+	status, err := s.moduleSource.buildStatus(ctx, *offer.buildRequest, offer.buildKeys, true)
 	if err != nil {
 		writeAgentError(w, http.StatusBadGateway, err.Error())
 		return

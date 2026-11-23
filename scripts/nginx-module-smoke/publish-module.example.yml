@@ -130,16 +130,18 @@ jobs:
         with:
           name: module-candidate
           path: module-candidate
+      - name: Download the public NxPanel policy
+        run: bash scripts/fetch-nxpanel-trust.sh "$RUNNER_TEMP/nxpanel-trust"
       - name: Sign the tested assets without running them
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha256 }}
-          NXPANEL_MODULE_RELEASE_TRUST_KEYS: ${{ vars.NXPANEL_MODULE_RELEASE_TRUST_KEYS }}
+          NXPANEL_ROOT_PUBLIC_KEY: ${{ vars.NXPANEL_ROOT_PUBLIC_KEY }}
           NXPANEL_MODULE_RELEASE_SIGNING_KEYS: ${{ secrets.NXPANEL_MODULE_RELEASE_SIGNING_KEYS }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  module-candidate/candidate.json\n' "$CANDIDATE_SHA" | sha256sum -c --status
-          go run ./cmd/nxpanel-module-catalog -candidate -input module-candidate -output module-release
+          go run ./cmd/nxpanel-module-catalog -candidate -trust-dir "$RUNNER_TEMP/nxpanel-trust" -input module-candidate -output module-release
       - name: Publish the signed release
         env:
           GH_TOKEN: ${{ github.token }}

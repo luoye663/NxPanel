@@ -28,6 +28,8 @@ type moduleOffer struct {
 	receipt      moduleReceipt
 	buildRequest *nginxmodule.BuildRequest
 	buildStatus  *nginxmodule.BuildStatus
+	buildKeys    string
+	trustExpiry  time.Time
 }
 
 func (s *Server) handleNginxModules(w http.ResponseWriter, r *http.Request) {
