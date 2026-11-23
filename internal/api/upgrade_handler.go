@@ -103,6 +103,10 @@ func (s *Server) handleUpgradeActivate(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, r, http.StatusConflict, app.ErrBadRequest, "更新任务已改变或不在待重启状态", nil)
 		return
 	}
+	if _, err := s.upgradeSvc.RefreshTrust(r.Context(), client); err != nil {
+		WriteError(w, r, http.StatusConflict, app.ErrBadRequest, "无法验证最新更新授权，请稍后重试", nil)
+		return
+	}
 	if !s.pauseForUpgrade() {
 		WriteError(w, r, http.StatusConflict, app.ErrBadRequest, "面板仍有写入或后台任务在运行，请稍后再重启", nil)
 		return

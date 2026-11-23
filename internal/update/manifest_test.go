@@ -58,7 +58,7 @@ func TestVerifySignedManifest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			signature, err := json.Marshal(map[string]string{"release": base64.StdEncoding.EncodeToString(ed25519.Sign(private, raw))})
+			signature, err := json.Marshal(map[string]string{"release": base64.StdEncoding.EncodeToString(ed25519.Sign(private, SignatureMessage(Purpose, raw)))})
 			if err != nil {
 				t.Fatal(err)
 			}

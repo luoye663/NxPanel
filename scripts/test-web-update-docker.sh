@@ -3,8 +3,8 @@ set -euo pipefail
 
 image=${1:-nxpanel:update-dev}
 feed_image=${2:-nginx:alpine}
-fixture=$(realpath tmp/update-fixture)
-[[ -f "$fixture/feed/index.json" && -f "$fixture/trust.pub" ]] || { echo 'Run make update-fixture first' >&2; exit 1; }
+fixture=$(realpath "${NXPANEL_UPDATE_FIXTURE_DIR:-tmp/update-fixture}")
+[[ -f "$fixture/feed/index.json" && -f "$fixture/feed/trust.sig" && -f "$fixture/trust.pub" ]] || { echo 'Run make update-fixture first' >&2; exit 1; }
 nonce=$(openssl rand -hex 6)
 network=nxpanel-update-test-$nonce
 panel=$network-panel

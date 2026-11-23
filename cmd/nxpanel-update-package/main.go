@@ -15,7 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/luoye663/nxpanel/internal/trust"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -26,12 +28,13 @@ func main() {
 	version := flag.String("version", "", "signed release version")
 	amd64 := flag.String("amd64", "", "directory with linux/amd64 binaries")
 	arm64 := flag.String("arm64", "", "directory with linux/arm64 binaries")
+	policyDir := flag.String("trust-dir", trust.Path, "directory with the signed root policy")
 	flag.Parse()
 	var err error
 	if *keygen != "" {
 		err = generateKey(*keygen, *keyID)
 	} else {
-		err = build(*output, *version, *amd64, *arm64)
+		err = build(*output, *version, *amd64, *arm64, *policyDir)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -56,11 +59,15 @@ func generateKey(dir, id string) error {
 	return os.WriteFile(filepath.Join(dir, "trust.pub"), []byte(id+":"+base64.StdEncoding.EncodeToString(public)+"\n"), 0644)
 }
 
-func build(output, version, amd64, arm64 string) error {
+func build(output, version, amd64, arm64, policyDir string) error {
 	if !update.ValidVersion(version) || amd64 == "" && arm64 == "" {
 		return errors.New("a valid version and at least one platform are required")
 	}
-	keys, err := signingKeys()
+	policy, err := trust.CurrentDir(policyDir, os.Getenv("NXPANEL_ROOT_PUBLIC_KEY"), time.Now())
+	if err != nil {
+		return err
+	}
+	keys, err := signingKeys(policy.Update)
 	if err != nil {
 		return err
 	}
@@ -84,7 +91,7 @@ func build(output, version, amd64, arm64 string) error {
 	}
 	signatures := make(map[string]string, len(keys))
 	for id, key := range keys {
-		signatures[id] = base64.StdEncoding.EncodeToString(ed25519.Sign(key, raw))
+		signatures[id] = base64.StdEncoding.EncodeToString(ed25519.Sign(key, update.SignatureMessage(update.Purpose, raw)))
 	}
 	signature, err := json.Marshal(signatures)
 	if err != nil {
@@ -96,21 +103,12 @@ func build(output, version, amd64, arm64 string) error {
 	return os.WriteFile(filepath.Join(output, update.SignatureName), signature, 0644)
 }
 
-func signingKeys() (map[string]ed25519.PrivateKey, error) {
-	trust, err := update.Keys(os.Getenv("NXPANEL_UPDATE_TRUST_KEYS"))
-	if err != nil {
-		return nil, err
-	}
+func signingKeys(public string) (map[string]ed25519.PrivateKey, error) {
 	keys := make(map[string]ed25519.PrivateKey)
 	for _, entry := range strings.Split(strings.TrimSpace(os.Getenv("NXPANEL_UPDATE_SIGNING_KEYS")), ",") {
-		id, encoded, found := strings.Cut(entry, ":")
-		seed, err := base64.StdEncoding.DecodeString(encoded)
-		if !found || id == "" || keys[id] != nil || err != nil || len(seed) != ed25519.SeedSize {
+		id, key, err := trust.AuthorizedPrivate(entry, public)
+		if err != nil || keys[id] != nil {
 			return nil, errors.New("missing or invalid release signing secret")
-		}
-		key := ed25519.NewKeyFromSeed(seed)
-		if !key.Public().(ed25519.PublicKey).Equal(trust[id]) {
-			return nil, errors.New("release signing key does not match build-time trust keys")
 		}
 		keys[id] = key
 	}

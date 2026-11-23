@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/luoye663/nxpanel/internal/trust"
 )
 
 const (
@@ -180,6 +182,15 @@ func (client *Client) Stage(ctx context.Context, manifest, signature []byte, arc
 	header.Write(binary.BigEndian.AppendUint32(nil, uint32(len(manifest))))
 	header.Write(binary.BigEndian.AppendUint32(nil, uint32(len(signature))))
 	return client.request(ctx, http.MethodPost, "stage", io.MultiReader(&header, bytes.NewReader(manifest), bytes.NewReader(signature), archive))
+}
+
+func (client *Client) SyncTrust(ctx context.Context, signed trust.Signed) error {
+	body, err := json.Marshal(signed)
+	if err != nil {
+		return err
+	}
+	_, err = client.request(ctx, http.MethodPost, "trust", bytes.NewReader(body))
+	return err
 }
 
 func (client *Client) request(ctx context.Context, method, route string, body io.Reader) (State, error) {

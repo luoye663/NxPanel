@@ -2,14 +2,12 @@ package update
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -23,12 +21,13 @@ import (
 
 	"golang.org/x/mod/semver"
 	"golang.org/x/sys/unix"
+
+	"github.com/luoye663/nxpanel/internal/trust"
 )
 
 type Updater struct {
 	Home, Supervisor string
 	UID, GID         int
-	keys             map[string]ed25519.PublicKey
 	mu               sync.Mutex
 	work             sync.Mutex
 	state            State
@@ -78,9 +77,6 @@ func (u *Updater) Serve() error {
 		if strings.HasPrefix(entry.Name(), "archive-") || strings.HasPrefix(entry.Name(), ".update-") {
 			_ = os.Remove(filepath.Join(u.private(), entry.Name()))
 		}
-	}
-	if u.keys, err = Keys(ActiveKeys()); err != nil {
-		slog.Error("invalid update trust configuration", "error", err)
 	}
 	socket := filepath.Join(controlDir(u.Home), "updater.sock")
 	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
@@ -215,7 +211,7 @@ func (u *Updater) dispatch(w http.ResponseWriter, r *http.Request, peer *unix.Uc
 		return state, errors.New("unsupported updater request")
 	}
 	var action Action
-	if r.URL.Path != "/stage" {
+	if r.URL.Path != "/stage" && r.URL.Path != "/trust" {
 		if err := Decode(http.MaxBytesReader(w, r.Body, 8<<10), &action); err != nil {
 			return state, errors.New("invalid updater request")
 		}
@@ -242,6 +238,10 @@ func (u *Updater) dispatch(w http.ResponseWriter, r *http.Request, peer *unix.Uc
 	}
 	state = u.status()
 	if r.URL.Path == "/activate" && state.Phase == Prepared && state.ID == action.ID && u.isCurrentAPI(peer.Pid) && validDatabasePath(action.DBPath) {
+		if err := u.verifyPrepared(state); err != nil {
+			u.work.Unlock()
+			return state, err
+		}
 		current, err := os.Readlink(filepath.Join(u.Home, "current"))
 		if err != nil || current != state.OldSlot {
 			u.work.Unlock()
@@ -260,6 +260,12 @@ func (u *Updater) dispatch(w http.ResponseWriter, r *http.Request, peer *unix.Uc
 	}
 	defer u.work.Unlock()
 	switch r.URL.Path {
+	case "/trust":
+		var signed trust.Signed
+		if err := Decode(http.MaxBytesReader(w, r.Body, trustRecordMax), &signed); err != nil {
+			return state, errors.New("invalid update trust request")
+		}
+		return state, u.acceptTrust(signed, time.Now())
 	case "/stage":
 		if state.Busy() || state.Phase == Prepared {
 			return state, errors.New("cancel or finish the current update first")
@@ -304,7 +310,7 @@ func (u *Updater) stage(ctx context.Context, reader io.Reader) (State, error) {
 	if err != nil {
 		return u.status(), err
 	}
-	manifest, asset, err := Verify(raw, signature, u.keys)
+	manifest, asset, err := u.verifyWithTrust(raw, signature, time.Now())
 	if err != nil {
 		return u.status(), err
 	}
@@ -350,6 +356,9 @@ func (u *Updater) stage(ctx context.Context, reader io.Reader) (State, error) {
 		return u.status(), err
 	}
 	state := State{ID: id, Phase: Prepared, Version: manifest.Version, Previous: previous, OldSlot: oldSlot}
+	if err := u.writeTrustRecord("prepared.json", preparedTrust{ID: id, Manifest: raw, Signature: signature}); err != nil {
+		return u.status(), err
+	}
 	if err := u.store(state); err != nil {
 		return u.status(), err
 	}

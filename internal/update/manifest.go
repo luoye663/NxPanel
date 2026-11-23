@@ -27,9 +27,8 @@ const (
 	BinaryMax     = 128 << 20
 	ManifestName  = "nxpanel-update.json"
 	SignatureName = "nxpanel-update.sig"
+	Purpose       = "nxpanel-update/v1"
 )
-
-var TrustKeys string
 
 type Manifest struct {
 	Product  string  `json:"product"`
@@ -91,7 +90,7 @@ func Decode(reader io.Reader, target any) error {
 
 func Verify(raw, signature []byte, keys map[string]ed25519.PublicKey) (Manifest, Asset, error) {
 	var manifest Manifest
-	if err := VerifySignature(raw, signature, keys, ""); err != nil {
+	if err := VerifySignature(raw, signature, keys, Purpose); err != nil {
 		return manifest, Asset{}, err
 	}
 	if err := Decode(bytes.NewReader(raw), &manifest); err != nil {

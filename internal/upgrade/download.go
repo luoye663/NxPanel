@@ -17,6 +17,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/luoye663/nxpanel/internal/app"
+	"github.com/luoye663/nxpanel/internal/trust"
 	"github.com/luoye663/nxpanel/internal/update"
 )
 
@@ -169,11 +170,11 @@ func fetch(ctx context.Context, client *http.Client, source string, max int64) (
 }
 
 func (s *Service) verifyCandidate(ctx context.Context, release *githubRelease) *candidate {
-	if !update.ValidVersion(app.Version) {
+	if !update.ValidVersion(app.Version) || update.Home() == "" {
 		return nil
 	}
-	keys, err := update.Keys(update.ActiveKeys())
-	if err != nil || len(keys) == 0 {
+	policy, err := s.RefreshTrust(ctx, update.NewClient(update.Home()))
+	if err != nil {
 		return nil
 	}
 	if s.feed == "" {
@@ -194,11 +195,40 @@ func (s *Service) verifyCandidate(ctx context.Context, release *githubRelease) *
 	if err != nil {
 		return nil
 	}
-	manifest, asset, err := update.Verify(raw, signature, keys)
+	manifest, asset, err := update.VerifyWithPolicy(raw, signature, policy, time.Now())
 	if err != nil || manifest.Version != release.TagName {
 		return nil
 	}
 	return &candidate{version: manifest.Version, manifest: raw, signature: signature, asset: asset, url: s.assetURL(manifest.Version, asset.Name)}
+}
+
+func (s *Service) RefreshTrust(ctx context.Context, updater *update.Client) (trust.Policy, error) {
+	base := trust.GitHubSource
+	if s.feed != "" {
+		parsed, err := testURL(s.feed)
+		if err != nil {
+			return trust.Policy{}, err
+		}
+		parsed.Path, parsed.RawPath = path.Dir(parsed.Path), ""
+		base = strings.TrimSuffix(parsed.String(), "/") + "/"
+	}
+	raw, err := fetchBytes(ctx, s.httpClient, base+trust.Name, trust.MaxPolicy)
+	if err != nil {
+		return trust.Policy{}, err
+	}
+	signature, err := fetchBytes(ctx, s.httpClient, base+trust.Signature, trust.MaxSig)
+	if err != nil {
+		return trust.Policy{}, err
+	}
+	signed := trust.Signed{Policy: raw, Signature: signature}
+	policy, _, err := signed.Verify(update.ActiveRoot(), trust.Floor{}, time.Now())
+	if err != nil {
+		return trust.Policy{}, err
+	}
+	if err := updater.SyncTrust(ctx, signed); err != nil {
+		return trust.Policy{}, err
+	}
+	return policy, policy.RequireCurrent(time.Now())
 }
 
 func (s *Service) Prepare(version string, updater *update.Client) error {
@@ -239,6 +269,13 @@ func (s *Service) downloadPackage(ctx context.Context, job candidate, updater *u
 	}
 	if state.Busy() || state.Phase == update.Prepared {
 		return errors.New("请先完成或放弃当前更新")
+	}
+	policy, err := s.RefreshTrust(ctx, updater)
+	if err != nil {
+		return err
+	}
+	if _, _, err := update.VerifyWithPolicy(job.manifest, job.signature, policy, time.Now()); err != nil {
+		return err
 	}
 	s.progress.Begin(job.version, state.ID)
 	defer func() {
