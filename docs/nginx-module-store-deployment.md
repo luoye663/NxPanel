@@ -21,7 +21,7 @@
 
 ## 2. 构建服务镜像
 
-在 NxPanel 主仓库根目录执行。如果独立仓库放在其他位置，修改 `BUILDER_SRC`；两条构建命令应使用同一份已审核的 `NXPANEL_SRC`：
+在 NxPanel 主仓库根目录执行。如果独立仓库放在其他位置，修改 `BUILDER_SRC`；两条构建命令应使用同一份已审核的 `NXPANEL_SRC` 和同一个[根公钥](function/signing-trust.md)：
 
 ```bash
 export NXPANEL_SRC="$PWD"
@@ -30,8 +30,10 @@ export BUILDER_WORK=/var/lib/nxpanel-module-builder/work
 cd "$BUILDER_SRC"
 
 docker build --build-context "nxpanel=$NXPANEL_SRC" --target service \
+  --build-arg NXPANEL_ROOT_PUBLIC_KEY="$(cat /path/to/root/trust.pub)" \
   -t nxpanel-module-builder:service .
 docker build --build-context "nxpanel=$NXPANEL_SRC" --target worker \
+  --build-arg NXPANEL_ROOT_PUBLIC_KEY="$(cat /path/to/root/trust.pub)" \
   -t nxpanel-module-builder:worker .
 ```
 
@@ -49,14 +51,14 @@ sudo install -d -m 0700 secrets
 
 ## 4. 配置签名密钥和构建授权
 
-索引签名密钥、模块发布者密钥、构建签名密钥、面板热更新密钥必须分开。构建公钥不能用来授权模块脚本。首次部署在可信环境生成构建密钥，目标目录必须尚不存在：
+构建、各模块和热更新使用独立的子密钥。模块目录由离线根直接签发，不再使用索引密钥。构建公钥只能授权构建结果，不能授权脚本。首次部署在可信环境生成构建密钥，目标目录必须尚不存在：
 
 ```bash
 go -C "$NXPANEL_SRC" run ./cmd/nxpanel-update-package \
   -keygen "$HOME/nxpanel-module-build-keys" -key-id module-build-1
 ```
 
-通过安全通道将生成的 `signing.key` 放到构建服务的 `secrets/signing.key`，权限 `0600`，仅签名容器的运行身份可读。以下是无 UID 映射且密钥在同一可信主机上的示例：
+将完整的 `trust.pub` 加入[根签清单](function/signing-trust.md)的 `build_keys`。通过安全通道将生成的 `signing.key` 放到构建服务的 `secrets/signing.key`，权限 `0600`，仅签名容器的运行身份可读。以下是无 UID 映射且密钥在同一可信主机上的示例：
 
 ```bash
 sudo install -m 0600 -o 65532 -g 65532 \
@@ -65,15 +67,12 @@ sudo install -m 0600 -o 65532 -g 65532 \
 
 | `.env` 配置 | 填写方式 |
 | --- | --- |
-| `BUILDER_INDEX_KEYS` | NxPanel 模块索引当前受信任的公钥，与发行版 `NXPANEL_MODULE_TRUST_KEYS` 一致 |
-| `BUILDER_UPDATE_KEYS` | 面板热更新公钥（如已配置）；用于防止与索引签名复用密钥 |
-| `BUILDER_SIGNING_PUBLIC_KEY` | 构建密钥 `trust.pub` 的完整一行，例如 `module-build-1:BASE64`，与签名容器私钥配对 |
 | `BUILDER_TOKEN_HASHES` | 各授权面板令牌原文的 SHA-256，小写十六进制、逗号分隔；留空则不接受新构建 |
 | `BUILDER_GITHUB_TOKEN` | 可选的最小权限只读 GitHub 令牌，用于提高 GitHub API 配额 |
 | `BUILDER_WORK` | 上一步准备的宿主机绝对路径 |
 | `BUILDER_DOCKER_SOCKET` / `BUILDER_DOCKER_GID` | 构建 daemon 的 Socket 路径与 Worker 可访问 Socket 的 GID；普通 Docker 可用 `stat -c '%g' /var/run/docker.sock` 查询，不要假定为 `0` |
 
-公钥配置填 `key-id:BASE64` 原文，不填文件路径。为每个授权面板单独生成构建令牌，例如 `openssl rand -hex 32`。将原文通过安全通道交给该面板；服务端只保存 `printf '%s' "$TOKEN" | sha256sum` 输出的第一列（不含末尾换行）。不要把私钥或令牌提交到 Git、传给浏览器、写到命令历史或打进公开镜像。
+为每个授权面板单独生成构建令牌，例如 `openssl rand -hex 32`。将原文通过安全通道交给该面板；服务端只保存 `printf '%s' "$TOKEN" | sha256sum` 输出的第一列（不含末尾换行）。不要把私钥或令牌提交到 Git、传给浏览器、写到命令历史或打进公开镜像。
 
 ## 5. 配置运行时适配器
 
@@ -132,10 +131,10 @@ docker compose logs --tail=100 api sync worker signer
 
 ```bash
 curl --fail --silent --show-error http://127.0.0.1:19092/health
-curl --fail --silent --show-error http://127.0.0.1:19092/v1/modules.json
+curl --fail --silent --show-error http://127.0.0.1:19092/v1/trust.json
 ```
 
-`/health` 返回 `204` 只说明 API 在运行。首次同步完成前，目录接口返回 `503`；如果始终返回 `503`，查看 `sync` 日志。若返回有效的空数组，检查主仓库签名索引是否已登记模块。索引登记及模块作者的发布步骤见[发布与联调指南](function/nginx-modules.md#官方发布)。
+`/health` 返回 `204` 只说明 API 在运行。未同步到有效根签名的清单时，信任接口返回 `503`；如果 `modules` 为空，检查主仓库是否已登记模块。清单可能早于工件同步完成；再检查实际 Release 文件和 `sync` 日志。登记及发布步骤见[发布与联调指南](function/nginx-modules.md#官方发布)。
 
 ## 7. 配置 HTTPS 反代
 
@@ -146,8 +145,8 @@ curl --fail --silent --show-error http://127.0.0.1:19092/v1/modules.json
 ```bash
 STORE_URL=https://modules.example.com
 curl --fail --silent --show-error "$STORE_URL/health"
-curl --fail --silent --show-error "$STORE_URL/v1/modules.json"
-curl --fail --silent --show-error "$STORE_URL/v1/modules.sig.json"
+curl --fail --silent --show-error "$STORE_URL/v1/trust.json"
+curl --fail --silent --show-error "$STORE_URL/v1/trust.sig"
 ```
 
 ## 8. 接入 NxPanel Agent
@@ -155,8 +154,7 @@ curl --fail --silent --show-error "$STORE_URL/v1/modules.sig.json"
 在 NxPanel **发行版的构建环境**配置下列变量，发行流程和 Docker 构建都应使用同一组值：
 
 - `NXPANEL_MODULE_STORE_URL`：HTTPS 源站，例如 `https://modules.example.com`，不加 `/v1/` 或子路径。
-- `NXPANEL_MODULE_TRUST_KEYS`：与 `BUILDER_INDEX_KEYS` 一致。
-- `NXPANEL_MODULE_BUILD_TRUST_KEYS`：构建服务公钥；轮换时先在 Agent 部署新旧公钥，再让服务切换签名私钥，保留验证仍在使用的离线卸载凭据所需的旧公钥。
+- `NXPANEL_ROOT_PUBLIC_KEY`：与构建服务镜像使用同一根公钥。轮换构建密钥只更新根签清单，验证既有离线卸载凭据仍需要旧公钥时先保留它。
 
 给授权面板的 **Agent 运行环境**设置 `NXPANEL_MODULE_BUILD_TOKEN`。如需覆盖发行版内置地址，也在 Agent 运行环境设置 `NXPANEL_MODULE_STORE_URL`；宿主机和 Docker 的配置方法见[使用指南](nginx-module-store-usage.md#配置服务地址和授权)。这些变量不是构建服务自身的 `BUILDER_*` 配置。
 
@@ -168,7 +166,7 @@ curl --fail --silent --show-error "$STORE_URL/v1/modules.sig.json"
 | 未设置或留空，发行版构建时设置了该变量 | 使用编译进该 Agent 的地址。具体域名取决于发行版，不是固定值 |
 | 未设置或留空，发行版构建时也未设置 | **没有默认地址**。在线目录会提示「未配置官方模块服务地址」，不会访问 GitHub，也不会使用示例域名或本机端口 |
 
-例如，发行版构建时内置 `https://modules.example.com`，Agent 运行时留空，则目录请求会访问 `https://modules.example.com/v1/modules.json`。这是示例；直接用当前源码构建而未提供此变量，不会得到这个地址。填写无效的非空地址也不会回退到内置值。
+例如，发行版构建时内置 `https://modules.example.com`，Agent 运行时留空，则目录请求会访问 `https://modules.example.com/v1/trust.json`。这是示例；直接用当前源码构建而未提供此变量，不会得到这个地址。填写无效的非空地址也不会回退到内置值。
 
 ## 9. 在测试面板验收
 
@@ -180,7 +178,7 @@ curl --fail --silent --show-error "$STORE_URL/v1/modules.sig.json"
 
 ## 日常运维
 
-- **监控**：`sync` 每轮结束后间隔 10 分钟；上游失败时保留上一次镜像，同步时间超过 1 小时停止交付。监控 `/v1/modules.json`、各角色日志、磁盘占用和失败任务，不能只看 `/health`。
+- **监控**：`sync` 每轮结束后间隔 10 分钟。清单更新后立即停止交付旧镜像的工件，直到新镜像同步完成；同一清单下，上游失败时使用不超过 1 小时的上次镜像。监控 `/v1/trust.json` 的序号和到期时间、Release 下载、各角色日志、磁盘和失败任务，不能只看 `/health`。
 - **容量**：默认每令牌每小时 6 次新构建、全局最多 32 个活动任务、2 个同时编译，每次编译和试载最多 20 分钟（不含排队）。队列和成品共保留最多 512 条，达到上限需要按保留策略清理。镜像预算 256 MiB，每仓库从最近 50 个 Release 中最多选择 32 个可验证正式版本。
 - **备份与升级**：`data/store.db` 存放镜像、索引防回退记录、队列和成品。停写后备份，或使用 SQLite 在线备份；不要在 WAL 模式运行时只复制主数据库文件。另行备份受审 `adapters.json`、配置和构建私钥，私钥备份单独加密。升级前在测试环境验证旧签名清单和卸载凭据，再更新服务镜像与 Agent。
 - **处理异常**：构建失败先看 `worker` 和 `signer` 日志，检查精确包是否仍在上游、镜像权限、二进制指纹以及源码 PGP 公钥。令牌泄露时，移除对应摘要并重建 `api` 容器；签名私钥泄露则先停止交付，按安全发布流程撤销旧公钥并重新签发，不把失密密钥当作普通轮换处理。

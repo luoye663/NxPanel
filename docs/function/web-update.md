@@ -1,6 +1,6 @@
 # 面板在线更新
 
-在线更新只替换面板 API 和 Agent，不重启站点 Nginx/OpenResty。下载完成后，必须手动点击 **重启并应用** 才会切换版本。
+在线更新只替换面板 API 和 Agent。下载完成后，手动点击 **重启并应用** 。
 
 ## 在面板中更新
 
@@ -63,10 +63,10 @@
    go run ./cmd/nxpanel-update-package -keygen /path/to/new-key-dir -key-id release-1
    ```
 
-2. 将 `trust.pub` 的内容设为 GitHub 仓库变量 `NXPANEL_UPDATE_TRUST_KEYS`，将 `signing.key` 的内容设为受保护的 `release-signing` 环境机密 `NXPANEL_UPDATE_SIGNING_KEYS`。将环境限制到 `main` 并要求审核；私钥不提交到仓库，不进入镜像或普通 CI。
-3. 按 [Release 流程](../../README.md#release-流程)发起发布。正式版使用 `vX.Y.Z`；预发布版使用 `vX.Y.Z-beta.N` 或 `vX.Y.Z-rc.N`，不会覆盖稳定镜像标签。发布保留完整安装包，另为两个 Linux 架构生成签名更新包。API 和更新器分别以编译内置公钥验证清单，并核对包长度和 SHA-256。
+2. 将更新密钥的 `trust.pub` 填入[根签授权清单](signing-trust.md)的 `update_keys`。GitHub 仓库变量 `NXPANEL_ROOT_PUBLIC_KEY` 填根公钥；受保护的 `release-signing` 环境机密 `NXPANEL_UPDATE_SIGNING_KEYS` 填更新密钥的 `signing.key`。将环境限制到 `main` 并要求审核；私钥不提交到仓库，不进入镜像或普通 CI。
+3. 按 [Release 流程](../../README.md#release-流程)发起发布。正式版使用 `vX.Y.Z`；预发布版使用 `vX.Y.Z-beta.N` 或 `vX.Y.Z-rc.N`，不会覆盖稳定镜像标签。发布保留完整安装包，另为两个 Linux 架构生成签名更新包。API 从主仓库获取最新授权并预检；更新器独立验签、拒绝回退，并在暂存和启用时检查授权。两者都不依赖模块服务。
 
-轮换密钥时，两个变量都可填写逗号分隔的 `key_id:base64` 项。先在基线内置后继公钥，再过渡双签。更新器本身不通过面板升级；旧基线未预置后继公钥时，退役旧密钥后需手动安装带新公钥的基线。
+轮换日常更新密钥无需换基线：先发布含新旧公钥的清单，再切换签发，最后移除旧公钥。启用更新需要能重新获取授权；撤销或过期的暂存包不能启用。更新器本身不通过面板升级，旧信任协议或更换根时须手动安装新基线。
 
 ## 本地 Nginx 联调
 

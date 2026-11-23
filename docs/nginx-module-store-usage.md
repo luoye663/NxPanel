@@ -1,11 +1,11 @@
 # Nginx 模块商店使用指南
 
-适用范围：使用新版 NxPanel 的宿主机和 Docker 部署。你不需要克隆模块仓库、下载 `.so`、运行安装脚本或部署构建服务。负责运维模块服务的维护者请看[部署指南](nginx-module-store-deployment.md)。
+适用范围：使用新版 NxPanel 的宿主机和 Docker 部署。不需要克隆模块仓库、下载 `.so`、运行安装脚本或部署构建服务。负责运维模块服务的维护者请看[部署指南](nginx-module-store-deployment.md)。
 
 ## 安装模块
 
 1. 确认已运行 NxPanel 管理的 Nginx/OpenResty，并能在 **Nginx 管理 → 状态管理** 看到活跃 worker。
-2. 打开 **Nginx 管理 → 模块管理**（`/nginx?tab=modules`），点击 **刷新在线目录**。找到模块，点击 **安装**，选择正式 Release。默认选择最新正式版，也可以按需加载更早的版本；面板不会擅自切换版本。
+2. 打开 **Nginx 管理 → 模块管理**（`/nginx?tab=modules`），点击 **刷新在线目录**。找到模块，点击 **安装**，选择正式 Release。默认选择最新正式版，也可以按需加载更早的版本。
 3. 等待预检。如果存在匹配的签名成品，点击 **确认安装**；如果提示「需构建」，按[按需构建](#按需构建)操作。
 4. 等待安装任务成功，模块显示「已启用」。构建成功不等于安装成功；Agent 会重新验签，在本机试载并检查配置，通过后才平滑重载。
 
@@ -35,7 +35,7 @@ NXPANEL_MODULE_STORE_URL=https://modules.example.com
 NXPANEL_MODULE_BUILD_TOKEN=替换为运营方发放的令牌
 ```
 
-地址只能是受信任的 HTTPS 源站，不带 `/v1/`；只需要设置的项才填写。覆盖服务地址不会替换 Agent 内置的信任公钥。若运营方使用不同的索引或构建公钥，必须安装其提供、且内置了相应公钥的 Agent；仅改地址不能绕过签名校验。
+地址只能是受信任的 HTTPS 源站；只需要设置的项才填写。覆盖服务地址不会替换 Agent 内置的根公钥。源必须提供由同一根签发的授权清单；仅改地址不能绕过签名校验。Agent 不直连 GitHub；各版本的 Release 清单由服务镜像提供。
 
 - **宿主机（systemd）**：把变量保存到仅 root 可读的 `/etc/nxpanel-module-store.env`（`0600`）。执行 `sudo systemctl edit nxpanel-agent`，在 `[Service]` 下添加 `EnvironmentFile=/etc/nxpanel-module-store.env`，再执行 `sudo systemctl restart nxpanel-agent`。
 - **Docker Compose**：在 NxPanel 部署目录的 `.env` 中设置变量；确认使用支持这些变量的 Compose 模板。改环境变量需要重建容器，不是 `docker restart`。若已有在线安装的模块，先按下一节的步骤处理，再用原 profile 执行 `docker compose --profile nginx up -d` 或 `docker compose --profile openresty up -d`。
