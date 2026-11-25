@@ -270,7 +270,7 @@ curl -fsSL https://raw.githubusercontent.com/luoye663/nxpanel/main/uninstall.sh 
 
 首次启用、通道选择和失败恢复见[面板在线更新指南](docs/function/web-update.md)。官方发布和模块服务共用离线根，配置和换钥见[根签名与授权](docs/function/signing-trust.md)。
 
-使用国家／地区访问限制时，请先在 [Nginx 模块商店](docs/nginx-module-store-usage.md) 安装 GeoIP2。生产镜像不预装模块；宿主机和 Docker 都由 Agent 从模块服务获取签名产物并执行发布者签名的安装脚本。删除容器不会保留在线安装的模块。迁移已有规则请查看 [GeoIP2 升级与回滚](docs/access-policy.md#geoip2-升级与回滚)。
+使用国家／地区访问限制时，请先在 [Nginx 模块商店](docs/nginx-module-store-usage.md) 安装 GeoIP2。生产镜像不预装模块；正式模块统一由模块服务编译、试载和签名，Agent 验证产物及发布者签名的安装脚本后再安装。删除容器不会保留在线安装的模块。迁移已有规则请查看 [GeoIP2 升级与回滚](docs/access-policy.md#geoip2-升级与回滚)。
 
 维护者请参阅[模块服务部署](docs/nginx-module-store-deployment.md)及[模块发布与联调](docs/function/nginx-modules.md)。
 

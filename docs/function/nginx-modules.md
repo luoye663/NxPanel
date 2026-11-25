@@ -1,6 +1,6 @@
 # Nginx 模块发布与联调
 
-当前以 **GeoIP2** 为例。NxPanel 主仓库维护[根签授权清单](signing-trust.md)，各模块从自己的 GitHub 仓库独立发版。模块服务同步清单和正式 Release；面板 Agent 只访问模块服务，独立验证根授权、Release 签名和文件摘要。源码 Release 可按需构建，生产服务器不安装编译工具。
+当前以 **GeoIP2** 为例。NxPanel 主仓库维护[根签授权清单](signing-trust.md)，各模块在自己的 GitHub 仓库发布签名源码、清单和安装／卸载脚本。模块服务同步这些材料，所有正式 `.so` 由服务按需编译、试载、签名并缓存。Agent 只访问模块服务，独立验证根授权、源码清单、构建签名和文件摘要；生产服务器不需要编译工具。
 
 - [模块商店使用指南](../nginx-module-store-usage.md) · [模块服务部署指南](../nginx-module-store-deployment.md)
 
@@ -60,11 +60,9 @@ bash scripts/test-nginx-modules-docker.sh nxpanel:module-dev tmp/module-alpine-f
 
 ### 发布新版本
 
-**优先发布签名源码。** 在模块仓库运行 **Publish GeoIP2 source release**，填新 tag。签名任务核验候选摘要、授权、仓库和 tag 后签发源码归档、清单和安装／卸载脚本。不需要为每种运行时预先编译成品。
+在模块仓库运行 **Publish GeoIP2 source release**，填新 tag。签名任务核验候选摘要、授权、仓库和 tag，再上传签名清单、源码归档和安装／卸载脚本。不要编译或上传 `.so`；清单声明了预编译资产的 Release 不会被服务收录。
 
-需要预编译成品时，在 `publish-targets.json` 固定构建环境并配置适用的 `compatibility` 版本范围，然后运行 **Publish GeoIP2 module**。全部目标通过安装／卸载验证后再审批签发；所有 `.so` 放在一个正式 Release 中。兼容范围不应重叠，最终仍由安装时的 Nginx 试载验证 ABI。更换运行时包前建议先卸载托管模块。
-
-在本机可用 `bash prepare-release.sh /path/to/nxpanel owner/repo v3.4.0` 生成候选包，加 `verify` 验证本机架构。`.work/builds/` 和 `.work/bundle/` 不提交。离线签模块 Release 时，审核完整候选包的 `candidate.json` SHA-256，不在签名机执行候选脚本，然后运行：
+在本机可用 `bash prepare-release.sh /path/to/nxpanel owner/repo v3.4.0 source` 生成纯源码候选包。`.work/` 不提交。若离线签名，审核 `candidate.json` 的 SHA-256，不在签名机执行候选脚本，再运行：
 
 ```sh
 NXPANEL_ROOT_PUBLIC_KEY="$(cat /path/to/root/trust.pub)" \
