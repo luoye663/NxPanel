@@ -27,6 +27,13 @@ type BuildRecipe struct {
 	Source Script `json:"source"`
 }
 
+func (manifest Manifest) RequireSourceOnly() error {
+	if manifest.Protocol != BuildProtocol || manifest.Build == nil || len(manifest.Assets) != 0 {
+		return fmt.Errorf("正式模块 Release 必须仅提供源码构建配方，不得包含预编译模块")
+	}
+	return nil
+}
+
 func SourceName(id, digest string) string { return id + "-source-" + digest + ".tar.gz" }
 
 func (recipe BuildRecipe) valid(id string) bool {

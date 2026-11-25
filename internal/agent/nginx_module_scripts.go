@@ -98,6 +98,19 @@ func installedModuleAsset(runtime, symbol string, asset nginxmodule.Asset) ([]by
 	return nil, false
 }
 
+func (source moduleSource) fetchInstallAsset(ctx context.Context, offer moduleOffer) ([]byte, error) {
+	if !source.test {
+		if offer.receipt.Build == nil || offer.buildRequest == nil {
+			return nil, fmt.Errorf("缺少构建服务签发的模块产物")
+		}
+		return source.fetch(ctx, "builds/"+offer.buildRequest.Key()+"/asset", offer.asset.Size)
+	}
+	if installed, ok := installedModuleAsset(offer.target.Runtime, offer.module.Symbol, offer.asset); ok {
+		return installed, nil
+	}
+	return source.fetch(ctx, offer.asset.Name, offer.asset.Size, offer.module.Release)
+}
+
 func (s *Server) uninstallOffer(ctx context.Context, offer *moduleOffer, target nginxmodule.Target) error {
 	source := s.moduleSource
 	var receipt moduleReceipt
@@ -175,13 +188,7 @@ func (s *Server) runModuleAction(ctx context.Context, offer moduleOffer, uninsta
 		return failure(err.Error())
 	}
 	if !uninstall {
-		if installed, ok := installedModuleAsset(offer.target.Runtime, offer.module.Symbol, offer.asset); ok {
-			assetBody = installed
-		} else if offer.receipt.Build == nil {
-			assetBody, err = source.fetch(ctx, offer.asset.Name, offer.asset.Size, offer.module.Release)
-		} else {
-			assetBody, err = source.fetch(ctx, "builds/"+offer.buildRequest.Key()+"/asset", offer.asset.Size)
-		}
+		assetBody, err = source.fetchInstallAsset(ctx, offer)
 		if err != nil {
 			return failure(err.Error())
 		}

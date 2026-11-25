@@ -93,6 +93,11 @@ func (source moduleSource) releaseManifest(ctx context.Context, entry nginxmodul
 	if err != nil {
 		return nginxmodule.Manifest{}, receipt, err
 	}
+	if !source.test {
+		if err := manifest.RequireSourceOnly(); err != nil {
+			return nginxmodule.Manifest{}, receipt, err
+		}
+	}
 	return manifest, moduleReceipt{Tag: tag, Manifest: raw, Signature: signature}, nil
 }
 
@@ -180,8 +185,10 @@ func (s *Server) prepareModuleInstall(ctx context.Context, id, tag string, fresh
 	if err != nil {
 		return offer, err
 	}
-	asset, err := manifest.Match(target)
-	if errors.Is(err, nginxmodule.ErrNoMatch) && manifest.Build != nil {
+	var asset nginxmodule.Asset
+	if s.moduleSource.test {
+		asset, err = manifest.Match(target)
+	} else {
 		request := observedBuildRequest(ctx, instance, target, manifest, receipt.Manifest)
 		offer.buildRequest = &request
 		status, statusErr := s.moduleSource.buildStatus(ctx, request, offer.buildKeys, false)

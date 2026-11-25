@@ -74,7 +74,7 @@ export function NginxModulesTab() {
   return (
     <Stack gap="md">
       <Group justify="space-between">
-        <Text size="sm" c="dimmed">{list.data?.test_feed ? '当前使用本地测试源，仅用于联调。' : '模块由官方服务交付；Agent 验证发布者签名和本机兼容性。'}</Text>
+        <Text size="sm" c="dimmed">{list.data?.test_feed ? '当前使用本地测试源，仅用于联调。' : '正式模块由构建服务编译并签名；Agent 验证签名和本机兼容性。'}</Text>
         <Button variant="default" size="xs" loading={list.isFetching || refresh.isPending} onClick={() => refresh.mutate()}>刷新在线目录</Button>
       </Group>
       {list.isLoading ? <Loader size="sm" /> : null}
@@ -104,15 +104,16 @@ export function NginxModulesTab() {
           </Stack>
         </SectionCard>
       ))}
-      {installModule ? <ModuleInstallDialog key={installModule.id} module={installModule} busy={changing} submitting={change.isPending}
+      {installModule ? <ModuleInstallDialog key={installModule.id} module={installModule} testFeed={!!list.data?.test_feed} busy={changing} submitting={change.isPending}
         error={change.error} onClose={() => setInstallModule(undefined)}
         onInstall={(tag, confirmation) => change.mutate({ id: installModule.id, tag, confirmation })} /> : null}
     </Stack>
   )
 }
 
-function ModuleInstallDialog({ module, busy, submitting, error, onClose, onInstall }: {
+function ModuleInstallDialog({ module, testFeed, busy, submitting, error, onClose, onInstall }: {
   module: NginxModule
+  testFeed: boolean
   busy: boolean
   submitting: boolean
   error: Error | null
@@ -141,10 +142,10 @@ function ModuleInstallDialog({ module, busy, submitting, error, onClose, onInsta
       <Stack gap="sm">
         {releases.isPending ? <Loader size="sm" /> : null}
         {releases.isError ? <><ErrorAlert error={releases.error} title="无法读取模块 Release" /><Button variant="default" onClick={() => void releases.refetch()}>重试</Button></> : null}
-        {tags.length ? <Select label="Release 版本" placeholder="选择要安装的版本" value={tag ?? null}
+        {tags.length ? <Select label={testFeed ? '测试版本' : '源码版本'} placeholder="选择要安装的版本" value={tag ?? null}
           onChange={(value) => { build.reset(); setSelectedTag(value) }} disabled={submitting || build.isPending} searchable allowDeselect={false}
           data={tags.map((value) => ({ value, label: value === latest ? `${value}（最新正式版）` : value }))} /> : null}
-        {!releases.isPending && !releases.isError && !tags.length ? <Text size="sm">未找到正式 Release。</Text> : null}
+        {!releases.isPending && !releases.isError && !tags.length ? <Text size="sm">{testFeed ? '未找到测试版本。' : '未找到正式源码版本。'}</Text> : null}
         {releases.hasNextPage ? <Button variant="default" disabled={submitting} loading={releases.isFetchingNextPage}
           onClick={() => void releases.fetchNextPage()}>加载更早版本</Button> : null}
         {preflight.isFetching ? <Text size="sm">正在验证签名及运行时兼容性…</Text> : null}

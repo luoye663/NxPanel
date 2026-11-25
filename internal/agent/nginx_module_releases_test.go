@@ -33,12 +33,13 @@ func TestRootPolicyAuthorizesMirroredReleaseAndOfflineReceipt(t *testing.T) {
 	}
 	root, rootPrivate := keyPair("root")
 	publisher, publisherPrivate := keyPair("publisher")
+	buildKey, buildPrivate := keyPair("build")
 	oldRoot, oldClient := trust.RootPublicKey, moduleCatalogClient
 	trust.RootPublicKey = root
 	t.Cleanup(func() { trust.RootPublicKey, moduleCatalogClient = oldRoot, oldClient })
 	entry := trust.Module{ID: "geoip2", Name: "GeoIP2", Description: "GeoIP2 module", Repository: "official/geoip2", Symbol: nginxmodule.Symbol, Keys: publisher}
 	now := time.Now()
-	policy := trust.Policy{Version: 1, Sequence: 1, IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Modules: []trust.Module{entry}}
+	policy := trust.Policy{Version: 1, Sequence: 1, IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), Build: buildKey, Modules: []trust.Module{entry}}
 	snapshot := func() moduleIndexSnapshot {
 		t.Helper()
 		body, err := json.Marshal(policy)
@@ -69,24 +70,31 @@ func TestRootPolicyAuthorizesMirroredReleaseAndOfflineReceipt(t *testing.T) {
 	module.Install = nginxmodule.Script{Name: nginxmodule.ScriptName(module.ID, "install", digest), Size: int64(len(script)), SHA256: digest}
 	module.Uninstall = nginxmodule.Script{Name: nginxmodule.ScriptName(module.ID, "uninstall", digest), Size: int64(len(script)), SHA256: digest}
 	manifest := nginxmodule.Manifest{Protocol: nginxmodule.BuildProtocol, Module: module, Build: &nginxmodule.BuildRecipe{Source: nginxmodule.Script{Name: nginxmodule.SourceName(module.ID, digest), Size: 10, SHA256: digest}}}
-	raw, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatal(err)
+	encode := func(value any) []byte {
+		t.Helper()
+		body, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
 	}
-	signature, err := json.Marshal(nginxmodule.Sign(raw, map[string]ed25519.PrivateKey{"publisher": publisherPrivate}, nginxmodule.ReleasePurpose, false))
-	if err != nil {
-		t.Fatal(err)
+	signRelease := func(raw []byte) []byte {
+		return encode(nginxmodule.Sign(raw, map[string]ed25519.PrivateKey{"publisher": publisherPrivate}, nginxmodule.ReleasePurpose, false))
 	}
+	raw := encode(manifest)
 	releasePath := "/v1/repos/official/geoip2/releases/"
 	assets := releasePath + "download/v3.4.0/"
 	files := map[string][]byte{
 		releasePath + "tags/v3.4.0.json":  []byte(`{"tag_name":"v3.4.0","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z"}`),
 		assets + nginxmodule.ManifestName: raw,
-		assets + nginxmodule.ManifestSig:  signature,
+		assets + nginxmodule.ManifestSig:  signRelease(raw),
 	}
 	moduleCatalogClient = &http.Client{Transport: moduleTestTransport(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Scheme != "https" || request.URL.Host != host {
 			t.Fatalf("module Agent left the store origin: %s", request.URL)
+		}
+		if strings.HasPrefix(request.URL.Path, assets) && strings.HasSuffix(request.URL.Path, ".so") {
+			t.Fatalf("official Agent downloaded a release asset: %s", request.URL)
 		}
 		status, body := http.StatusOK, files[request.URL.Path]
 		if body == nil {
@@ -98,6 +106,46 @@ func TestRootPolicyAuthorizesMirroredReleaseAndOfflineReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assetBody := []byte("fixture module binary")
+	target := nginxmodule.Target{OS: "debian:13", Arch: "amd64", Runtime: "nginx", RuntimeVersion: "1.30.7", BinarySHA256: digest}
+	request := nginxmodule.BuildRequest{ID: module.ID, Tag: module.Release.Tag, ManifestSHA256: sha256Text(raw), Target: target}
+	asset := nginxmodule.Asset{Module: module.ID, Version: request.Tag, Target: target, Name: nginxmodule.AssetName(module.ID, sha256Text(assetBody)), Size: int64(len(assetBody)), SHA256: sha256Text(assetBody)}
+	buildResult := encode(nginxmodule.BuildResult{Request: request, Asset: asset})
+	resultPath := "/v1/builds/" + request.Key() + "/result"
+	files[resultPath] = encode(nginxmodule.SignedBuild{Result: buildResult, Signature: encode(nginxmodule.Sign(buildResult, map[string]ed25519.PrivateKey{"build": buildPrivate}, nginxmodule.BuildPurpose, false))})
+	files["/v1/builds/"+request.Key()+"/asset"] = assetBody
+	result, build, err := source.getBuild(t.Context(), request, manifest, raw, feed.policy.Build)
+	if err != nil || result.Asset.SHA256 != asset.SHA256 {
+		t.Fatalf("expected trusted build result: %+v %v", result, err)
+	}
+	if _, _, err := source.getBuild(t.Context(), request, manifest, raw, publisher); err == nil {
+		t.Fatal("publisher key authorized a build result")
+	}
+	otherTarget := request
+	otherTarget.Target.RuntimeVersion = "1.30.8"
+	files["/v1/builds/"+otherTarget.Key()+"/result"] = files[resultPath]
+	if _, _, err := source.getBuild(t.Context(), otherTarget, manifest, raw, feed.policy.Build); err == nil {
+		t.Fatal("accepted build signed for a different runtime")
+	}
+	offer := moduleOffer{module: module, asset: result.Asset, target: target, receipt: receipt, buildRequest: &request}
+	if _, err := source.fetchInstallAsset(t.Context(), offer); err == nil {
+		t.Fatal("downloaded an official module without a signed build")
+	}
+	offer.receipt.Build = &build
+	if body, err := source.fetchInstallAsset(t.Context(), offer); err != nil || !moduleAssetMatches(body, asset) {
+		t.Fatalf("could not download the exact signed build asset: %v", err)
+	}
+	legacy := manifest
+	legacy.Protocol, legacy.Build, legacy.Assets = nginxmodule.Protocol, nil, []nginxmodule.Asset{asset}
+	legacyRaw := encode(legacy)
+	for _, alternative := range []nginxmodule.Manifest{legacy, {Protocol: nginxmodule.BuildProtocol, Module: module, Build: manifest.Build, Assets: legacy.Assets}} {
+		alternativeRaw := encode(alternative)
+		files[assets+nginxmodule.ManifestName] = alternativeRaw
+		files[assets+nginxmodule.ManifestSig] = signRelease(alternativeRaw)
+		if _, _, err := source.releaseManifest(t.Context(), registered, module.Release.Tag); err == nil || !strings.Contains(err.Error(), "不得包含预编译模块") {
+			t.Fatalf("official precompiled Release was not explicitly rejected: %v", err)
+		}
+	}
 	policy.Sequence++
 	policy.IssuedAt, policy.ExpiresAt = now.Add(-2*time.Hour), now.Add(-time.Hour)
 	expired, err := source.verifyIndex(snapshot(), feed.floor)
@@ -105,9 +153,12 @@ func TestRootPolicyAuthorizesMirroredReleaseAndOfflineReceipt(t *testing.T) {
 		t.Fatalf("expired policy must remain usable only as an offline proof: %v", err)
 	}
 	registered, _ = expired.entry(entry.ID)
-	offline, err := nginxmodule.VerifyManifest(receipt.Manifest, receipt.Signature, registered, receipt.Tag, false)
+	offline, err := nginxmodule.VerifyManifest(legacyRaw, signRelease(legacyRaw), registered, receipt.Tag, false)
 	if err != nil || !moduleScriptMatches(script, offline.Module.Uninstall) {
-		t.Fatalf("offline receipt cannot be verified against cached authorization: %v", err)
+		t.Fatalf("legacy offline receipt cannot be verified against cached authorization: %v", err)
+	}
+	if _, err := offline.Match(target); err != nil {
+		t.Fatalf("legacy offline receipt lost its compatible asset: %v", err)
 	}
 	policy.Sequence++
 	policy.ExpiresAt = now.Add(time.Hour)
