@@ -43,27 +43,12 @@ func main() {
 	sequence := flag.Uint64("sequence", 0, "local fixture index sequence")
 	policyDir := flag.String("trust-dir", trust.Path, "directory with the signed root policy")
 	metadata := flag.String("metadata", "", "path to module-definitions.json")
-	prepare := flag.Bool("prepare", false, "package one module's existing build artifacts as an unsigned release candidate")
-	check := flag.Bool("check-candidate", false, "validate a candidate and its files without signing")
-	match := flag.String("match-target", "", "select a candidate asset for the observed target JSON file")
-	candidate := flag.Bool("candidate", false, "sign a verified release candidate (read it for -test-fixture)")
+	prepare := flag.Bool("prepare", false, "prepare a source candidate or package local test builds")
+	candidate := flag.Bool("candidate", false, "sign a source-only release candidate (read any candidate for -test-fixture)")
 	fixture := flag.Bool("test-fixture", false, "generate a local index, GitHub-style releases, and ephemeral public trust key")
 	flag.Parse()
-	if *match != "" {
-		if *prepare || *check || *candidate || *fixture || *metadata != "" || *sequence != 0 {
-			log.Fatal("-match-target cannot be combined with other candidate or fixture options")
-		}
-		var target nginxmodule.Target
-		must(readJSON(*match, 1024, &target))
-		manifest, err := loadCandidateManifest(*input)
-		must(err)
-		asset, err := manifest.Match(target)
-		must(err)
-		must(json.NewEncoder(os.Stdout).Encode(asset))
-		return
-	}
 	switch {
-	case *prepare && !*check && !*candidate && !*fixture && *metadata != "" && *sequence == 0:
+	case *prepare && !*candidate && !*fixture && *metadata != "" && *sequence == 0:
 		definitions, err := loadDefinitions(*metadata)
 		must(err)
 		if len(definitions) != 1 {
@@ -75,15 +60,12 @@ func main() {
 		}
 		must(err)
 		must(writeFiles(*output, files))
-	case *check && !*prepare && !*candidate && !*fixture && *metadata == "" && *sequence == 0:
-		_, _, err := readCandidate(*input)
-		must(err)
-	case *candidate && !*prepare && !*check && !*fixture && *metadata == "" && *sequence == 0:
+	case *candidate && !*prepare && !*fixture && *metadata == "" && *sequence == 0:
 		must(signRelease(*input, *output, *policyDir))
-	case *fixture && !*prepare && !*check && (*candidate == (*metadata == "")) && *sequence != 0:
+	case *fixture && !*prepare && (*candidate == (*metadata == "")) && *sequence != 0:
 		must(writeTestFixture(*input, *output, *metadata, *sequence))
 	default:
-		log.Fatal("choose -prepare, -check-candidate, -match-target, -candidate, or -test-fixture (with -metadata or -candidate)")
+		log.Fatal("choose -prepare, -candidate, or -test-fixture (with -metadata or -candidate)")
 	}
 }
 
@@ -127,7 +109,14 @@ func signedIndex(raw []byte, sequence uint64, keys map[string]ed25519.PrivateKey
 }
 
 func signRelease(input, output, policyDir string) error {
-	manifest, files, err := readCandidate(input)
+	manifest, err := loadCandidateManifest(input)
+	if err != nil {
+		return err
+	}
+	if err := manifest.RequireSourceOnly(); err != nil {
+		return err
+	}
+	files, err := readCandidateFiles(input, manifest)
 	if err != nil {
 		return err
 	}
@@ -255,6 +244,11 @@ func readCandidate(input string) (nginxmodule.Manifest, map[string][]byte, error
 	if err != nil {
 		return manifest, nil, err
 	}
+	files, err := readCandidateFiles(input, manifest)
+	return manifest, files, err
+}
+
+func readCandidateFiles(input string, manifest nginxmodule.Manifest) (map[string][]byte, error) {
 	files := make(map[string][]byte)
 	load := func(name string, size int64, digest string) error {
 		body, err := readBuildFile(filepath.Join(input, name), size)
@@ -269,24 +263,24 @@ func readCandidate(input string) (nginxmodule.Manifest, map[string][]byte, error
 	}
 	for _, script := range []nginxmodule.Script{manifest.Module.Install, manifest.Module.Uninstall} {
 		if err := load(script.Name, script.Size, script.SHA256); err != nil {
-			return manifest, nil, err
+			return nil, err
 		}
 		if bytes.ContainsRune(files[script.Name], 0) {
-			return manifest, nil, fmt.Errorf("invalid module shell script")
+			return nil, fmt.Errorf("invalid module shell script")
 		}
 	}
 	for _, asset := range manifest.Assets {
 		if err := load(asset.Name, asset.Size, asset.SHA256); err != nil {
-			return manifest, nil, err
+			return nil, err
 		}
 	}
 	if manifest.Build != nil {
 		source := manifest.Build.Source
 		if err := load(source.Name, source.Size, source.SHA256); err != nil {
-			return manifest, nil, err
+			return nil, err
 		}
 	}
-	return manifest, files, nil
+	return files, nil
 }
 
 func writeTestFixture(input, output, metadata string, sequence uint64) error {
